@@ -1,0 +1,8 @@
+# Telegram Bot
+aiogram>=3.13.0
+
+# ИИ: OpenAI API (или совместимые провайдеры)
+openai>=1.40.0
+
+# Загрузка переменных окружения
+python-dotenv>=1.0.0

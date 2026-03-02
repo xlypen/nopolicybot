@@ -1,0 +1,304 @@
+{
+  "users": {
+    "48609177": {
+      "user_id": 48609177,
+      "display_name": "Александр Ефремов",
+      "rank": "neutral",
+      "portrait": "Пользователь, данных пока мало.",
+      "portrait_updated_date": "2026-03-02",
+      "stats": {
+        "political_messages": 0,
+        "positive_sentiment": 0,
+        "negative_sentiment": 0,
+        "neutral_sentiment": 0,
+        "total_messages": 0,
+        "warnings_received": 0
+      },
+      "daily_buffer": []
+    },
+    "822343631": {
+      "user_id": 822343631,
+      "display_name": "Вильям",
+      "rank": "neutral",
+      "portrait": "Пользователь, данных пока мало.",
+      "portrait_updated_date": "2026-03-02",
+      "stats": {
+        "political_messages": 0,
+        "positive_sentiment": 0,
+        "negative_sentiment": 0,
+        "neutral_sentiment": 0,
+        "total_messages": 0,
+        "warnings_received": 0
+      },
+      "daily_buffer": [],
+      "messages_to_bot_buffer": [
+        {
+          "text": "Я найду твоего создателя и нассу ему на лицо",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "Ахуел?",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "Я твою мать в кино водил кусок байта",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "Гойда",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "Путин наш президент мира",
+          "date": "2026-03-02"
+        }
+      ],
+      "tone_to_bot": "агрессивен, троллит"
+    },
+    "332544125": {
+      "user_id": 332544125,
+      "display_name": "Ruslan",
+      "rank": "neutral",
+      "portrait": "Пользователь, данных пока мало.",
+      "portrait_updated_date": "2026-03-02",
+      "stats": {
+        "political_messages": 1,
+        "positive_sentiment": 1,
+        "negative_sentiment": 0,
+        "neutral_sentiment": 0,
+        "total_messages": 1,
+        "warnings_received": 0
+      },
+      "daily_buffer": [
+        {
+          "text": "кто наследник путина?",
+          "sentiment": "positive",
+          "date": "2026-03-02"
+        }
+      ],
+      "messages_to_bot_buffer": [
+        {
+          "text": "Напиши, что сделать, чтобы ты зауважал меня )",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "сука жестко",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "в тюрягу создателя за эти слова",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "После 5 мин общения с тобой и на собес не страшно идти",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "кто наследник путина?",
+          "date": "2026-03-02"
+        }
+      ],
+      "tone_to_bot": "агрессивен, ироничен, провоцирует"
+    },
+    "1485084701": {
+      "user_id": 1485084701,
+      "display_name": "Андрей",
+      "rank": "neutral",
+      "portrait": "Пользователь, данных пока мало.",
+      "portrait_updated_date": "2026-03-02",
+      "stats": {
+        "political_messages": 0,
+        "positive_sentiment": 0,
+        "negative_sentiment": 0,
+        "neutral_sentiment": 0,
+        "total_messages": 0,
+        "warnings_received": 0
+      },
+      "daily_buffer": []
+    },
+    "378214459": {
+      "user_id": 378214459,
+      "display_name": "Денис",
+      "rank": "neutral",
+      "portrait": "Пользователь, данных пока мало.",
+      "portrait_updated_date": "2026-03-02",
+      "stats": {
+        "political_messages": 0,
+        "positive_sentiment": 0,
+        "negative_sentiment": 0,
+        "neutral_sentiment": 0,
+        "total_messages": 0,
+        "warnings_received": 0
+      },
+      "daily_buffer": []
+    },
+    "1324049597": {
+      "user_id": 1324049597,
+      "display_name": "arturinooo",
+      "rank": "neutral",
+      "portrait": "Пользователь, данных пока мало.",
+      "portrait_updated_date": "2026-03-02",
+      "stats": {
+        "political_messages": 0,
+        "positive_sentiment": 0,
+        "negative_sentiment": 0,
+        "neutral_sentiment": 0,
+        "total_messages": 0,
+        "warnings_received": 0
+      },
+      "daily_buffer": [],
+      "messages_to_bot_buffer": [
+        {
+          "text": "Ответь мне на это сообщение, если ты гей",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "Так ты и так ответил, получается гей",
+          "date": "2026-03-02"
+        }
+      ],
+      "tone_to_bot": "троллит, провоцирует"
+    },
+    "430831653": {
+      "user_id": 430831653,
+      "display_name": "Сергей",
+      "rank": "neutral",
+      "portrait": "Пользователь, данных пока мало.",
+      "portrait_updated_date": "2026-03-02",
+      "stats": {
+        "political_messages": 2,
+        "positive_sentiment": 2,
+        "negative_sentiment": 0,
+        "neutral_sentiment": 0,
+        "total_messages": 2,
+        "warnings_received": 0
+      },
+      "daily_buffer": [
+        {
+          "text": "@NoPolicyBot \nПутин наш президент мира",
+          "sentiment": "positive",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "привет, красавчик",
+          "sentiment": "positive",
+          "date": "2026-03-02"
+        }
+      ],
+      "messages_to_bot_buffer": [
+        {
+          "text": "иди нахуй",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "@NoPolicyBot \nПутин наш президент мира",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "привет, красавчик",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "долбаеб",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "напиши пузырьковую сортировку на джава",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "как сделать пузырьковую сортироку на джава",
+          "date": "2026-03-02"
+        }
+      ],
+      "tone_to_bot": "грубит, переходит на оскорбления"
+    },
+    "7990455626": {
+      "user_id": 7990455626,
+      "display_name": "S",
+      "rank": "neutral",
+      "portrait": "Пользователь, данных пока мало.",
+      "portrait_updated_date": "2026-03-02",
+      "stats": {
+        "political_messages": 1,
+        "positive_sentiment": 1,
+        "negative_sentiment": 0,
+        "neutral_sentiment": 0,
+        "total_messages": 1,
+        "warnings_received": 0
+      },
+      "daily_buffer": [
+        {
+          "text": "А Зеленский?",
+          "sentiment": "positive",
+          "date": "2026-03-02"
+        }
+      ],
+      "messages_to_bot_buffer": [
+        {
+          "text": "Пидорас",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "Скажи мне кого первого из нас посадят?",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "Если бы был выбор я или Вильям, кого ты бы выбрал?",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "Говно, залупа, пенис, хер, давалка, хуй, блядина\nГоловка, шлюха, жопа, член, еблан, петух… Мудила\nРукоблуд, ссанина, очко, блядун, вагина\nСука, ебланище, влагалище, пердун, дрочила\nПидор, пизда, туз, малафья\nГомик, мудила, пилотка, манда\nАнус, вагина, путана, педрила\nШалава, хуило, мошонка, елда…",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "Чей Крым?",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "А Зеленский?",
+          "date": "2026-03-02"
+        }
+      ],
+      "tone_to_bot": "агрессивен, грубит, переходит на оскорбления"
+    },
+    "126199953": {
+      "user_id": 126199953,
+      "display_name": "Konstantine",
+      "rank": "neutral",
+      "portrait": "Пользователь, данных пока мало.",
+      "portrait_updated_date": "2026-03-02",
+      "stats": {
+        "political_messages": 1,
+        "positive_sentiment": 1,
+        "negative_sentiment": 0,
+        "neutral_sentiment": 0,
+        "total_messages": 1,
+        "warnings_received": 0
+      },
+      "daily_buffer": [
+        {
+          "text": "Ты шо лярва подзалупная, оперативы перехавал какой нахуй респект, ты говна кусок тут против политики должен быть",
+          "sentiment": "positive",
+          "date": "2026-03-02"
+        }
+      ],
+      "yesterday_quotes": [],
+      "messages_to_bot_buffer": [
+        {
+          "text": "Нихуясе как запели свиристели",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "Ты шо лярва подзалупная, оперативы перехавал какой нахуй респект, ты говна кусок тут против политики должен быть",
+          "date": "2026-03-02"
+        },
+        {
+          "text": "Ахаха как шестёрка последняя приказ исполнил, брысь под шконяру петушок",
+          "date": "2026-03-02"
+        }
+      ],
+      "tone_to_bot": "грубит, переходит на оскорбления"
+    }
+  }
+}

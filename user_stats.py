@@ -1,11 +1,8 @@
 """
 Статистика и портреты пользователей: ранги по полит. взглядам, ежедневное обновление портрета.
+Хранит архив сообщений участников (до 1000 на человека) для построения глубокого портрета.
 
 Файл user_stats.json НЕ обнуляется при перезапуске бота — данные накапливаются.
-Он заполняется, когда:
-  - кто-то пишет боту (упоминание или ответ) — создаётся запись и портрет;
-  - срабатывает анализ полит. контекста (после 5 полит. сообщений) — вызывается record_message.
-Если файл пустой — такого рода активность ещё не происходила.
 """
 
 import json
@@ -19,19 +16,64 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parent
 USERS_JSON = DATA_DIR / "user_stats.json"
+MESSAGES_ARCHIVE_LIMIT = 1000
+IMAGES_ARCHIVE_LIMIT = 100
 
 RANKS = ("loyal", "neutral", "opposition", "unknown")
 
 
+def _migrate_question_of_day(data: dict) -> bool:
+    """Добавляет question_of_day_* для старых записей."""
+    modified = False
+    for u in data.get("users", {}).values():
+        if "question_of_day_enabled" not in u:
+            u["question_of_day_enabled"] = False
+            modified = True
+        if "question_of_day_last_asked" not in u:
+            u["question_of_day_last_asked"] = ""
+            modified = True
+        if "question_of_day_destination" not in u:
+            u["question_of_day_destination"] = "chat"
+            modified = True
+    return modified
+
+
+def _migrate_images_archive(data: dict) -> bool:
+    """Добавляет images_archive для старых записей. Дополняет старые записи reaction_emoji, is_political."""
+    modified = False
+    for u in data.get("users", {}).values():
+        if "images_archive" not in u:
+            u["images_archive"] = []
+            modified = True
+        else:
+            for img in u.get("images_archive") or []:
+                if isinstance(img, dict):
+                    if "reaction_emoji" not in img:
+                        img["reaction_emoji"] = ""
+                        modified = True
+                    if "is_political" not in img:
+                        img["is_political"] = False
+                        modified = True
+    return modified
+
+
 def _load() -> dict:
     if not USERS_JSON.exists():
-        return {"users": {}}
+        return {"users": {}, "chats": {}}
     try:
         data = json.loads(USERS_JSON.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) and "users" in data else {"users": {}}
+        if not isinstance(data, dict):
+            return {"users": {}, "chats": {}}
+        if "users" not in data:
+            data["users"] = {}
+        if "chats" not in data:
+            data["chats"] = {}
+        if _migrate_question_of_day(data) or _migrate_images_archive(data):
+            _save(data)
+        return data
     except Exception as e:
         logger.warning("Не удалось загрузить user_stats: %s", e)
-        return {"users": {}}
+        return {"users": {}, "chats": {}}
 
 
 def _save(data: dict) -> None:
@@ -59,8 +101,16 @@ def _default_user(user_id: int, display_name: str = "") -> dict:
         },
         "daily_buffer": [],
         "yesterday_quotes": [],
-        "messages_to_bot_buffer": [],  # последние обращения к боту для оценки тона
-        "tone_to_bot": "",  # личная оценка по настроению обращений к боту
+        "messages_to_bot_buffer": [],
+        "tone_to_bot": "",
+        "tone_override": "",
+        "tone_history": [],
+        "messages_archive": [],  # deprecated, мигрируется в messages_by_chat
+        "messages_by_chat": {},  # chat_id -> [{text, date}, ...], до 1000 на чат
+        "question_of_day_enabled": False,  # задавать ли боту «вопрос дня» вечером
+        "question_of_day_last_asked": "",  # дата последнего вопроса "YYYY-MM-DD"
+        "question_of_day_destination": "chat",  # "chat" — в чат, "private" — в личку
+        "images_archive": [],  # [{category, description, date, reaction_emoji, is_political}, ...], до IMAGES_ARCHIVE_LIMIT
     }
 
 
@@ -78,14 +128,83 @@ def get_user(user_id: int, display_name: str = "") -> dict:
     return data["users"][key].copy()
 
 
-def _ensure_daily_buffer_clean(user_data: dict) -> None:
-    """Оставить в daily_buffer только записи за сегодня."""
-    today = date.today().isoformat()
-    user_data["daily_buffer"] = [x for x in user_data.get("daily_buffer", []) if x.get("date") == today]
+def _ensure_messages_by_chat(u: dict, data: dict | None = None) -> bool:
+    """Мигрирует messages_archive в messages_by_chat при первом обращении. Возвращает True если была миграция (нужно сохранить)."""
+    if u.get("messages_by_chat"):
+        return False
+    by_chat = u.get("messages_by_chat") or {}
+    old = u.get("messages_archive") or []
+    if not old and not by_chat:
+        u["messages_by_chat"] = {}
+        u.pop("messages_archive", None)
+        return True
+    for m in old:
+        cid = m.get("chat_id")
+        ckey = str(cid) if cid is not None else "unknown"
+        if ckey not in by_chat:
+            by_chat[ckey] = []
+        by_chat[ckey].append({"text": m.get("text", ""), "date": m.get("date", "")})
+    for ckey in by_chat:
+        by_chat[ckey] = by_chat[ckey][-MESSAGES_ARCHIVE_LIMIT:]
+    u["messages_by_chat"] = by_chat
+    u.pop("messages_archive", None)
+    return True
 
 
-def record_message(user_id: int, text_snippet: str, sentiment: str, is_political: bool, display_name: str = "") -> None:
-    """Учитывает сообщение: статистика и буфер дня для портрета."""
+def record_chat_message(
+    user_id: int,
+    text: str,
+    display_name: str = "",
+    chat_id: int | None = None,
+    chat_title: str = "",
+) -> None:
+    """Сохраняет сообщение пользователя в архив (по чатам) и обновляет total_messages."""
+    if not text or not (text := text.strip()):
+        return
+    data = _load()
+    key = str(user_id)
+    if key not in data["users"]:
+        data["users"][key] = _default_user(user_id, display_name)
+    u = data["users"][key]
+    if _ensure_messages_by_chat(u):
+        _save(data)
+    if display_name:
+        u["display_name"] = display_name
+    by_chat = u["messages_by_chat"]
+    # Нормализуем ключ чата: всегда строка для консистентности (int -5192849857 -> "-5192849857")
+    ckey = str(int(chat_id)) if chat_id is not None else "unknown"
+    if ckey not in by_chat:
+        by_chat[ckey] = []
+    today_str = date.today().isoformat()
+    msg = {"text": text[:500], "date": today_str}
+    last = by_chat[ckey][-1] if by_chat[ckey] else None
+    if last and last.get("text") == msg["text"] and last.get("date") == today_str:
+        return
+    u["stats"]["total_messages"] = u["stats"].get("total_messages", 0) + 1
+    by_chat[ckey].append(msg)
+    by_chat[ckey] = by_chat[ckey][-MESSAGES_ARCHIVE_LIMIT:]
+    if chat_id is not None:
+        ckey = str(int(chat_id))
+        if ckey not in data["chats"]:
+            data["chats"][ckey] = {"title": chat_title or ckey, "last_seen": date.today().isoformat()}
+        else:
+            if chat_title:
+                data["chats"][ckey]["title"] = chat_title
+            data["chats"][ckey]["last_seen"] = date.today().isoformat()
+    _save(data)
+
+
+def record_image_analysis(
+    user_id: int,
+    category: str,
+    description: str,
+    display_name: str = "",
+    reaction_emoji: str = "",
+    is_political: bool = False,
+) -> None:
+    """Сохраняет результат анализа изображения: категория, описание, реакция бота, политичность."""
+    if not category and not description:
+        return
     data = _load()
     key = str(user_id)
     if key not in data["users"]:
@@ -93,7 +212,284 @@ def record_message(user_id: int, text_snippet: str, sentiment: str, is_political
     u = data["users"][key]
     if display_name:
         u["display_name"] = display_name
-    u["stats"]["total_messages"] = u["stats"].get("total_messages", 0) + 1
+    archive = u.get("images_archive") or []
+    today = date.today().isoformat()
+    archive.append({
+        "category": category[:50],
+        "description": (description or "")[:400],
+        "date": today,
+        "reaction_emoji": (reaction_emoji or "")[:10],
+        "is_political": bool(is_political),
+    })
+    u["images_archive"] = archive[-IMAGES_ARCHIVE_LIMIT:]
+    _save(data)
+
+
+def get_user_images_archive(user_id: int) -> list[dict]:
+    """Возвращает архив проанализированных изображений пользователя: [{category, description, date, reaction_emoji, is_political}, ...]."""
+    data = _load()
+    u = data.get("users", {}).get(str(user_id))
+    if not u:
+        return []
+    return list(u.get("images_archive") or [])
+
+
+def format_images_archive_for_context(user_id: int, max_items: int = 15) -> str:
+    """
+    Форматирует архив изображений для контекста ответа бота.
+    Последние изображения (свежие в конце). Для объяснения «что на картинке», «почему такая реакция».
+    """
+    archive = get_user_images_archive(user_id)
+    if not archive:
+        return ""
+    items = list(reversed(archive[-max_items:]))  # последние сначала
+    lines = []
+    for i, img in enumerate(items, 1):
+        cat = img.get("category", "")
+        desc = img.get("description", "")
+        dt = img.get("date", "")
+        emoji = img.get("reaction_emoji", "")
+        pol = img.get("is_political", False)
+        parts = [f"[{dt}] категория: {cat}"]
+        if desc:
+            parts.append(f"описание: {desc}")
+        if emoji:
+            parts.append(f"поставил реакцию {emoji}")
+        if pol:
+            parts.append("(политика)")
+        lines.append(f"  {i}. {'; '.join(parts)}")
+    return "Твои действия с изображениями пользователя (последние сначала):\n" + "\n".join(lines)
+
+
+def clear_user_images_archive(user_id: int) -> bool:
+    """Очищает архив проанализированных изображений пользователя."""
+    data = _load()
+    key = str(user_id)
+    if key not in data["users"]:
+        return False
+    data["users"][key]["images_archive"] = []
+    _save(data)
+    return True
+
+
+def get_user_display_names() -> dict[str, str]:
+    """Возвращает {user_id: display_name} для всех пользователей (для social_graph)."""
+    data = _load()
+    return {
+        uid: (u.get("display_name") or uid)
+        for uid, u in (data.get("users") or {}).items()
+    }
+
+
+def get_chats() -> list[dict]:
+    """Возвращает список чатов, в которых бот видел сообщения. [{chat_id, title}, ...] по last_seen."""
+    data = _load()
+    chats = data.get("chats") or {}
+    result = [{"chat_id": cid, "title": c.get("title") or cid} for cid, c in chats.items()]
+    return sorted(result, key=lambda x: x["chat_id"])
+
+
+def get_users_in_chat(chat_id: int) -> list[str]:
+    """Возвращает user_id (str) участников, у которых есть сообщения в этом чате."""
+    data = _load()
+    cid_str = str(chat_id)
+    result = []
+    for uid, u in data.get("users", {}).items():
+        if _ensure_messages_by_chat(u):
+            _save(data)
+        by_chat = u.get("messages_by_chat") or {}
+        if cid_str in by_chat and by_chat[cid_str]:
+            result.append(uid)
+    return result
+
+
+def get_user_messages_archive(user_id: int, chat_id: int | None = None) -> list[dict]:
+    """Возвращает архив сообщений. Если chat_id задан — только из этого чата. Формат: [{text, date}] или [{text, date, chat_id}] при объединении."""
+    data = _load()
+    u = data.get("users", {}).get(str(user_id))
+    if not u:
+        return []
+    if _ensure_messages_by_chat(u):
+        _save(data)
+    by_chat = u.get("messages_by_chat") or {}
+    if chat_id is not None:
+        cid_str = str(chat_id)
+        return list(by_chat.get(cid_str, []))
+    result = []
+    for cid, msgs in by_chat.items():
+        for m in msgs:
+            msg = dict(m)
+            if cid != "unknown":
+                msg["chat_id"] = int(cid) if cid.isdigit() or (cid.startswith("-") and cid[1:].isdigit()) else cid
+            result.append(msg)
+    result.sort(key=lambda x: x.get("date", ""))
+    return result
+
+
+def get_user_archive_by_chat(user_id: int) -> dict:
+    """Возвращает архив по чатам: {chat_id: [{text, date}, ...], ...}."""
+    data = _load()
+    u = data.get("users", {}).get(str(user_id))
+    if not u:
+        return {}
+    if _ensure_messages_by_chat(u):
+        _save(data)
+    return dict(u.get("messages_by_chat") or {})
+
+
+def clear_user_archive(user_id: int, chat_id: int | str | None = None) -> bool:
+    """Очищает архив пользователя. chat_id=None — весь архив, иначе только указанный чат."""
+    data = _load()
+    key = str(user_id)
+    if key not in data["users"]:
+        return False
+    u = data["users"][key]
+    if _ensure_messages_by_chat(u):
+        _save(data)
+    by_chat = u["messages_by_chat"]
+    if chat_id is None:
+        u["messages_by_chat"] = {}
+    else:
+        ckey = str(chat_id)
+        if ckey in by_chat:
+            del by_chat[ckey]
+    _save(data)
+    return True
+
+
+def get_user_messages_for_today(user_id: int) -> list[dict]:
+    """Сообщения пользователя за сегодня (архив + daily_buffer) для «вопроса дня»."""
+    today_str = date.today().isoformat()
+    data = _load()
+    u = data.get("users", {}).get(str(user_id))
+    if not u:
+        return []
+    if _ensure_messages_by_chat(u):
+        _save(data)
+    result = []
+    for msgs in (u.get("messages_by_chat") or {}).values():
+        for m in msgs:
+            if m.get("date", "").startswith(today_str):
+                result.append({"text": m.get("text", ""), "date": m.get("date", ""), "sentiment": ""})
+    for m in u.get("daily_buffer") or []:
+        if m.get("date") == today_str:
+            result.append({
+                "text": m.get("text", ""),
+                "date": m.get("date", ""),
+                "sentiment": m.get("sentiment", ""),
+            })
+    result.sort(key=lambda x: x.get("date", ""))
+    return result
+
+
+def set_question_of_day_enabled(user_id: int, enabled: bool) -> bool:
+    """Включить/выключить «вопрос дня» для пользователя."""
+    data = _load()
+    key = str(user_id)
+    if key not in data["users"]:
+        return False
+    data["users"][key]["question_of_day_enabled"] = bool(enabled)
+    _save(data)
+    return True
+
+
+def set_question_of_day_destination(user_id: int, destination: str) -> bool:
+    """Куда отправлять «вопрос дня»: "chat" — в чат, "private" — в личку."""
+    if destination not in ("chat", "private"):
+        return False
+    data = _load()
+    key = str(user_id)
+    if key not in data["users"]:
+        return False
+    data["users"][key]["question_of_day_destination"] = destination
+    _save(data)
+    return True
+
+
+def get_chat_for_question_of_day(user_id: int) -> int | None:
+    """Чат, куда отправить «вопрос дня»: где пользователь был активнее всего сегодня. None если нет сообщений за сегодня."""
+    today_str = date.today().isoformat()
+    data = _load()
+    u = data.get("users", {}).get(str(user_id))
+    if not u:
+        return None
+    if _ensure_messages_by_chat(u):
+        _save(data)
+    by_chat = u.get("messages_by_chat") or {}
+    best_chat, best_count = None, 0
+    for ckey, msgs in by_chat.items():
+        if ckey == "unknown":
+            continue
+        count = sum(1 for m in msgs if (m.get("date") or "").startswith(today_str))
+        if count > best_count:
+            best_count = count
+            try:
+                best_chat = int(ckey)
+            except ValueError:
+                pass
+    return best_chat
+
+
+def get_user_chats_for_question_of_day(user_id: int) -> list[dict]:
+    """Чаты пользователя для выбора «вопрос дня»: где есть сообщения. [{chat_id, title, today_count}, ...], отсортировано по активности сегодня."""
+    data = _load()
+    u = data.get("users", {}).get(str(user_id))
+    if not u:
+        return []
+    if _ensure_messages_by_chat(u):
+        _save(data)
+    by_chat = u.get("messages_by_chat") or {}
+    chats = data.get("chats") or {}
+    today_str = date.today().isoformat()
+    result = []
+    for ckey, msgs in by_chat.items():
+        if ckey == "unknown":
+            continue
+        try:
+            cid = int(ckey)
+        except ValueError:
+            continue
+        today_count = sum(1 for m in msgs if (m.get("date") or "").startswith(today_str))
+        title = (chats.get(ckey) or {}).get("title") or ckey
+        result.append({"chat_id": cid, "title": str(title), "today_count": today_count})
+    result.sort(key=lambda x: (-x["today_count"], x["chat_id"]))
+    return result
+
+
+def get_users_for_question_of_day() -> list[tuple[int, str]]:
+    """Пользователи с включённым «вопрос дня», которым ещё не задали сегодня. Возвращает [(user_id, display_name), ...]."""
+    today_str = date.today().isoformat()
+    data = _load()
+    result = []
+    for uid, u in data.get("users", {}).items():
+        if not u.get("question_of_day_enabled"):
+            continue
+        if u.get("question_of_day_last_asked") == today_str:
+            continue
+        if _ensure_messages_by_chat(u):
+            _save(data)
+        result.append((int(uid), u.get("display_name") or uid))
+    return result
+
+
+def mark_question_of_day_asked(user_id: int) -> None:
+    """Отметить, что пользователю задали вопрос дня сегодня."""
+    data = _load()
+    key = str(user_id)
+    if key in data["users"]:
+        data["users"][key]["question_of_day_last_asked"] = date.today().isoformat()
+        _save(data)
+
+
+def record_message(user_id: int, text_snippet: str, sentiment: str, is_political: bool, display_name: str = "") -> None:
+    """Учитывает полит. сообщение: political_messages, sentiment, daily_buffer. total_messages ведётся в record_chat_message."""
+    data = _load()
+    key = str(user_id)
+    if key not in data["users"]:
+        data["users"][key] = _default_user(user_id, display_name)
+    u = data["users"][key]
+    if display_name:
+        u["display_name"] = display_name
     if is_political:
         u["stats"]["political_messages"] = u["stats"].get("political_messages", 0) + 1
     if sentiment == "positive":
@@ -134,6 +530,12 @@ def _compute_rank_from_stats(stats: dict) -> str:
     return "neutral"
 
 
+def _ensure_daily_buffer_clean(user_data: dict) -> None:
+    """Оставить в daily_buffer только записи за сегодня."""
+    today = date.today().isoformat()
+    user_data["daily_buffer"] = [x for x in user_data.get("daily_buffer", []) if x.get("date") == today]
+
+
 def daily_update_user(user_id: int) -> bool:
     """
     Обновляет портрет пользователя по буферу за день (вызов ИИ), сбрасывает буфер за сегодня.
@@ -158,7 +560,6 @@ def daily_update_user(user_id: int) -> bool:
         u["portrait"] = new_portrait
         u["rank"] = new_rank if new_rank in RANKS else _compute_rank_from_stats(u["stats"])
         u["portrait_updated_date"] = today
-        # сохраняем последние фразы дня для редкой отсылки «а вчера ты сказал»
         u["yesterday_quotes"] = [m.get("text", "").strip()[:120] for m in daily_messages[-5:] if (m.get("text") or "").strip()]
         u["daily_buffer"] = []
         _save(data)
@@ -199,7 +600,6 @@ def _update_tone_to_bot(u: dict) -> None:
         tone = assess_tone_toward_bot(texts)
         u["tone_to_bot"] = tone
         u["messages_to_bot_buffer"] = buf[-5:]
-        return
     except Exception as e:
         logger.debug("Оценка тона к боту: %s", e)
 
@@ -211,6 +611,25 @@ def get_yesterday_quotes(user_id: int) -> list[str]:
     if not u:
         return []
     return list(u.get("yesterday_quotes") or [])[:5]
+
+
+def get_portrait_for_reply_fast(user_id: int, display_name: str = "") -> str:
+    """
+    Возвращает портрет без вызова ИИ (daily_update, tone_update).
+    Для быстрого ответа — обновления можно запустить в фоне отдельно.
+    """
+    data = _load()
+    key = str(user_id)
+    if key not in data["users"]:
+        return ""
+    u = data["users"][key]
+    if _ensure_messages_by_chat(u):
+        _save(data)
+    portrait = (u.get("portrait") or "").strip()
+    tone = (u.get("tone_override") or "").strip() or (u.get("tone_to_bot") or "").strip()
+    if tone:
+        portrait = (portrait + "\n\nНастроение обращений к боту: " + tone).strip()
+    return portrait
 
 
 def get_portrait_for_reply(user_id: int, display_name: str = "") -> str:
@@ -235,10 +654,71 @@ def get_portrait_for_reply(user_id: int, display_name: str = "") -> str:
     _update_tone_to_bot(u)
     _save(data)
     portrait = u.get("portrait", "")
-    tone = (u.get("tone_to_bot") or "").strip()
+    tone = (u.get("tone_override") or "").strip() or (u.get("tone_to_bot") or "").strip()
     if tone:
         portrait = (portrait + "\n\nНастроение обращений к боту: " + tone).strip()
     return portrait
+
+
+def set_deep_portrait(user_id: int, portrait: str, rank: str = "neutral") -> bool:
+    """Сохраняет глубокий портрет пользователя (из архива сообщений + ИИ)."""
+    data = _load()
+    key = str(user_id)
+    if key not in data["users"]:
+        data["users"][key] = _default_user(user_id)
+    u = data["users"][key]
+    u["portrait"] = (portrait or "").strip()[:8000]
+    u["rank"] = rank if rank in RANKS else "neutral"
+    u["portrait_updated_date"] = date.today().isoformat()
+    _save(data)
+    return True
+
+
+def set_tone_override(user_id: int, value: str | None) -> bool:
+    """Устанавливает ручное настроение для пользователя. value=None — сброс на авто."""
+    data = _load()
+    key = str(user_id)
+    if key not in data["users"]:
+        return False
+    data["users"][key]["tone_override"] = (value or "").strip()
+    _save(data)
+    return True
+
+
+def save_tone_override(
+    user_id: int,
+    value: str | None,
+    add_to_history: bool = False,
+    save_current_to_history: bool = False,
+) -> bool:
+    """Сохраняет ручное настроение. value=None — сброс на авто. add_to_history — добавить value в историю. save_current_to_history — перед сбросом сохранить текущее в историю."""
+    data = _load()
+    key = str(user_id)
+    if key not in data["users"]:
+        return False
+    u = data["users"][key]
+    cur = (u.get("tone_override") or "").strip()
+    new_val = (value or "").strip()
+    save_prev = (save_current_to_history or (add_to_history and cur != new_val)) and cur
+    if save_prev:
+        hist = u.get("tone_history") or []
+        hist = [cur] + [x for x in hist if x != cur][:2]
+        u["tone_history"] = hist[:3]
+    u["tone_override"] = new_val
+    if add_to_history and new_val:
+        hist = u.get("tone_history") or []
+        hist = [new_val] + [x for x in hist if x != new_val][:2]
+        u["tone_history"] = hist[:3]
+    _save(data)
+    return True
+
+
+def get_effective_tone(u: dict) -> str:
+    """Возвращает настроение для отображения: ручное или авто."""
+    override = (u.get("tone_override") or "").strip()
+    if override:
+        return override
+    return (u.get("tone_to_bot") or "").strip()
 
 
 def get_stats_for_log() -> str:
@@ -248,7 +728,7 @@ def get_stats_for_log() -> str:
     if not users:
         return "База участников пуста."
     lines = ["=== Статистика пользователей ===", f"Всего: {len(users)}", ""]
-    for uid, u in sorted(users.items(), key=lambda x: -x[1]["stats"].get("total_messages", 0)):
+    for uid, u in sorted(users.items(), key=lambda x: -x[1].get("stats", {}).get("total_messages", 0)):
         name = u.get("display_name") or uid
         rank = u.get("rank", "unknown")
         s = u.get("stats", {})
@@ -259,9 +739,10 @@ def get_stats_for_log() -> str:
         portrait = (u.get("portrait") or "").strip()
         if portrait:
             lines.append(f"  портрет: {portrait[:150]}{'…' if len(portrait) > 150 else ''}")
-        tone = (u.get("tone_to_bot") or "").strip()
+        tone = get_effective_tone(u)
+        override = (u.get("tone_override") or "").strip()
         if tone:
-            lines.append(f"  настроение к боту: {tone}")
+            lines.append(f"  настроение к боту: {tone}" + (" (ручное)" if override else " (авто)"))
         lines.append("")
     lines.append(f"Файл базы: {USERS_JSON}")
     return "\n".join(lines)
@@ -276,14 +757,14 @@ def get_ranks_for_chat() -> str:
         return "База участников пуста."
     rank_emoji = {"loyal": "🇷🇺", "neutral": "⚪", "opposition": "🔴", "unknown": "❓"}
     lines = ["<b>Ранги участников</b> (по полит. взглядам):\n"]
-    for uid, u in sorted(users.items(), key=lambda x: -x[1]["stats"].get("total_messages", 0)):
+    for uid, u in sorted(users.items(), key=lambda x: -x[1].get("stats", {}).get("total_messages", 0)):
         name = escape(str(u.get("display_name") or uid))
         rank = u.get("rank", "unknown")
         em = rank_emoji.get(rank, "❓")
         s = u.get("stats", {})
         pol = s.get("political_messages", 0)
         warn = s.get("warnings_received", 0)
-        tone = (u.get("tone_to_bot") or "").strip()
+        tone = get_effective_tone(u)
         tone_word = tone.split(",")[0].strip().split()[0] if tone else ""
         part = f"{em} {name} — {rank}"
         if tone_word:

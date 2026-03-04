@@ -1,0 +1,23 @@
+{
+  "dialogue_log": {
+    "-1001758892482": {
+      "2026-03-04": [
+        {
+          "sender_id": 8573785901,
+          "text": "тех спринты как варик",
+          "reply_to_user_id": null,
+          "sender_name": "Ivan"
+        },
+        {
+          "sender_id": 8573785901,
+          "text": "иногда выбивал",
+          "reply_to_user_id": null,
+          "sender_name": "Ivan"
+        }
+      ]
+    }
+  },
+  "processed_dates": {},
+  "connections": {},
+  "last_processed_date": null
+}

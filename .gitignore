@@ -1,5 +1,11 @@
 .env
 venv/
+restart_bot.flag
+question_of_day_send.json
+question_of_day_tracking.json
+bot_last_start.json
+bot_debug.log
+reset_political_count.json
 __pycache__/
 *.pyc
 .venv/

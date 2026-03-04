@@ -6,7 +6,8 @@
 
 import json
 import logging
-from datetime import date, datetime, timedelta
+import tempfile
+from datetime import date, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,7 @@ def _load() -> dict:
         data.setdefault("dialogue_log", {})
         data.setdefault("processed_dates", {})
         data.setdefault("connections", {})
+        data.setdefault(LAST_PROCESSED_KEY, None)
         return data
     except Exception as e:
         logger.warning("Не удалось загрузить social_graph: %s", e)
@@ -36,7 +38,11 @@ def _load() -> dict:
 def _save(data: dict) -> None:
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        GRAPH_JSON.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", dir=DATA_DIR) as tmp:
+            tmp.write(payload)
+            tmp_path = Path(tmp.name)
+        tmp_path.replace(GRAPH_JSON)
     except Exception as e:
         logger.warning("Не удалось сохранить social_graph: %s", e)
 

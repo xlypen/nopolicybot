@@ -4,6 +4,7 @@
 
 import json
 import time
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -85,7 +86,11 @@ def _load() -> dict:
 def _save(data: dict) -> None:
     try:
         SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        SETTINGS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", dir=SETTINGS_PATH.parent) as tmp:
+            tmp.write(payload)
+            tmp_path = Path(tmp.name)
+        tmp_path.replace(SETTINGS_PATH)
     except Exception:
         pass
 

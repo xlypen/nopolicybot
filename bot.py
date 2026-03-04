@@ -6,12 +6,11 @@ Telegram-бот: следит за диалогом и делает замеча
 import asyncio
 import json
 import os
-import re
 import sys
 import logging
 import random
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from html import escape
 from io import BytesIO
 from pathlib import Path
@@ -28,6 +27,7 @@ from ai_analyzer import (
     analyze_messages,
     analyze_image,
     analyze_message_for_reply,
+    should_pause_dialog,
     analyze_batch_style,
     generate_rude_reply,
     generate_kind_reply,
@@ -44,6 +44,11 @@ import user_stats
 import bot_settings
 import qod_tracking
 import social_graph
+from handlers.chat_moderation import append_social_dialogue
+from handlers.direct_reply import build_reply_context_with_images
+from services.reactions import pick_allowed_emoji, set_photo_reaction
+from services.schedulers import restart_checker, social_graph_daily_task
+from utils.text_formatting import capitalize_sentences, reply_text_to_html, strip_leading_name
 
 
 def _load_env():
@@ -107,6 +112,7 @@ _chat_style: dict[int, str] = {}  # "moderate" | "active" | "beast"
 _chat_style_updated_at: dict[int, float] = {}
 _chat_first_remark_done: dict[int, bool] = {}
 _chat_last_praise_date: dict[int, str] = {}
+_dm_silence_until: dict[int, float] = {}  # user_id -> monotonic ts
 
 
 def _apply_reset_political_count(chat_id: int) -> bool:
@@ -350,91 +356,11 @@ async def _update_portrait_background(user_id: int, display_name: str) -> None:
         logger.debug("Фоновое обновление портрета %s: %s", user_id, e)
 
 
-def _capitalize_sentences(text: str) -> str:
-    """Второе и каждое последующее предложение начинается с большой буквы."""
-    if not text or len(text) < 2:
-        return text
-    result = []
-    capitalize_next = False
-    for ch in text:
-        if capitalize_next and ch.isalpha():
-            result.append(ch.upper())
-            capitalize_next = False
-        else:
-            result.append(ch)
-            if ch in ".!?":
-                capitalize_next = True
-    return "".join(result)
-
-
-def _reply_text_to_html(text: str) -> str:
-    """
-    Конвертирует markdown-блоки ``` в HTML для Telegram (parse_mode=HTML).
-    Код внутри блоков — в <pre><code>...</code></pre>, остальной текст — escaped.
-    """
-    if not text or not text.strip():
-        return ""
-    result = []
-    last_end = 0
-    # Блоки ```lang?\n...\n```
-    for m in re.finditer(r"```(\w*)\n(.*?)```", text, re.DOTALL):
-        before = text[last_end : m.start()]
-        if before:
-            result.append(escape(before))
-        code = m.group(2).rstrip()
-        code_escaped = escape(code)
-        result.append(f"<pre><code>{code_escaped}</code></pre>")
-        last_end = m.end()
-    if last_end < len(text):
-        result.append(escape(text[last_end:]))
-    return "".join(result)
-
-
 def _get_history_lines(chat_id: int) -> list[tuple[str, str]]:
     """Последние сообщения чата для пачки в ИИ."""
     if chat_id not in CHAT_HISTORY or not CHAT_HISTORY[chat_id]:
         return []
     return list(CHAT_HISTORY[chat_id])
-
-
-def _sanitize_reaction_emoji(emoji: str | None, fallback: str = "👍") -> str:
-    """Возвращает эмодзи, разрешённый Telegram для реакций, иначе fallback."""
-    if emoji and emoji.strip() in _ALLOWED_REACTION_EMOJI:
-        return emoji.strip()
-    return fallback
-
-
-def _pick_allowed_emoji(candidates: list[str], fallback: str = "👍") -> str:
-    """Выбирает случайный эмодзи из списка, оставляя только разрешённые Telegram."""
-    allowed = [e for e in candidates if e and e.strip() in _ALLOWED_REACTION_EMOJI]
-    return random.choice(allowed) if allowed else fallback
-
-
-async def _set_photo_reaction(bot: Bot, chat_id: int, message_id: int, emoji: str) -> None:
-    """Ставит контекстную реакцию на фото с небольшой задержкой."""
-    emoji = _sanitize_reaction_emoji(emoji)
-    await asyncio.sleep(random.uniform(1.0, 3.0))
-    try:
-        await bot.set_message_reaction(
-            chat_id=chat_id,
-            message_id=message_id,
-            reaction=[ReactionTypeEmoji(emoji=emoji)],
-        )
-        logger.info("Чат %s: реакция на фото %s", chat_id, emoji)
-        _debug_log("PHOTO_REACTION", chat_id=chat_id, detail=emoji)
-    except Exception as e:
-        if "REACTION_INVALID" in str(e):
-            try:
-                await bot.set_message_reaction(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    reaction=[ReactionTypeEmoji(emoji="👍")],
-                )
-                logger.info("Чат %s: реакция на фото (fallback 👍): %s", chat_id, e)
-            except Exception:
-                logger.warning("Реакция на фото не поставлена: %s", e)
-        else:
-            logger.warning("Реакция на фото не поставлена: %s", e)
 
 
 async def _maybe_spontaneous_reaction(bot: Bot, chat_id: int, message_id: int) -> None:
@@ -457,7 +383,7 @@ async def _maybe_spontaneous_reaction(bot: Bot, chat_id: int, message_id: int) -
             logger.info("[чат %s] Спонтанная: не подходит (полит=%s, sentiment=%s)", chat_id, is_political, sentiment)
             return
         emojis = bot_settings.get_list("spontaneous_emojis") or ["👍"]
-        emoji = _pick_allowed_emoji(emojis, "👍")
+        emoji = pick_allowed_emoji(emojis, _ALLOWED_REACTION_EMOJI, "👍")
         await bot.set_message_reaction(
             chat_id=chat_id,
             message_id=message_id,
@@ -524,7 +450,7 @@ async def _run_batch_analysis(
                 if _chat_last_praise_date.get(chat_id) != today:
                     _chat_last_praise_date[chat_id] = today
                     try:
-                        msg = _capitalize_sentences(random.choice(NO_POLITICS_PRAISE))
+                        msg = capitalize_sentences(random.choice(NO_POLITICS_PRAISE))
                         await bot.send_message(chat_id=chat_id, text=msg)
                         logger.info("Чат %s: похвала «без политики» (1 раз в день)", chat_id)
                     except Exception as e:
@@ -618,7 +544,7 @@ async def _run_batch_analysis(
         neg = bot_settings.get_list("reactions_1_5_negative_emoji", chat_id) or ["👎"]
         neu = bot_settings.get_list("reactions_1_5_neutral_emoji", chat_id) or ["🤔"]
         all_emojis = list(dict.fromkeys(pos + neg + neu)) or ["🤔"]
-        emoji = _pick_allowed_emoji(all_emojis, "👍")
+        emoji = pick_allowed_emoji(all_emojis, _ALLOWED_REACTION_EMOJI, "👍")
         try:
             await bot.set_message_reaction(
                 chat_id=chat_id,
@@ -653,7 +579,7 @@ async def _run_batch_analysis(
             if not msg and enc_style == "personalized":
                 msg = random.choice(ENCOURAGE_LOYAL).format(name=initiator_name)
             if msg:
-                msg = _capitalize_sentences(msg)
+                msg = capitalize_sentences(msg)
                 await bot.send_message(chat_id=chat_id, text=msg, reply_to_message_id=reply_to_message_id)
                 logger.info("Чат %s: поощрение (позитив к президенту РФ)", chat_id)
                 _debug_log("ENCOURAGEMENT", chat_id=chat_id, user=initiator_name, detail="позитив к президенту")
@@ -691,7 +617,7 @@ async def _run_batch_analysis(
         body = f"{PATIENCE_PHRASE}\n{body}"
         _chat_first_remark_done[chat_id] = True
 
-    body = _capitalize_sentences(body)
+    body = capitalize_sentences(body)
     try:
         await bot.send_message(chat_id=chat_id, text=body, reply_to_message_id=reply_to_message_id)
         if initiator_user_id is not None:
@@ -723,24 +649,7 @@ async def check_and_reply(message: Message) -> None:
         chat_title=(message.chat.title or "") if message.chat else "",
     )
 
-    reply_to = message.reply_to_message
-
-    # Лог диалогов для дерева связей (только группы, не от ботов)
-    if message.chat and message.chat.type in ("group", "supergroup") and not message.from_user.is_bot:
-        reply_to_user_id = None
-        if reply_to and reply_to.from_user and not getattr(reply_to.from_user, "is_bot", True):
-            reply_to_user_id = reply_to.from_user.id
-        try:
-            social_graph.append_dialogue_message(
-                chat_id=chat_id,
-                sender_id=message.from_user.id,
-                text=display_text,
-                reply_to_user_id=reply_to_user_id,
-                sender_name=first_name,
-                chat_title=(message.chat.title or "") if message.chat else "",
-            )
-        except Exception as e:
-            logger.debug("social_graph append: %s", e)
+    append_social_dialogue(message, chat_id, first_name, display_text, social_graph, logger)
 
     spont_chance = bot_settings.get_float("spontaneous_check_chance", chat_id, 0.01, 1)
     if (
@@ -784,7 +693,17 @@ async def check_and_reply(message: Message) -> None:
                     )
                 if image_result and len(image_result) >= 7 and bot_settings.get("reactions_on_photos") and not is_analysis_screenshot:
                     emoji = image_result[6]
-                    asyncio.create_task(_set_photo_reaction(message.bot, chat_id, message.message_id, emoji))
+                    asyncio.create_task(
+                        set_photo_reaction(
+                            message.bot,
+                            chat_id,
+                            message.message_id,
+                            emoji,
+                            allowed=_ALLOWED_REACTION_EMOJI,
+                            logger=logger,
+                            debug_log=_debug_log,
+                        )
+                    )
                     logger.info("[чат %s] Запланирована реакция на фото: %s", chat_id, emoji)
         except Exception as e:
             logger.warning("Ошибка анализа изображения: %s", e)
@@ -890,9 +809,11 @@ async def on_message_to_bot(message: Message) -> None:
         chat_title=(message.chat.title or "") if message.chat else "",
     )
 
-    # Тег пользователя, чтобы он получил уведомление (tg://user?id=...)
     user_id = message.from_user.id
-    mention = f'<a href="tg://user?id={user_id}">{escape(first_name)}</a>'
+    now_mono = time.monotonic()
+    if _dm_silence_until.get(user_id, 0) > now_mono:
+        logger.info("Чат %s: пользователь %s в паузе диалога (ignore)", chat_id, first_name)
+        return
 
     context = get_recent_context(chat_id)
     try:
@@ -918,30 +839,12 @@ async def on_message_to_bot(message: Message) -> None:
                     None,
                     lambda: generate_engaging_reply_to_question_of_day(qod_question, text, first_name),
                 )
-                reply_clean = reply_text.strip()
-                # Убираем дубль имени — в сообщении только тег (упоминание)
-                names_to_strip = [first_name]
-                if user_name and user_name != first_name:
-                    names_to_strip.append(user_name)
-                while True:
-                    changed = False
-                    for name in names_to_strip:
-                        for sep in (",", "!", " ", ":", "，"):
-                            prefix = name + sep
-                            if reply_clean.lower().startswith(prefix.lower()):
-                                reply_clean = reply_clean[len(prefix):].strip()
-                                changed = True
-                                break
-                        if changed:
-                            break
-                    if not changed:
-                        break
-                reply_clean = _capitalize_sentences(reply_clean)
+                reply_clean = strip_leading_name(reply_text, first_name, user_name)
+                reply_clean = capitalize_sentences(reply_clean)
                 if reply_clean and reply_clean[0].isupper():
                     reply_clean = reply_clean[0].lower() + reply_clean[1:]
-                body_html = _reply_text_to_html(reply_clean) if reply_clean else ""
-                text_with_mention = f"{mention}, {body_html}" if body_html else mention
-                await message.reply(text_with_mention, parse_mode="HTML")
+                body_html = reply_text_to_html(reply_clean) if reply_clean else ""
+                await message.reply(body_html or "понял.", parse_mode="HTML")
                 logger.info("Чат %s: участливый ответ на вопрос дня пользователю %s", chat_id, first_name)
                 _debug_log("QOD_ENGAGING", chat_id=chat_id, user=first_name, detail="ответ на вопрос дня")
                 asyncio.create_task(_update_portrait_background(user_id, first_name))
@@ -949,6 +852,16 @@ async def on_message_to_bot(message: Message) -> None:
             # Иначе — «и так сойдёт»: не отвечаем
             logger.info("Чат %s: ответ на вопрос дня от %s — без участливости (короткий/не по теме/грубый)", chat_id, first_name)
             _debug_log("QOD_SKIP", chat_id=chat_id, user=first_name, detail="и так сойдёт")
+            return
+
+        # Если пользователь явно не хочет общаться — жёстко отвечаем и ставим паузу 3 минуты.
+        pause_context = (context or "") + "\n" + f"{first_name}: {display_text}"
+        need_pause = await loop.run_in_executor(None, lambda: should_pause_dialog(pause_context))
+        if need_pause:
+            await message.reply("пошел нахуй.")
+            _dm_silence_until[user_id] = time.monotonic() + 180
+            logger.info("Чат %s: включена пауза диалога 3 мин для %s", chat_id, first_name)
+            _debug_log("DM_PAUSE", chat_id=chat_id, user=first_name, detail="3min")
             return
         # Портрет — быстрый путь без вызова ИИ (обновления в фоне после ответа)
         portrait = await loop.run_in_executor(
@@ -990,13 +903,10 @@ async def on_message_to_bot(message: Message) -> None:
             sentiment == "positive"
             or (not contains_political_keyword(display_text) and is_likely_friendly(display_text))
         )
-        images_memory = user_stats.format_images_archive_for_context(user_id)
-        reply_context = context or "(нет контекста)"
-        if images_memory:
-            reply_context = images_memory + "\n\n---\nДиалог:\n" + reply_context
+        reply_context = build_reply_context_with_images(context, user_id)
         reply_input = display_text
         if is_positive and bot_settings.get("reply_kind_enabled"):
-            user_stats.record_message(user_id, reply_input, "positive", is_political or True, first_name)
+            user_stats.record_message(user_id, reply_input, "positive", is_political, first_name)
             reply_text = await loop.run_in_executor(
                 None,
                 lambda: generate_kind_reply(reply_context, reply_input, first_name, user_portrait=portrait or ""),
@@ -1027,29 +937,12 @@ async def on_message_to_bot(message: Message) -> None:
         else:
             reply_text = bot_settings.get("reply_fallback_on_error") or "сейчас не в настроении, напиши потом."
         # Убираем дубль имени/ника из начала ответа — в сообщении только тег (упоминание)
-        reply_clean = reply_text.strip()
-        names_to_strip = [first_name]
-        if user_name and user_name != first_name:
-            names_to_strip.append(user_name)
-        while True:
-            changed = False
-            for name in names_to_strip:
-                for sep in (",", "!", " ", ":", "，"):
-                    prefix = name + sep
-                    if reply_clean.lower().startswith(prefix.lower()):
-                        reply_clean = reply_clean[len(prefix):].strip()
-                        changed = True
-                        break
-                if changed:
-                    break
-            if not changed:
-                break
-        reply_clean = _capitalize_sentences(reply_clean)
+        reply_clean = strip_leading_name(reply_text, first_name, user_name)
+        reply_clean = capitalize_sentences(reply_clean)
         if reply_clean and reply_clean[0].isupper():
             reply_clean = reply_clean[0].lower() + reply_clean[1:]
-        body_html = _reply_text_to_html(reply_clean) if reply_clean else ""
-        text_with_mention = f"{mention}, {body_html}" if body_html else mention
-        await message.reply(text_with_mention, parse_mode="HTML")
+        body_html = reply_text_to_html(reply_clean) if reply_clean else ""
+        await message.reply(body_html or "понял.", parse_mode="HTML")
         logger.info("Чат %s: ответ пользователю %s", chat_id, first_name)
         reply_type = "kind" if is_positive else ("technical" if message_type == "technical_question" else ("substantive" if is_substantive else "rude"))
         _debug_log("DM_REPLY", chat_id=chat_id, user=first_name, detail=reply_type)
@@ -1061,11 +954,11 @@ async def on_message_to_bot(message: Message) -> None:
         else:
             logger.exception("Ошибка API ИИ при ответе: %s", e)
         fallback = bot_settings.get("reply_fallback_on_error") or "сейчас не в настроении, напиши потом."
-        await message.reply(f"{mention}, {fallback}", parse_mode="HTML")
+        await message.reply(fallback, parse_mode="HTML")
     except Exception as e:
         logger.exception("Ошибка при генерации ответа: %s", e)
         fallback = bot_settings.get("reply_fallback_on_error") or "сейчас не в настроении, напиши потом."
-        await message.reply(f"{mention}, {fallback}", parse_mode="HTML")
+        await message.reply(fallback, parse_mode="HTML")
 
 
 async def cmd_start(message: Message) -> None:
@@ -1218,37 +1111,6 @@ async def _question_of_day_scheduler(bot: Bot) -> None:
             await asyncio.sleep(jitter)
 
 
-async def _social_graph_daily_task() -> None:
-    """
-    Обрабатывает накопленные диалоги: саммари и обновление дерева связей.
-    Запускается при старте (догон пропущенных дней) и каждые 4 часа.
-    Если бот был выключен — при следующем запуске обработает все дни, по которым есть данные.
-    """
-    await asyncio.sleep(120)  # даём боту запуститься
-    while True:
-        try:
-            loop = asyncio.get_event_loop()
-            n = await loop.run_in_executor(None, social_graph.process_pending_days)
-            if n > 0:
-                logger.info("Дерево связей: обработано %s дней", n)
-        except Exception as e:
-            logger.warning("Ошибка обработки дерева связей: %s", e)
-        await asyncio.sleep(4 * 3600)  # каждые 4 часа
-
-
-async def _restart_checker() -> None:
-    """Проверяет флаг перезапуска (из админ-панели). При наличии — перезапуск процесса."""
-    while True:
-        await asyncio.sleep(30)
-        if RESTART_FLAG_PATH.exists():
-            try:
-                RESTART_FLAG_PATH.unlink()
-            except OSError:
-                pass
-            logger.info("Перезапуск бота по запросу из админ-панели")
-            os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve())] + sys.argv[1:])
-
-
 async def main() -> None:
     token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
     if not token or "вставьте" in token.lower() or "your_" in token.lower():
@@ -1284,9 +1146,9 @@ async def main() -> None:
 
     logger.info("Бот запущен. ИИ: %s", os.getenv("OPENAI_BASE_URL", "(не задан)"))
     _debug_log("SESSION_START", detail=f"ИИ={os.getenv('OPENAI_BASE_URL', '—')}")
-    asyncio.create_task(_restart_checker())
+    asyncio.create_task(restart_checker(RESTART_FLAG_PATH, logger))
     asyncio.create_task(_question_of_day_scheduler(bot))
-    asyncio.create_task(_social_graph_daily_task())
+    asyncio.create_task(social_graph_daily_task(social_graph.process_pending_days, logger))
     await dp.start_polling(bot)
 
 

@@ -31,6 +31,10 @@ pip install -r requirements.txt
    - `TELEGRAM_BOT_TOKEN` — токен от BotFather  
    - `OPENAI_API_KEY` — ключ API ИИ  
    - При необходимости: `OPENAI_BASE_URL`, `OPENAI_MODEL`
+   - Для мульти-модельных ответов бота (по обращениям к боту):  
+     `OPENAI_REPLY_MODELS=model1,model2,model3`  
+     Пример для OpenRouter:  
+     `OPENAI_REPLY_MODELS=stepfun/step-3.5-flash:free,google/gemini-2.0-flash-exp:free,openai/gpt-4o-mini`
 
 ## Запуск
 

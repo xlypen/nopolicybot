@@ -16,6 +16,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, redirect, Response, render_template_string, request, session, url_for
 from dotenv import load_dotenv
+from routes.social_graph_routes import register_social_graph_routes
 
 load_dotenv(Path(__file__).resolve().parent / ".env", encoding="utf-8-sig")
 
@@ -119,6 +120,9 @@ def login_required(f):
             return redirect(url_for("login"))
         return f(*args, **kwargs)
     return wrapped
+
+
+register_social_graph_routes(app, login_required)
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -639,43 +643,6 @@ def api_clear_images_archive():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-@app.route("/social-graph")
-@login_required
-def social_graph():
-    """Дерево связей пользователей: кто с кем общается, о чём."""
-    from social_graph import get_connections, get_chats_with_connections
-    from user_stats import get_user_display_names
-
-    chat_id = request.args.get("chat")
-    chat_id_int = int(chat_id) if chat_id and str(chat_id).lstrip("-").isdigit() else None
-    connections = get_connections(chat_id_int)
-    chats = get_chats_with_connections()
-    names = get_user_display_names()
-
-    for conn in connections:
-        conn["name_a"] = names.get(str(conn.get("user_a", "")), str(conn.get("user_a", "")))
-        conn["name_b"] = names.get(str(conn.get("user_b", "")), str(conn.get("user_b", "")))
-
-    return render_template_string(
-        SOCIAL_GRAPH_HTML,
-        connections=connections,
-        chats=chats,
-        current_chat=chat_id or "",
-    )
-
-
-@app.route("/api/process-social-graph", methods=["POST"])
-@login_required
-def api_process_social_graph():
-    """Запустить обработку накопленных диалогов (саммари, обновление связей)."""
-    try:
-        from social_graph import process_pending_days
-        n = process_pending_days()
-        return jsonify({"ok": True, "processed": n})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
 @app.route("/api/clear-archive", methods=["POST"])
 @login_required
 def api_clear_archive():
@@ -855,85 +822,6 @@ else location.reload();
 });
 })();
 {% endif %}
-</script>
-</body>
-</html>
-"""
-
-SOCIAL_GRAPH_HTML = """
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Дерево связей — Админ</title>
-<style>
-*{box-sizing:border-box}
-body{font-family:'Segoe UI',system-ui,sans-serif;margin:0;padding:1.5rem;background:#1a1a2e;color:#eee}
-a{color:#e94560;text-decoration:none}a:hover{text-decoration:underline}
-.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;flex-wrap:wrap;gap:1rem}
-h1{margin:0;font-size:1.5rem}
-.btn{display:inline-block;padding:0.5rem 1rem;background:#e94560;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:0.9rem}
-.btn:hover{background:#ff6b6b}
-.btn-sm{padding:0.35rem 0.65rem;font-size:0.8rem}
-.btn-secondary{background:#0f3460}.btn-secondary:hover{background:#1a2a4a}
-.card{background:#16213e;padding:1rem;border-radius:10px;margin-bottom:1rem}
-.card h2{margin:0 0 0.5rem;font-size:1rem;color:#888}
-.connection{display:flex;align-items:flex-start;gap:1rem;padding:0.75rem;background:#0f3460;border-radius:8px;margin-bottom:0.5rem}
-.connection-users{font-weight:600;white-space:nowrap;color:#4ade80}
-.connection-summary{font-size:0.9rem;color:#ccc;max-width:600px;white-space:pre-wrap}
-.connection-meta{font-size:0.8rem;color:#666}
-.tabs{display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem}
-.tab{padding:0.5rem 1rem;background:#16213e;border-radius:8px;color:#eee;text-decoration:none}
-.tab.active{background:#e94560}
-</style>
-</head>
-<body>
-<div class="header">
-<h1>Дерево связей</h1>
-<div style="display:flex;gap:0.5rem;align-items:center;">
-<a href="{{ url_for('index') }}" class="btn btn-secondary">← Назад</a>
-<button type="button" class="btn btn-sm" id="btn-process" style="background:#0f3460;">Обработать накопленные диалоги</button>
-<span id="process-result" style="font-size:0.85rem;margin-left:0.5rem;"></span>
-</div>
-</div>
-<p style="color:#888;font-size:0.9rem;margin-bottom:1rem;">
-Связи строятся по reply-to: кто кому отвечает. Раз в день (или по кнопке) диалоги суммируются через ИИ.</p>
-<div class="tabs">
-<a href="{{ url_for('social_graph') }}" class="tab {% if not current_chat %}active{% endif %}">Все чаты</a>
-{% for c in chats %}
-<a href="{{ url_for('social_graph', chat=c['chat_id']) }}" class="tab {% if current_chat == c['chat_id']|string %}active{% endif %}">{{ (c['title'] or c['chat_id'])[:25] }}{% if (c['title'] or c['chat_id'])|length > 25 %}…{% endif %}</a>
-{% endfor %}
-</div>
-{% if connections %}
-<div class="card">
-<h2>Связи ({{ connections|length }})</h2>
-{% for conn in connections %}
-<div class="connection">
-<div>
-<div class="connection-users">{{ conn.name_a }} ↔ {{ conn.name_b }}</div>
-<div class="connection-meta">ID: {{ conn.user_a }} / {{ conn.user_b }} · сообщений: {{ conn.message_count }} · обновлено: {{ conn.last_updated }}</div>
-</div>
-<div class="connection-summary">{{ conn.summary or '—' }}</div>
-</div>
-{% endfor %}
-</div>
-{% else %}
-<div class="card">
-<p style="color:#888;">Связей пока нет. Диалоги накапливаются по мере общения в чате (reply-to). Обработка — раз в 4 часа или по кнопке.</p>
-</div>
-{% endif %}
-<script>
-document.getElementById('btn-process').onclick=function(){
-var btn=this, span=document.getElementById('process-result');
-btn.disabled=true; span.textContent='…'; span.style.color='#aaa';
-fetch('{{ url_for("api_process_social_graph") }}',{method:'POST',headers:{'Content-Type':'application/json'}})
-.then(function(r){return r.json();})
-.then(function(d){
-if(d.ok){span.textContent='Обработано дней: '+d.processed;span.style.color='#4ade80';if(d.processed>0)setTimeout(function(){location.reload()},1500)}
-else{span.textContent=d.error||'Ошибка';span.style.color='#e94560';}
-btn.disabled=false;
-}).catch(function(){span.textContent='Ошибка сети';span.style.color='#e94560';btn.disabled=false;});
-};
 </script>
 </body>
 </html>

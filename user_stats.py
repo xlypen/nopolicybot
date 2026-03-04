@@ -7,6 +7,7 @@
 
 import json
 import logging
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -68,7 +69,7 @@ def _load() -> dict:
             data["users"] = {}
         if "chats" not in data:
             data["chats"] = {}
-        if _migrate_question_of_day(data) or _migrate_images_archive(data):
+        if _apply_migrations(data):
             _save(data)
         return data
     except Exception as e:
@@ -79,9 +80,21 @@ def _load() -> dict:
 def _save(data: dict) -> None:
     try:
         USERS_JSON.parent.mkdir(parents=True, exist_ok=True)
-        USERS_JSON.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", dir=USERS_JSON.parent) as tmp:
+            tmp.write(payload)
+            tmp_path = Path(tmp.name)
+        tmp_path.replace(USERS_JSON)
     except Exception as e:
         logger.exception("Не удалось сохранить user_stats: %s", e)
+
+
+def _apply_migrations(data: dict) -> bool:
+    """Единая точка миграций схемы user_stats.json."""
+    modified = False
+    modified = _migrate_question_of_day(data) or modified
+    modified = _migrate_images_archive(data) or modified
+    return modified
 
 
 def _default_user(user_id: int, display_name: str = "") -> dict:

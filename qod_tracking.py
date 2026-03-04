@@ -4,6 +4,7 @@
 """
 
 import json
+import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -23,7 +24,12 @@ def load() -> dict:
 def save(data: dict) -> None:
     """Сохраняет трекинг вопросов дня."""
     try:
-        TRACKING_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=0), encoding="utf-8")
+        TRACKING_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(data, ensure_ascii=False, indent=0)
+        with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", dir=TRACKING_PATH.parent) as tmp:
+            tmp.write(payload)
+            tmp_path = Path(tmp.name)
+        tmp_path.replace(TRACKING_PATH)
     except Exception:
         pass
 

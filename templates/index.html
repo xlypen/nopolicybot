@@ -5,7 +5,7 @@
 .rank{font-size:1.1rem}
 .portrait{font-size:0.85rem;color:#aaa;max-width:400px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .user-cell{display:flex;align-items:center;gap:0.5rem}
-.digest-box{margin-top:0.6rem;padding:0.7rem;background:var(--bg-input);border:1px solid var(--border-card);border-radius:8px;white-space:pre-wrap;font-size:0.86rem;color:#d4e5ff}
+.digest-box{margin-top:0.6rem;padding:0.7rem;background:var(--bg-input);border:1px solid var(--border-card);border-radius:8px;font-size:0.86rem;color:#d4e5ff}
 </style>
 {% endblock %}
 {% block body %}
@@ -61,7 +61,7 @@ setTimeout(function(){document.getElementById('restart-msg').style.display='none
 <span class="text-sm text-muted">Можно свернуть, чтобы не мешал обзору.</span>
 <button type="button" class="btn btn-sm btn-secondary" id="btn-refresh-digest">Обновить дайджест</button>
 </div>
-<div id="chat-digest-preview" class="digest-box">{{ digest_preview or 'Данных пока недостаточно для дайджеста.' }}</div>
+<div id="chat-digest-preview" class="digest-box">{{ digest_preview|safe if digest_preview else 'Данных пока недостаточно для дайджеста.' }}</div>
 </details>
 {% endif %}
 <div class="cards">
@@ -147,10 +147,10 @@ apiFetch('{{ url_for("api_reset_political_count") }}',{method:'POST',body:{chat_
 document.getElementById('btn-refresh-digest').onclick=function(){
 var btn=this, out=document.getElementById('chat-digest-preview');
 btn.disabled=true;
-out.textContent='Обновляю дайджест…';
+out.innerHTML='<span style="color:var(--text-muted);">Обновляю дайджест…</span>';
 apiFetch('{{ url_for("api_chat_digest_preview", chat_id=current_chat) }}')
-.then(function(d){out.textContent=d.digest||'Данных пока недостаточно для дайджеста.';btn.disabled=false})
-.catch(function(e){out.textContent=e.message||'Ошибка';btn.disabled=false});
+.then(function(d){out.innerHTML=d.digest||'Данных пока недостаточно для дайджеста.';btn.disabled=false})
+.catch(function(e){out.innerHTML='<span style="color:var(--color-danger);">'+(e.message||'Ошибка')+'</span>';btn.disabled=false});
 };
 {% endif %}
 </script>

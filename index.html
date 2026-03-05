@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>nopolicybot — умный политмонитор для Telegram</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;background:#0f172a;color:#e5e7eb;line-height:1.5;padding:2.5rem 1.5rem;max-width:960px;margin:0 auto}
+    a{color:#f97316;text-decoration:none}a:hover{text-decoration:underline}
+    h1{font-size:2rem;margin-bottom:0.75rem}
+    h2{font-size:1.25rem;margin:2rem 0 0.75rem}
+    p{margin:0.25rem 0 0.35rem}
+    .lead{font-size:1.02rem;color:#e5e7eb;max-width:680px;margin-bottom:1.2rem}
+    .muted{color:#9ca3af;font-size:0.9rem}
+    .badge{display:inline-block;padding:0.18rem 0.5rem;border-radius:999px;font-size:0.78rem;background:#111827;border:1px solid #1f2937;margin-right:0.25rem;color:#e5e7eb}
+    .btn-row{display:flex;flex-wrap:wrap;gap:0.5rem;margin:1.1rem 0 1.6rem}
+    .btn{display:inline-block;padding:0.55rem 1.1rem;border-radius:999px;border:none;cursor:pointer;font-size:0.9rem}
+    .btn-primary{background:#f97316;color:#111827;font-weight:600}
+    .btn-secondary{background:#111827;color:#e5e7eb;border:1px solid #1f2937}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem;margin-top:0.5rem}
+    .card{background:#020617;border-radius:0.9rem;border:1px solid #1f2937;padding:0.9rem 1rem}
+    .card h3{margin:0 0 0.4rem;font-size:1rem}
+    .card p{font-size:0.9rem;color:#d1d5db}
+    ul{margin:0.35rem 0 0.35rem 1.1rem;font-size:0.9rem;color:#d1d5db}
+    li+li{margin-top:0.2rem}
+    .small{font-size:0.86rem}
+    @media (max-width:640px){
+      body{padding:1.75rem 1rem}
+      h1{font-size:1.6rem}
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="badge">Telegram‑бот</span>
+    <span class="badge">ИИ‑модерация</span>
+    <span class="badge">Социальный граф</span>
+    <h1>nopolicybot — умный политмонитор для чатов</h1>
+    <p class="lead">
+      Бот, который замечает политические срачи и токсичность, ведёт себя как живой язвительный собеседник
+      и строит дерево связей между участниками, чтобы админ видел, что на самом деле происходит в чате.
+    </p>
+    <p class="muted small">Для закрытых сообществ и чувствительных чатов, где важны и свобода общения, и безопасность.</p>
+    <div class="btn-row">
+      <button class="btn btn-primary">Добавить бота в чат</button>
+      <a href="https://github.com/xlypen/nopolicybot" class="btn btn-secondary">Исходники на GitHub</a>
+    </div>
+  </header>
+
+  <section>
+    <h2>Что умеет бот</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>1. Держит политику под контролем</h3>
+        <ul>
+          <li>Анализирует текст и изображения на политический и токсичный контент.</li>
+          <li>Реагирует лайками, жёсткими замечаниями или молчанием — по твоим настройкам.</li>
+          <li>Защищён от спама замечаниями: интервалы, счётчики, режим «через раз» и «зверь».</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>2. Отвечает как живой человек</h3>
+        <ul>
+          <li>Добрым отвечает доброжелательно, троллей троллит.</li>
+          <li>Может послать «по делу» и уйти в игнор на несколько минут.</li>
+          <li>Запоминает историю общения и меняет тон: от спокойного до откровенно злого.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>3. Строит дерево связей</h3>
+        <ul>
+          <li>Понимает, кто с кем общается, на какие темы и в каком тоне.</li>
+          <li>Показывает граф с аватарками и линиями, толщиной по силе связи.</li>
+          <li>Даёт краткий разбор по человеку: топ‑связи, темы, риск конфликтов.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Админ‑панель: живые отчёты, а не сухие таблицы</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>Главная</h3>
+        <p>Сводка по чату: пользователи, политсообщения, предупреждения и читабельный дайджест за период.</p>
+      </div>
+      <div class="card">
+        <h3>Профиль участника</h3>
+        <p>Портрет, архив сообщений и картинок, настройка «настроения к боту», личный вопрос дня и объяснение решений бота.</p>
+      </div>
+      <div class="card">
+        <h3>Дерево связей</h3>
+        <p>Граф + список связей с фильтрами по периоду, весу, темам, алертам, прогноз эскалации конфликтов и роли (связующий, эксперт и др.).</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Зачем это нужно</h2>
+    <ul>
+      <li><strong>Закрытым политически чувствительным чатам</strong> — чтобы дискуссии не превращались в токсичный шлак.</li>
+      <li><strong>Сообществам вокруг лидеров мнений</strong> — чтобы видеть, кто сплачивает людей, а кто поджигает конфликты.</li>
+      <li><strong>Редакциям и комьюнити‑менеджерам</strong> — для аккуратного мониторинга тем и настроений без отдельной команды аналитиков.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Как попробовать</h2>
+    <p>Проект открыт на GitHub: вы можете развернуть бота у себя, настроить под свой чат и доработать логику под свои правила.</p>
+    <p class="muted small">Исходники и инструкция по запуску: <a href="https://github.com/xlypen/nopolicybot">github.com/xlypen/nopolicybot</a></p>
+  </section>
+</body>
+</html>
+

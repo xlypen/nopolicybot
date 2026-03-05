@@ -6,7 +6,6 @@
 .filters label{font-size:0.82rem;color:var(--text-secondary);display:flex;flex-direction:column;gap:0.25rem}
 .filters .check{flex-direction:row;align-items:center;gap:0.4rem}
 .filters select,.filters input{background:var(--bg-input);border:1px solid var(--border-input);color:#e6eefb;padding:0.35rem 0.5rem;border-radius:7px}
-.connection{display:grid;grid-template-columns:minmax(260px,330px) 1fr;gap:1rem;padding:1rem;background:#0f3460;border-radius:10px;margin-bottom:0.65rem;align-items:start;border:1px solid #17406c}
 .connection-users{font-weight:700;white-space:normal;word-break:break-word;color:#4ade80}
 .connection-summary{font-size:1rem;color:#dbe7ff;white-space:normal;word-break:break-word;line-height:1.6}
 .connection-summary-full{margin-top:0.5rem;padding:0.6rem;background:#0b2a4f;border:1px solid #1a3d6b;border-radius:8px;max-height:280px;overflow:auto}
@@ -35,9 +34,21 @@
 .list-mode-btn.active{background:#e94560;border-color:#e94560;color:#fff}
 .list-note{font-size:0.82rem;color:#9bb0cf}
 .empty-state{padding:0.8rem;border-radius:8px;background:#0f3460;border:1px dashed #2d5b91;color:#b6cae6;font-size:0.9rem}
-.list-compact .activity-strip,.list-compact .freshness,.list-compact .history,.list-compact .summary-more{display:none}
-.list-compact .connection{grid-template-columns:minmax(220px,280px) 1fr;padding:0.75rem}
-.list-compact .connection-summary{font-size:0.92rem;line-height:1.45}
+.conn-tile{display:none}
+.conn-full{display:grid;grid-template-columns:minmax(260px,330px) 1fr;gap:1rem;padding:1rem;background:#0f3460;border-radius:10px;margin-bottom:0.65rem;align-items:start;border:1px solid #17406c}
+.list-compact #connections-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:0.5rem}
+.list-compact .conn-tile{display:block}
+.list-compact .conn-full{display:none}
+.list-compact .conn-card{background:#0f3460;border:1px solid #1e446f;border-radius:10px;overflow:hidden;cursor:pointer;transition:border-color .15s}
+.list-compact .conn-card:hover{border-color:#4ade80}
+.list-compact .conn-card-head{padding:0.6rem 0.7rem}
+.list-compact .conn-card-head .connection-users{font-size:0.88rem;margin-bottom:0.2rem}
+.list-compact .conn-card-metrics{display:flex;gap:0.45rem;flex-wrap:wrap;font-size:0.74rem;color:#9db4d1;margin-bottom:0.15rem}
+.list-compact .conn-card-metrics b{color:#e8f2ff}
+.list-compact .conn-card-sum{padding:0 0.7rem 0.45rem;font-size:0.8rem;color:#c3d6ee;line-height:1.35;max-height:2.7em;overflow:hidden}
+.list-compact .conn-card-badges{padding:0 0.7rem 0.5rem;display:flex;gap:0.22rem;flex-wrap:wrap}
+.list-compact .conn-card-detail{display:none;padding:0.55rem 0.7rem;border-top:1px solid #1e446f;background:#0b2a4f}
+.list-compact .conn-card.open .conn-card-detail{display:block}
 .tabs{display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem}
 .tab{padding:0.5rem 1rem;background:#16213e;border-radius:8px;color:#eee;text-decoration:none}
 .tab.active{background:#e94560}
@@ -335,49 +346,81 @@
   data-sort-freshness="{{ conn.sort_freshness }}"
   data-sort-confidence="{{ conn.sort_confidence }}"
   data-sort-risk="{{ conn.sort_risk }}">
-<div>
-<div class="connection-users">{{ conn.name_a }} ↔ {{ conn.name_b }}</div>
-<div class="connection-meta">ID: {{ conn.user_a }} / {{ conn.user_b }} · вес({{ period }}): {{ conn.weight_in_period }} · всего: {{ conn.message_count_total }} · тренд: {{ conn.trend_delta }} · обновлено: {{ conn.last_updated }}</div>
-<div class="activity-strip">
-  <div class="mini-stat"><span class="k">24ч</span><span class="v">{{ conn.message_count_24h }}</span></div>
-  <div class="mini-stat"><span class="k">7д</span><span class="v">{{ conn.message_count_7d }}</span></div>
-  <div class="mini-stat"><span class="k">30д</span><span class="v">{{ conn.message_count_30d }}</span></div>
+
+<div class="conn-tile">
+<div class="conn-card">
+  <div class="conn-card-head">
+    <div class="connection-users">{{ conn.name_a }} ↔ {{ conn.name_b }}</div>
+    <div class="conn-card-metrics">
+      <span>{{ period }}: <b>{{ conn.weight_in_period }}</b></span>
+      <span>7д: <b>{{ conn.message_count_7d }}</b></span>
+      <span>{{ conn.tone_label }}</span>
+      {% if conn.alert_flags_label %}<span style="color:#ffd6dc;">{{ conn.alert_flags_label[0] }}</span>{% endif %}
+    </div>
+  </div>
+  <div class="conn-card-sum">{{ conn.summary_preview or '—' }}</div>
+  {% if advanced_enabled %}
+  <div class="conn-card-badges">
+    {% for t in conn.topics_label %}<span class="badge good">{{ t }}</span>{% endfor %}
+    {% if conn.confidence_pct %}<span class="badge dim">{{ conn.confidence_pct }}%</span>{% endif %}
+  </div>
+  {% endif %}
+  <div class="conn-card-detail">
+    <div class="connection-meta">ID: {{ conn.user_a }} / {{ conn.user_b }} · всего: {{ conn.message_count_total }} · тренд: {{ conn.trend_delta }}</div>
+    <div class="activity-strip">
+      <div class="mini-stat"><span class="k">24ч</span><span class="v">{{ conn.message_count_24h }}</span></div>
+      <div class="mini-stat"><span class="k">7д</span><span class="v">{{ conn.message_count_7d }}</span></div>
+      <div class="mini-stat"><span class="k">30д</span><span class="v">{{ conn.message_count_30d }}</span></div>
+    </div>
+    <div class="freshness">Первая: {{ conn.first_seen_label }} · Последняя: {{ conn.last_seen_label }}{% if conn.days_since_last is not none %} · {{ conn.days_since_last }} дн. назад{% endif %}</div>
+    {% if advanced_enabled %}
+    <div class="badges" style="margin-top:0.35rem;">
+      <span class="badge">{{ conn.tone_label }}</span>
+      <span class="badge dim">confidence {{ conn.confidence_pct }}% · {{ conn.confidence_label }}</span>
+      {% for fl in conn.alert_flags_label %}<span class="badge alert">{{ fl }}</span>{% endfor %}
+    </div>
+    {% endif %}
+    <div class="connection-summary" style="margin-top:0.4rem;">{{ conn.summary or '—' }}</div>
+  </div>
 </div>
-<div class="freshness">
-  Первая активность: {{ conn.first_seen_label }} · Последняя: {{ conn.last_seen_label }}{% if conn.days_since_last is not none %} · {{ conn.days_since_last }} дн. назад{% endif %}
 </div>
-{% if advanced_enabled %}
-<div class="badges">
-  <span class="badge">{{ conn.tone_label }}</span>
-  <span class="badge dim">confidence {{ conn.confidence_pct }}% · {{ conn.confidence_label }}</span>
-  {% for t in conn.topics_label %}
-  <span class="badge good">{{ t }}</span>
-  {% endfor %}
-  {% for fl in conn.alert_flags_label %}
-  <span class="badge alert">{{ fl }}</span>
-  {% endfor %}
+
+<div class="conn-full">
+  <div>
+    <div class="connection-users">{{ conn.name_a }} ↔ {{ conn.name_b }}</div>
+    <div class="connection-meta">ID: {{ conn.user_a }} / {{ conn.user_b }} · вес({{ period }}): {{ conn.weight_in_period }} · всего: {{ conn.message_count_total }} · тренд: {{ conn.trend_delta }} · обновлено: {{ conn.last_updated }}</div>
+    <div class="activity-strip">
+      <div class="mini-stat"><span class="k">24ч</span><span class="v">{{ conn.message_count_24h }}</span></div>
+      <div class="mini-stat"><span class="k">7д</span><span class="v">{{ conn.message_count_7d }}</span></div>
+      <div class="mini-stat"><span class="k">30д</span><span class="v">{{ conn.message_count_30d }}</span></div>
+    </div>
+    <div class="freshness">Первая: {{ conn.first_seen_label }} · Последняя: {{ conn.last_seen_label }}{% if conn.days_since_last is not none %} · {{ conn.days_since_last }} дн. назад{% endif %}</div>
+    {% if advanced_enabled %}
+    <div class="badges">
+      <span class="badge">{{ conn.tone_label }}</span>
+      <span class="badge dim">confidence {{ conn.confidence_pct }}% · {{ conn.confidence_label }}</span>
+      {% for t in conn.topics_label %}<span class="badge good">{{ t }}</span>{% endfor %}
+      {% for fl in conn.alert_flags_label %}<span class="badge alert">{{ fl }}</span>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  <div>
+    <div class="connection-summary">{{ conn.summary_preview or conn.summary or '—' }}</div>
+    {% if conn.summary_has_more %}
+    <details class="summary-more"><summary>Показать полностью</summary>
+    <div class="connection-summary connection-summary-full">{{ conn.summary }}</div></details>
+    {% endif %}
+    {% if advanced_enabled and conn.history_preview %}
+    <details class="summary-more"><summary>История по датам</summary>
+    <div class="history">
+    {% for h in conn.history_preview %}
+    <div class="history-item"><strong>{{ h.date }}{% if h.source == 'live' %} live{% endif %}</strong>{% if h.message_count %} · {{ h.message_count }} сообщ.{% endif %}: {{ h.summary }}</div>
+    {% endfor %}
+    </div></details>
+    {% endif %}
+  </div>
 </div>
-{% endif %}
-</div>
-<div>
-<div class="connection-summary">{{ conn.summary_preview or conn.summary or '—' }}</div>
-{% if conn.summary_has_more %}
-<details class="summary-more">
-<summary>Показать полностью</summary>
-<div class="connection-summary connection-summary-full">{{ conn.summary }}</div>
-</details>
-{% endif %}
-{% if advanced_enabled and conn.history_preview %}
-<details class="summary-more">
-<summary>История по датам</summary>
-<div class="history">
-{% for h in conn.history_preview %}
-<div class="history-item"><strong>{{ h.date }}{% if h.source == 'live' %} live{% endif %}</strong>{% if h.message_count %} · {{ h.message_count }} сообщ.{% endif %}: {{ h.summary }}</div>
-{% endfor %}
-</div>
-</details>
-{% endif %}
-</div>
+
 </div>
 {% endfor %}
 </div>
@@ -748,6 +791,7 @@ function activateCardMode(mode){
   document.querySelectorAll('.list-mode-btn').forEach(function(btn){
     btn.classList.toggle('active', btn.getAttribute('data-card-mode') === (compact ? 'compact' : 'detailed'));
   });
+  panel.querySelectorAll('.conn-card.open').forEach(function(c){c.classList.remove('open');});
   try{localStorage.setItem('social_graph_card_mode', compact ? 'compact' : 'detailed');}catch(_e){}
 }
 
@@ -761,6 +805,15 @@ try{savedCardMode = localStorage.getItem('social_graph_card_mode') || '';}catch(
 if(savedCardMode === 'compact' || savedCardMode === 'detailed'){
   activateCardMode(savedCardMode);
 }
+
+document.getElementById('connections-list').addEventListener('click', function(e){
+  var panel = document.getElementById('panel-list');
+  if(!panel || !panel.classList.contains('list-compact')){return;}
+  var card = e.target.closest('.conn-card');
+  if(!card){return;}
+  if(e.target.closest('details') || e.target.closest('a') || e.target.closest('button')){return;}
+  card.classList.toggle('open');
+});
 
 document.getElementById('btn-process').onclick=function(){
 var btn=this, span=document.getElementById('process-result');

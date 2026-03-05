@@ -3075,7 +3075,7 @@
         "positive_sentiment": 0,
         "negative_sentiment": 0,
         "neutral_sentiment": 0,
-        "total_messages": 48,
+        "total_messages": 49,
         "warnings_received": 0
       },
       "daily_buffer": [],
@@ -3286,6 +3286,10 @@
           {
             "text": "а кто теперь лид?",
             "date": "2026-03-04"
+          },
+          {
+            "text": "https://youtu.be/OlwKvzj8Jeo?si=DWl48cr8xGywo4XM",
+            "date": "2026-03-05"
           }
         ]
       },

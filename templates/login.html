@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Вход — Админ{% endblock %}
+{% block body %}
+<div style="max-width:340px;margin:8rem auto;text-align:center;">
+  <h1 style="margin-bottom:1.5rem;">Вход в админ-панель</h1>
+  <form method="post" style="display:flex;flex-direction:column;gap:0.75rem;">
+    <label for="password" class="text-muted text-sm">Пароль</label>
+    <input id="password" type="password" name="password" placeholder="Введите пароль" autofocus
+           style="padding:0.6rem 0.8rem;font-size:1rem;">
+    <button type="submit" class="btn" style="width:100%;">Войти</button>
+  </form>
+</div>
+{% endblock %}

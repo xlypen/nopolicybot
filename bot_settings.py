@@ -132,46 +132,11 @@ def get_all() -> dict:
     return _load()
 
 
-def set_value(key: str, value) -> bool:
-    if key not in DEFAULTS or key == "chat_settings":
-        return False
-    data = _load()
-    data[key] = value
-    _save(data)
-    return True
-
-
 def set_all(updates: dict) -> None:
     data = _load()
     for k, v in updates.items():
         if k in DEFAULTS and k != "chat_settings":
             data[k] = v
-    _save(data)
-
-
-def set_chat_override(chat_id: int, key: str, value) -> None:
-    data = _load()
-    if "chat_settings" not in data:
-        data["chat_settings"] = {}
-    ck = f"chat_{chat_id}"
-    if ck not in data["chat_settings"]:
-        data["chat_settings"][ck] = {}
-    if key in DEFAULTS and key != "chat_settings":
-        data["chat_settings"][ck][key] = value
-        _save(data)
-
-
-def clear_chat_override(chat_id: int, key: str | None = None) -> None:
-    data = _load()
-    overrides = data.get("chat_settings") or {}
-    ck = f"chat_{chat_id}"
-    if ck not in overrides:
-        return
-    if key:
-        overrides[ck].pop(key, None)
-    else:
-        del overrides[ck]
-    data["chat_settings"] = overrides
     _save(data)
 
 

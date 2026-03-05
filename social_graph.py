@@ -56,17 +56,7 @@ def _pair_key(uid1: int, uid2: int) -> str:
     return f"{min(a, b)}|{max(a, b)}"
 
 
-def _soft_trim(text: str, max_len: int) -> str:
-    """Обрезает текст по границе слова/предложения, чтобы не рвать мысль на полуслове."""
-    t = (text or "").strip()
-    if len(t) <= max_len:
-        return t
-    chunk = t[:max_len]
-    for sep in (". ", "! ", "? ", "\n", "; ", ", ", " "):
-        pos = chunk.rfind(sep)
-        if pos >= max_len * 0.6:
-            return chunk[: pos + len(sep)].strip() + " …"
-    return chunk.rstrip() + " …"
+from utils.text import soft_trim as _soft_trim
 
 
 def _parse_day(d: str) -> date | None:
@@ -602,22 +592,8 @@ def build_chat_digest(chat_id: int, period_days: int = 1, max_items: int = 8) ->
         rows = rows_all
 
     from user_stats import get_user_display_names
+    from utils.labels import TONE_RU as tone_ru, TOPIC_RU as topic_ru
     names = get_user_display_names()
-
-    tone_ru = {
-        "neutral": "нейтральный",
-        "friendly": "дружелюбный",
-        "conflict": "конфликтный",
-        "toxic": "токсичный",
-    }
-    topic_ru = {
-        "general": "общее",
-        "humor": "юмор",
-        "personal": "личное",
-        "technical": "техника/бот",
-        "work": "работа",
-        "politics": "политика",
-    }
 
     def _display(uid) -> str:
         key = str(int(uid or 0))

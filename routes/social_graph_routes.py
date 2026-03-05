@@ -1,63 +1,22 @@
 from flask import jsonify, render_template, request, url_for
+from datetime import date
 
 import bot_settings
 import social_graph as social_graph_store
 import user_stats
-import re
-from datetime import date
+from utils.labels import TONE_RU, TOPIC_RU, ROLE_RU, ALERT_RU, ALERT_PRIORITY
+from utils.text import summary_preview as _summary_preview_fn
 
 
 def register_social_graph_routes(app, login_required):
-    tone_ru = {
-        "friendly": "дружелюбный",
-        "neutral": "нейтральный",
-        "conflict": "конфликтный",
-        "toxic": "токсичный",
-    }
-    topic_ru = {
-        "general": "общее",
-        "technical": "техническое",
-        "work": "работа",
-        "politics": "политика",
-        "humor": "юмор",
-        "personal": "личное",
-    }
-    role_ru = {
-        "connector": "связующий",
-        "expert": "эксперт",
-        "mediator": "медиатор",
-        "provocateur": "провокатор",
-        "participant": "участник",
-    }
-    alert_ru = {
-        "new_connection": "новая связь",
-        "rising_activity": "рост активности",
-        "toxicity_spike": "риск токсичности",
-    }
-    alert_priority = {
-        "toxicity_spike": 3,
-        "rising_activity": 2,
-        "new_connection": 1,
-    }
+    tone_ru = TONE_RU
+    topic_ru = TOPIC_RU
+    role_ru = ROLE_RU
+    alert_ru = ALERT_RU
+    alert_priority = ALERT_PRIORITY
 
     def _summary_preview(text: str, max_len: int = 420) -> tuple[str, bool]:
-        s = (text or "").strip()
-        if not s:
-            return "", False
-        # Для превью берём самый свежий блок (последняя строка саммари),
-        # чтобы текст был цельным и не выглядел «склеенным» из истории.
-        lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
-        if lines:
-            s = lines[-1]
-        s = re.sub(r"\s+", " ", s).strip()
-        if len(s) <= max_len:
-            return s, False
-        chunk = s[:max_len]
-        for sep in (". ", "! ", "? ", "; ", ", ", " "):
-            pos = chunk.rfind(sep)
-            if pos >= max_len * 0.55:
-                return chunk[: pos + len(sep)].strip() + " …", True
-        return chunk.rstrip() + " …", True
+        return _summary_preview_fn(text, max_len)
 
     @app.route("/social-graph")
     @login_required

@@ -1,24 +1,11 @@
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Дерево связей — Админ</title>
+{% extends "base.html" %}
+{% block title %}Дерево связей — Админ{% endblock %}
+{% block head_extra %}
 <style>
-*{box-sizing:border-box}
-body{font-family:'Segoe UI',system-ui,sans-serif;margin:0;padding:1.5rem;background:#1a1a2e;color:#eee}
-a{color:#e94560;text-decoration:none}a:hover{text-decoration:underline}
-.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;flex-wrap:wrap;gap:1rem}
-h1{margin:0;font-size:1.5rem}
-.btn{display:inline-block;padding:0.5rem 1rem;background:#e94560;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:0.9rem}
-.btn:hover{background:#ff6b6b}
-.btn-sm{padding:0.35rem 0.65rem;font-size:0.8rem}
-.btn-secondary{background:#0f3460}.btn-secondary:hover{background:#1a2a4a}
-.card{background:#16213e;padding:1rem;border-radius:10px;margin-bottom:1rem}
-.card h2{margin:0 0 0.5rem;font-size:1rem;color:#888}
 .filters{display:flex;flex-wrap:wrap;gap:0.8rem;align-items:end;margin-bottom:1rem;background:#112544;padding:0.8rem;border-radius:10px}
-.filters label{font-size:0.82rem;color:#9bb0cf;display:flex;flex-direction:column;gap:0.25rem}
+.filters label{font-size:0.82rem;color:var(--text-secondary);display:flex;flex-direction:column;gap:0.25rem}
 .filters .check{flex-direction:row;align-items:center;gap:0.4rem}
-.filters select,.filters input{background:#0f3460;border:1px solid #1a3b65;color:#e6eefb;padding:0.35rem 0.5rem;border-radius:7px}
+.filters select,.filters input{background:var(--bg-input);border:1px solid var(--border-input);color:#e6eefb;padding:0.35rem 0.5rem;border-radius:7px}
 .connection{display:grid;grid-template-columns:minmax(260px,330px) 1fr;gap:1rem;padding:1rem;background:#0f3460;border-radius:10px;margin-bottom:0.65rem;align-items:start;border:1px solid #17406c}
 .connection-users{font-weight:700;white-space:normal;word-break:break-word;color:#4ade80}
 .connection-summary{font-size:1rem;color:#dbe7ff;white-space:normal;word-break:break-word;line-height:1.6}
@@ -122,9 +109,9 @@ h1{margin:0;font-size:1.5rem}
   .list-controls input,.list-controls select{min-width:140px}
 }
 </style>
-</head>
-<body>
-<button class="btn btn-sm side-toggle" type="button" id="btn-side-open" onclick="toggleSidePanel()" style="background:#0f3460;">⚙ Панель</button>
+{% endblock %}
+{% block body %}
+<button class="btn btn-sm side-toggle" type="button" id="btn-side-open" onclick="toggleSidePanel()" style="background:var(--bg-secondary);">⚙ Панель</button>
 <div class="side-backdrop" id="side-backdrop" onclick="closeSidePanel()"></div>
 <aside class="side-panel" id="side-panel">
   <button class="side-close" type="button" id="btn-side-close" onclick="closeSidePanel()">✕</button>
@@ -413,6 +400,8 @@ h1{margin:0;font-size:1.5rem}
 {% endif %}
 </div>
 {% endif %}
+{% endblock %}
+{% block scripts %}
 <script>
 function openSidePanel(){
   var p=document.getElementById('side-panel');
@@ -846,5 +835,4 @@ document.getElementById('btn-topic-send').onclick=function(){
 };
 {% endif %}
 </script>
-</body>
-</html>
+{% endblock %}

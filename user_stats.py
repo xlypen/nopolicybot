@@ -687,17 +687,6 @@ def set_deep_portrait(user_id: int, portrait: str, rank: str = "neutral") -> boo
     return True
 
 
-def set_tone_override(user_id: int, value: str | None) -> bool:
-    """Устанавливает ручное настроение для пользователя. value=None — сброс на авто."""
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
-        return False
-    data["users"][key]["tone_override"] = (value or "").strip()
-    _save(data)
-    return True
-
-
 def save_tone_override(
     user_id: int,
     value: str | None,

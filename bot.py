@@ -89,7 +89,6 @@ RESET_POLITICAL_COUNT_PATH = Path(__file__).resolve().parent / "reset_political_
 DEBUG_LOG_PATH = Path(__file__).resolve().parent / "bot_debug.log"
 
 _KEYWORD_CHECK_DELAY = 0.5
-_SESSION_START = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _debug_log(action: str, chat_id: int = 0, user: str = "", detail: str = "") -> None:

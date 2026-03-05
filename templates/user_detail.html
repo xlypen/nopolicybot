@@ -1,0 +1,318 @@
+{% extends "base.html" %}
+{% block title %}Пользователь {{ u.get('display_name', user_id) }} — Админ{% endblock %}
+{% block head_extra %}
+<style>
+.portrait{white-space:pre-wrap;line-height:1.5}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:0.5rem}
+.stat{background:var(--bg-input);padding:0.5rem;border-radius:6px}
+.user-header{display:flex;align-items:center;gap:1rem}
+.telegram-info{margin-top:1rem;padding:1rem;background:var(--bg-input);border-radius:8px}
+.telegram-info p{margin:0.25rem 0}
+</style>
+{% endblock %}
+{% block body %}
+<div class="mb-2"><a href="{{ url_for('index', chat=chat_id or 'all') }}">← Назад к списку</a> · <a href="{{ url_for('settings') }}">Настройки</a></div>
+<div class="card">
+<div class="user-header">
+<div class="avatar-wrap" style="width:64px;height:64px;">
+<img src="{{ url_for('avatar', user_id=user_id) }}" alt="" data-avatar-name="{{ u.get('display_name', user_id) }}">
+<span class="avatar-fallback" style="font-size:1.15rem;"></span>
+</div>
+<div>
+<p><strong>ID:</strong> {{ user_id }}</p>
+<p><strong>Имя:</strong> {{ u.get('display_name', '—') }}</p>
+<p><strong>Ранг:</strong> {{ rank_labels.get(u.get('rank'), u.get('rank')) }}</p>
+<button type="button" class="btn btn-secondary btn-sm" id="btn-telegram" onclick="loadTelegramInfo()">Загрузить из Telegram</button>
+<div id="telegram-result"></div>
+</div>
+</div>
+</div>
+<div class="section-tabs">
+<button type="button" class="section-tab active" data-section="sec-stats">Статистика</button>
+<button type="button" class="section-tab" data-section="sec-archive">Архив</button>
+<button type="button" class="section-tab" data-section="sec-portrait">Портрет</button>
+<button type="button" class="section-tab" data-section="sec-mood">Настроение</button>
+<button type="button" class="section-tab" data-section="sec-qod">Вопрос дня</button>
+<button type="button" class="section-tab" data-section="sec-explain">Объяснимость</button>
+</div>
+
+<div id="sec-stats" class="section-panel active">
+<div class="card">
+<h2>Статистика</h2>
+<div class="stats">
+<div class="stat">Сообщений: {{ u.get('stats', {}).get('total_messages', 0) }}</div>
+<div class="stat">В архиве: {{ archive_count }}</div>
+<div class="stat">Полит.: {{ u.get('stats', {}).get('political_messages', 0) }}</div>
+<div class="stat">+ {{ u.get('stats', {}).get('positive_sentiment', 0) }}</div>
+<div class="stat">− {{ u.get('stats', {}).get('negative_sentiment', 0) }}</div>
+<div class="stat">0 {{ u.get('stats', {}).get('neutral_sentiment', 0) }}</div>
+<div class="stat">Замечаний: {{ u.get('stats', {}).get('warnings_received', 0) }}</div>
+</div>
+</div>
+{% if images_archive %}
+<div class="card">
+<h2>Проанализированные изображения</h2>
+<button type="button" class="btn btn-sm mb-1" onclick="clearImagesArchive(this)">Очистить архив изображений</button>
+<div style="max-height:300px;overflow-y:auto;">
+{% for img in images_archive %}
+<div style="padding:0.5rem;margin-bottom:0.5rem;background:var(--bg-input);border-radius:6px;font-size:0.9rem;">
+<span class="text-success" style="font-weight:bold;">{{ img.category }}</span> — {{ img.date }}{% if img.get('reaction_emoji') %} реакция: {{ img.reaction_emoji }}{% endif %}<br>
+<span style="color:#ccc;">{{ img.description or '—' }}</span>
+</div>
+{% endfor %}
+</div>
+</div>
+{% endif %}
+</div>
+
+<div id="sec-archive" class="section-panel">
+<div class="card">
+<h2>Архив сообщений (по чатам)</h2>
+{% if chat_id and chat_id != 'all' %}
+<p class="text-sm text-muted mb-1">Показан только чат «{{ chats_titles.get(chat_id, chat_id) }}». <a href="{{ url_for('user_detail', user_id=user_id, chat='all') }}">Показать все чаты</a></p>
+{% endif %}
+{% if archive_by_chat %}
+{% for cid, msgs in archive_by_chat.items() %}
+{% set chat_title = chats_titles.get(cid, 'Неизвестный чат' if cid == 'unknown' else cid) %}
+<div style="margin-bottom:1rem;padding:1rem;background:var(--bg-input);border-radius:8px;">
+<h4 style="margin:0 0 0.5rem;">{{ chat_title }} ({{ msgs|length }} сообщ.)</h4>
+<button type="button" class="btn btn-sm mb-1" onclick="clearArchive('{{ cid }}', this)">Очистить этот чат</button>
+<div style="max-height:150px;overflow-y:auto;font-size:0.85rem;color:#aaa;">
+{% for m in msgs[-20:] %}
+<div style="margin:0.25rem 0;"><span class="text-muted">{{ m.date[:10] }}</span> {{ m.text[:100] }}{% if m.text|length > 100 %}…{% endif %}</div>
+{% endfor %}
+{% if msgs|length > 20 %}<div class="text-muted">… и ещё {{ msgs|length - 20 }}</div>{% endif %}
+</div>
+</div>
+{% endfor %}
+<button type="button" class="btn" style="background:#8b0000;" onclick="clearArchive('all', this)">Очистить весь архив</button>
+{% else %}
+<p class="text-muted">Архив пуст</p>
+{% endif %}
+</div>
+</div>
+
+<div id="sec-portrait" class="section-panel">
+<div class="card">
+<h2>Портрет</h2>
+<div class="portrait">{{ u.get('portrait', '—') or '—' }}</div>
+<div style="margin-top:1rem;padding:1rem;background:var(--bg-input);border-radius:8px;">
+<h3 style="margin:0 0 0.5rem;font-size:0.95rem;">Составить портрет из архива сообщений</h3>
+<p class="text-sm text-muted mb-1">Использует до 1000 сообщений на чат. Портрет через ИИ.</p>
+<p class="text-sm mb-1">В архиве: {{ archive_count }} сообщений</p>
+<button type="button" class="btn" id="btn-portrait" onclick="buildPortrait()" {% if is_portrait_building %}disabled{% endif %}>Составить портрет</button>
+<div id="portrait-result" class="text-sm mt-1">{% if is_portrait_building %}Анализирую… (1–2 мин){% endif %}</div>
+</div>
+</div>
+</div>
+
+<div id="sec-mood" class="section-panel">
+<div class="card">
+<h2>Настроение к боту</h2>
+<p class="text-sm text-muted mb-1">Влияет на тон ответов бота этому участнику.</p>
+{% if effective_tone %}
+<p><strong>Сейчас:</strong> {{ effective_tone }}{% if u.get('tone_override') %} <em>(ручное)</em>{% else %} <em>(авто)</em>{% endif %}</p>
+{% else %}
+<p><em>Не задано</em></p>
+{% endif %}
+<form method="post" class="mt-1">
+<input type="hidden" name="chat" value="{{ chat_id }}">
+<input type="text" name="tone_override" placeholder="Напр.: грубит, агрессивен" value="{{ u.get('tone_override', '') }}" style="width:100%;max-width:400px;margin-bottom:0.5rem;">
+<div class="flex gap-sm flex-wrap">
+<button type="submit" name="tone_action" value="set" class="btn">Задать вручную</button>
+<button type="submit" name="tone_action" value="auto" class="btn btn-secondary">Использовать авто</button>
+</div>
+{% set hist = u.get('tone_history') or [] %}
+{% if hist %}
+<p class="text-sm text-muted mt-1">Быстрый выбор (последние 3):</p>
+<div class="flex gap-sm flex-wrap mt-1">
+{% for h in hist %}
+<form method="post" style="display:inline;">
+<input type="hidden" name="chat" value="{{ chat_id }}">
+<input type="hidden" name="tone_action" value="history">
+<input type="hidden" name="tone_history_val" value="{{ h }}">
+<button type="submit" class="btn btn-secondary btn-sm">{{ h[:40] }}{% if h|length > 40 %}…{% endif %}</button>
+</form>
+{% endfor %}
+</div>
+{% endif %}
+</form>
+<p class="text-sm text-muted mt-1">«Использовать авто» — сброс, настроение определяется ИИ.</p>
+</div>
+</div>
+
+<div id="sec-qod" class="section-panel">
+<div class="card">
+<h2>Вопрос дня</h2>
+<p class="text-sm text-muted mb-1">Бот вечером может задать пользователю один добрый вопрос.</p>
+<label class="flex align-center gap-sm mb-1" style="cursor:pointer;">
+<input type="checkbox" id="qod-checkbox" {% if u.get('question_of_day_enabled') %}checked{% endif %} onchange="toggleQuestionOfDay(this)">
+<span>Задавать вопрос дня</span>
+</label>
+<p class="text-sm text-muted mb-1">Куда отправлять:</p>
+<div class="flex gap-sm mb-1">
+<label class="flex align-center gap-sm" style="cursor:pointer;">
+<input type="radio" name="qod-dest" value="chat" {% if u.get('question_of_day_destination', 'chat') == 'chat' %}checked{% endif %} onchange="setQuestionDest('chat')">
+<span>В чат</span>
+</label>
+<label class="flex align-center gap-sm" style="cursor:pointer;">
+<input type="radio" name="qod-dest" value="private" {% if u.get('question_of_day_destination') == 'private' %}checked{% endif %} onchange="setQuestionDest('private')">
+<span>В личку</span>
+</label>
+</div>
+<div id="qod-chat-select-wrap" class="mb-1" {% if u.get('question_of_day_destination') == 'private' %}style="display:none"{% endif %}>
+<label class="text-sm text-muted">Чат для отправки:</label>
+<select id="qod-chat-select" style="margin-left:0.5rem;min-width:200px;">
+<option value="">— загрузка —</option>
+</select>
+</div>
+<div class="flex gap-sm align-center flex-wrap mt-1">
+<button type="button" class="btn btn-secondary" id="btn-qod-preview" onclick="generateQuestionPreview()">Сгенерировать превью</button>
+<button type="button" class="btn" id="btn-qod-send" onclick="sendQuestionNow()">Отправить сейчас</button>
+<span id="qod-preview-status" class="text-sm"></span>
+</div>
+<div id="qod-preview" style="padding:0.75rem;background:var(--bg-input);border-radius:8px;font-style:italic;display:none;margin-top:0.5rem;"></div>
+</div>
+</div>
+
+<div id="sec-explain" class="section-panel">
+<div class="card">
+<h2>Объяснимость действий бота</h2>
+<p class="text-sm text-muted mb-1">Последние причины решений бота для этого пользователя.</p>
+<button type="button" class="btn btn-secondary" onclick="loadExplainability()">Показать последние решения</button>
+<div id="explainability-list" class="mt-1" style="max-height:230px;overflow:auto;font-size:0.84rem;color:#cfe0f8;background:var(--bg-input);border-radius:8px;padding:0.6rem;"></div>
+</div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+initSectionTabs('.section-tabs');
+document.querySelectorAll('.avatar-wrap').forEach(function(wrap){
+  var img=wrap.querySelector('img');
+  var fb=wrap.querySelector('.avatar-fallback');
+  if(!img||!fb)return;
+  fb.textContent=getInitials(img.getAttribute('data-avatar-name')||'');
+});
+
+function loadTelegramInfo(){
+var btn=document.getElementById('btn-telegram');
+var out=document.getElementById('telegram-result');
+btn.disabled=true;
+out.innerHTML='Загрузка…';
+fetch('{{ url_for("api_telegram_user", user_id=user_id) }}')
+.then(function(r){return r.json()})
+.then(function(data){
+if(data.ok){
+var d=data.data;
+var html='<div class="telegram-info"><h3 style="margin:0 0 0.5rem">Данные Telegram</h3>';
+html+='<p><strong>Имя:</strong> '+(d.first_name||'')+' '+(d.last_name||'')+'</p>';
+if(d.username)html+='<p><strong>@username:</strong> <a href="https://t.me/'+d.username+'" target="_blank">@'+d.username+'</a></p>';
+if(d.language_code)html+='<p><strong>Язык:</strong> '+d.language_code+'</p>';
+if(d.is_premium)html+='<p>Premium</p>';
+html+='</div>';
+out.innerHTML=html;
+}else{out.innerHTML='<span class="text-danger">'+(data.error||'Ошибка')+'</span>'}
+})
+.catch(function(){out.innerHTML='<span class="text-danger">Ошибка запроса</span>'})
+.finally(function(){btn.disabled=false});
+}
+function toggleQuestionOfDay(cb){
+cb.disabled=true;
+apiFetch('{{ url_for("api_question_of_day_toggle", user_id=user_id) }}',{method:'POST',body:{enabled:cb.checked}})
+.then(function(){cb.disabled=false})
+.catch(function(e){alert(e.message||'Ошибка');cb.checked=!cb.checked;cb.disabled=false});
+}
+function setQuestionDest(val){
+document.getElementById('qod-chat-select-wrap').style.display=val==='chat'?'block':'none';
+if(val==='chat')loadQodChats();
+apiFetch('{{ url_for("api_question_of_day_destination", user_id=user_id) }}',{method:'POST',body:{destination:val}})
+.catch(function(e){alert(e.message||'Ошибка')});
+}
+function loadQodChats(){
+var sel=document.getElementById('qod-chat-select');
+if(!sel)return;
+sel.innerHTML='<option value="">— загрузка —</option>';
+fetch('{{ url_for("api_question_of_day_chats", user_id=user_id) }}')
+.then(function(r){return r.json()}).then(function(d){
+if(!d.ok){sel.innerHTML='<option value="">Ошибка загрузки</option>';return;}
+var opts=[{value:'',text:'Авто (самый активный сегодня)'}];
+(d.chats||[]).forEach(function(c){opts.push({value:c.chat_id,text:(c.title||c.chat_id)+' ('+c.today_count+' сегодня)'});});
+sel.innerHTML=opts.map(function(o){return'<option value="'+o.value+'">'+o.text+'</option>';}).join('');
+}).catch(function(){sel.innerHTML='<option value="">Ошибка</option>';});
+}
+if(document.querySelector('input[name="qod-dest"][value="chat"]')&&document.querySelector('input[name="qod-dest"][value="chat"]').checked)loadQodChats();
+function sendQuestionNow(){
+var btn=document.getElementById('btn-qod-send');
+var status=document.getElementById('qod-preview-status');
+var previewEl=document.getElementById('qod-preview');
+var question=previewEl.style.display!=='none'?previewEl.textContent.trim():'';
+var chatSel=document.getElementById('qod-chat-select');
+var chatId=chatSel&&chatSel.value!==''?chatSel.value:undefined;
+var destChat=document.querySelector('input[name="qod-dest"][value="chat"]');
+var payload={question:question||undefined};
+if(destChat&&destChat.checked&&chatId)payload.chat_id=parseInt(chatId,10);
+btn.disabled=true;
+showStatus(status,'Отправляю…','info');
+apiFetch('{{ url_for("api_question_of_day_send_now", user_id=user_id) }}',{method:'POST',body:payload})
+.then(function(d){btn.disabled=false;showStatus(status,d.message||'Отправлено.','success');setTimeout(function(){status.textContent=''},4000)})
+.catch(function(e){btn.disabled=false;showStatus(status,e.message||'Ошибка','error')});
+}
+function generateQuestionPreview(){
+var btn=document.getElementById('btn-qod-preview');
+var status=document.getElementById('qod-preview-status');
+var out=document.getElementById('qod-preview');
+btn.disabled=true;
+showStatus(status,'Генерирую…','info');
+out.style.display='none';
+apiFetch('{{ url_for("api_question_of_day_preview", user_id=user_id) }}',{method:'POST',body:{}})
+.then(function(d){btn.disabled=false;out.textContent=d.question;out.style.display='block';status.textContent=''})
+.catch(function(e){btn.disabled=false;showStatus(status,e.message||'Ошибка','error')});
+}
+function loadExplainability(){
+var box=document.getElementById('explainability-list');
+box.textContent='Загрузка…';
+fetch('{{ url_for("api_explainability_recent") }}?user_id={{ user_id }}')
+.then(function(r){return r.json()}).then(function(d){
+  if(!d.ok){box.textContent=d.error||'Ошибка';return;}
+  var rows=d.events||[];
+  if(!rows.length){box.textContent='Данных нет или функция выключена.';return;}
+  box.innerHTML=rows.map(function(e){
+    var dt=new Date((e.ts||0)*1000);
+    var t=isNaN(dt.getTime())?'—':dt.toLocaleString();
+    return '<div style="margin-bottom:0.45rem;padding-bottom:0.45rem;border-bottom:1px dashed #2a4a77;"><strong>'+t+'</strong> · '+(e.kind||'')+' · <span style="color:#9ec5ff">'+(e.decision||'')+'</span><br><span class="text-muted">'+(e.detail||'')+'</span></div>';
+  }).join('');
+}).catch(function(){box.textContent='Ошибка сети';});
+}
+function buildPortrait(){
+var btn=document.getElementById('btn-portrait');
+var out=document.getElementById('portrait-result');
+btn.disabled=true;
+out.innerHTML='Анализирую… (1–2 мин)';
+apiFetch('{{ url_for("api_portrait_from_storage") }}',{method:'POST',body:{user_id:'{{ user_id }}',chat_id:'{{ chat_id or "all" }}'}})
+.then(function(d){out.innerHTML='<span class="text-success">Готово! <a href="">Обновить страницу</a></span>';setTimeout(function(){location.reload()},2000)})
+.catch(function(e){out.innerHTML='<span class="text-danger">'+(e.message||'Ошибка')+'</span>';btn.disabled=false});
+}
+{% if is_portrait_building %}
+(function poll(){
+fetch('{{ url_for("api_portrait_building_status") }}?user_id={{ user_id }}').then(function(r){return r.json()}).then(function(d){
+if(!d.building){location.reload();}
+else setTimeout(poll,2000);
+});
+})();
+{% endif %}
+function clearArchive(chatId, btn){
+if(!confirm(chatId==='all'?'Очистить весь архив?':'Очистить архив этого чата?'))return;
+btn.disabled=true;
+apiFetch('{{ url_for("api_clear_archive") }}',{method:'POST',body:{user_id:'{{ user_id }}',chat_id:chatId==='all'?null:chatId}})
+.then(function(){location.reload()})
+.catch(function(e){alert(e.message||'Ошибка');btn.disabled=false});
+}
+function clearImagesArchive(btn){
+if(!confirm('Очистить архив изображений?'))return;
+btn.disabled=true;
+apiFetch('{{ url_for("api_clear_images_archive") }}',{method:'POST',body:{user_id:'{{ user_id }}'}})
+.then(function(){location.reload()})
+.catch(function(e){alert(e.message||'Ошибка');btn.disabled=false});
+}
+</script>
+{% endblock %}

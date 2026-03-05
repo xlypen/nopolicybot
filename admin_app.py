@@ -17,6 +17,7 @@ from pathlib import Path
 from flask import Flask, jsonify, redirect, Response, render_template_string, request, session, url_for
 from dotenv import load_dotenv
 from routes.social_graph_routes import register_social_graph_routes
+import bot_settings
 
 load_dotenv(Path(__file__).resolve().parent / ".env", encoding="utf-8-sig")
 
@@ -32,6 +33,8 @@ BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
 RANK_LABELS = {"loyal": "🇷🇺 Лояльный", "neutral": "⚪ Нейтральный", "opposition": "🔴 Оппозиция", "unknown": "❓ Неизвестно"}
 
 _avatar_cache: dict[str, str] = {}
+_avatar_img_cache: dict[str, tuple[float, bytes, str]] = {}
+_AVATAR_IMG_CACHE_TTL_SEC = 3600
 # user_id (str) → идёт построение портрета (синхронизация главная ↔ профиль)
 _portrait_building: set[str] = set()
 
@@ -167,6 +170,14 @@ def index():
     else:
         users = all_users
 
+    digest_preview = ""
+    if chat_id and chat_id != "all" and str(chat_id).lstrip("-").isdigit():
+        try:
+            import social_graph
+            digest_preview = social_graph.build_chat_digest(int(chat_id), period_days=1)
+        except Exception:
+            digest_preview = ""
+
     total = len(users)
     ranks = {}
     total_pol = 0
@@ -188,6 +199,7 @@ def index():
         chats=chats,
         current_chat=chat_id or "all",
         portrait_building_user_ids=list(_portrait_building),
+        digest_preview=digest_preview,
     )
 
 
@@ -239,6 +251,71 @@ def settings():
             set_all(updates)
         return redirect(url_for("settings"))
     s = get_all()
+    covered_keys = {
+        "reactions_political_1_5",
+        "moderation_enabled",
+        "analyze_images",
+        "reactions_on_photos",
+        "msgs_before_react",
+        "style_moderate_react",
+        "style_active_frequency",
+        "style_beast_frequency",
+        "reset_after_neutral",
+        "patience_phrase_enabled",
+        "article_line_enabled",
+        "use_personalized_remarks",
+        "encouragement_enabled",
+        "encouragement_style",
+        "reactions_1_5_mode",
+        "reactions_1_5_positive_emoji",
+        "reactions_1_5_negative_emoji",
+        "reactions_1_5_neutral_emoji",
+        "spontaneous_reactions",
+        "spontaneous_max_per_day",
+        "spontaneous_min_interval_sec",
+        "spontaneous_check_chance",
+        "spontaneous_emojis",
+        "question_of_day",
+        "question_of_day_start_hour",
+        "question_of_day_end_hour",
+        "question_of_day_min_interval_sec",
+        "qod_graph_mode_enabled",
+        "reply_to_bot_enabled",
+        "reply_kind_enabled",
+        "reply_rude_enabled",
+        "reply_technical_enabled",
+        "reply_pause_on_reject_enabled",
+        "reply_pause_sec",
+        "reply_pause_text",
+        "reply_resume_on_apology_enabled",
+        "reply_resume_text",
+        "reply_yesterday_quotes_chance",
+        "reply_fallback_on_error",
+        "greeting_on_join",
+        "greeting_text",
+        "cmd_ranks_enabled",
+        "cmd_stats_enabled",
+        "api_min_interval_sec",
+        "batch_style_cache_sec",
+        "min_context_lines",
+        "min_context_lines_1_5",
+        "ai_fast_cache_ttl_sec",
+        "ai_fast_cache_max_items",
+        "ai_parallel_reply_enabled",
+        "social_graph_realtime_enabled",
+        "social_graph_realtime_interval_sec",
+        "social_graph_realtime_min_new_messages",
+        "social_graph_advanced_insights_enabled",
+        "social_graph_ranked_layout_enabled",
+        "social_graph_conflict_forecast_enabled",
+        "social_graph_roles_enabled",
+        "chat_topic_recommender_enabled",
+        "bot_explainability_enabled",
+        "content_digest_enabled",
+        "content_digest_send_enabled",
+        "content_digest_interval_hours",
+        "content_digest_chat_id",
+    }
 
     def _fmt_emoji_list(val, default: str) -> str:
         if isinstance(val, list) and val:
@@ -247,7 +324,23 @@ def settings():
             return val
         return default
 
-    return render_template_string(SETTINGS_HTML, settings=s, _fmt_emoji_list=_fmt_emoji_list)
+    extra_settings = []
+    for key, default in DEFAULTS.items():
+        if key == "chat_settings" or key in covered_keys:
+            continue
+        extra_settings.append({
+            "key": key,
+            "default": default,
+            "value": s.get(key, default),
+            "type": "bool" if isinstance(default, bool) else ("list" if isinstance(default, list) else ("number" if isinstance(default, (int, float)) else "text")),
+        })
+
+    return render_template_string(
+        SETTINGS_HTML,
+        settings=s,
+        _fmt_emoji_list=_fmt_emoji_list,
+        extra_settings=extra_settings,
+    )
 
 
 @app.route("/api/settings", methods=["GET", "POST"])
@@ -351,6 +444,17 @@ def user_detail(user_id):
 @app.route("/avatar/<user_id>")
 @login_required
 def avatar(user_id):
+    now = time.time()
+    cached = _avatar_img_cache.get(user_id)
+    if cached and (now - cached[0] <= _AVATAR_IMG_CACHE_TTL_SEC):
+        data, mimetype = cached[1], cached[2]
+        return Response(
+            data,
+            mimetype=mimetype,
+            headers={
+                "Cache-Control": f"private, max-age={_AVATAR_IMG_CACHE_TTL_SEC}",
+            },
+        )
     file_path = _get_avatar_file_path(user_id)
     if not file_path or not BOT_TOKEN:
         return Response(status=404)
@@ -358,7 +462,15 @@ def avatar(user_id):
         url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
         with urllib.request.urlopen(url, timeout=10) as r:
             data = r.read()
-        return Response(data, mimetype="image/jpeg")
+            ctype = (r.headers.get("Content-Type") or "image/jpeg").split(";")[0].strip()
+        _avatar_img_cache[user_id] = (now, data, ctype)
+        return Response(
+            data,
+            mimetype=ctype,
+            headers={
+                "Cache-Control": f"private, max-age={_AVATAR_IMG_CACHE_TTL_SEC}",
+            },
+        )
     except Exception:
         return Response(status=404)
 
@@ -399,6 +511,20 @@ def api_restart_status():
     except Exception:
         pass
     return jsonify({"requested": True, "restarted": False})
+
+
+@app.route("/api/chat/<chat_id>/digest-preview")
+@login_required
+def api_chat_digest_preview(chat_id):
+    """Превью дайджеста для выбранного чата (ручной просмотр в админке)."""
+    if not str(chat_id).lstrip("-").isdigit():
+        return jsonify({"ok": False, "error": "Некорректный chat_id"}), 400
+    try:
+        import social_graph
+        digest = social_graph.build_chat_digest(int(chat_id), period_days=1)
+        return jsonify({"ok": True, "digest": digest})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/api/portrait-from-storage", methods=["POST"])
@@ -528,7 +654,11 @@ def api_question_of_day_preview(user_id):
         messages = get_user_messages_for_today(uid)
         u = get_user(uid)
         display_name = u.get("display_name") or user_id
-        question = generate_question_of_day(messages, display_name)
+        graph_ctx = ""
+        if bot_settings.get("qod_graph_mode_enabled"):
+            import social_graph
+            graph_ctx = social_graph.get_user_graph_context(uid)
+        question = generate_question_of_day(messages, display_name, graph_context=graph_ctx)
         return jsonify({"ok": True, "question": question})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -590,7 +720,11 @@ def api_question_of_day_send_now(user_id):
             messages = get_user_messages_for_today(uid)
             if not messages:
                 return jsonify({"ok": False, "error": "Нет ни одного сообщения для генерации вопроса"}), 400
-            question = generate_question_of_day(messages, display_name)
+            graph_ctx = ""
+            if bot_settings.get("qod_graph_mode_enabled"):
+                import social_graph
+                graph_ctx = social_graph.get_user_graph_context(uid)
+            question = generate_question_of_day(messages, display_name, graph_context=graph_ctx)
         dest = u.get("question_of_day_destination") or "chat"
 
         if dest == "chat":
@@ -619,6 +753,56 @@ def api_question_of_day_send_now(user_id):
                 qod_tracking.add(chat_id, msg_id, uid, question)
             return jsonify({"ok": True, "message": "Отправлено."})
         return jsonify({"ok": False, "error": err or "Ошибка отправки"}), 500
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/chat/topic-recommendation", methods=["POST"])
+@login_required
+def api_chat_topic_recommendation():
+    """Ручная генерация рекомендаций темы/формата для чата и опциональная отправка."""
+    try:
+        if not bot_settings.get("chat_topic_recommender_enabled"):
+            return jsonify({"ok": False, "error": "Рекомендатор тем выключен в настройках."}), 400
+        data = request.get_json() or {}
+        chat_id = data.get("chat_id")
+        send_now = bool(data.get("send_now"))
+        if chat_id is None:
+            return jsonify({"ok": False, "error": "Нужен chat_id"}), 400
+        try:
+            cid = int(chat_id)
+        except (ValueError, TypeError):
+            return jsonify({"ok": False, "error": "Некорректный chat_id"}), 400
+        from ai_analyzer import generate_topic_recommendation
+        from user_stats import get_chats
+        import social_graph
+        ctx = social_graph.build_chat_digest(cid, period_days=2)
+        chats_map = {int(c["chat_id"]): (c.get("title") or str(c["chat_id"])) for c in get_chats()}
+        rec = generate_topic_recommendation(ctx, chats_map.get(cid, str(cid)))
+        sent = False
+        err = ""
+        if send_now:
+            ok, err, _ = _send_telegram_message(cid, rec)
+            sent = ok
+        return jsonify({"ok": True, "recommendation": rec, "sent": sent, "send_error": err})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/explainability/recent")
+@login_required
+def api_explainability_recent():
+    """Последние объяснения действий бота (если функция включена)."""
+    try:
+        if not bot_settings.get("bot_explainability_enabled"):
+            return jsonify({"ok": True, "events": []})
+        import bot_explainability
+        user_id = request.args.get("user_id")
+        chat_id = request.args.get("chat_id")
+        uid = int(user_id) if user_id and str(user_id).lstrip("-").isdigit() else None
+        cid = int(chat_id) if chat_id and str(chat_id).lstrip("-").isdigit() else None
+        events = bot_explainability.get_recent(limit=80, chat_id=cid, user_id=uid)
+        return jsonify({"ok": True, "events": events})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -689,7 +873,9 @@ tr:hover{background:#1a2a4a}tr.clickable-row{cursor:pointer}
 .rank{font-size:1.1rem}
 .portrait{font-size:0.85rem;color:#aaa;max-width:400px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .user-cell{display:flex;align-items:center;gap:0.5rem}
-.avatar{width:32px;height:32px;border-radius:50%;object-fit:cover;background:#0f3460}
+.avatar-wrap{position:relative;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px}
+.avatar{position:absolute;inset:0;width:100%;height:100%;border-radius:50%;object-fit:cover;background:#0f3460;box-sizing:border-box;display:block}
+.avatar-fallback{position:absolute;inset:0;width:100%;height:100%;border-radius:50%;display:none;align-items:center;justify-content:center;background:#1a2a4a;color:#fff;font-size:0.75rem;font-weight:700;box-sizing:border-box}
 .btn{display:inline-block;padding:0.5rem 1rem;background:#e94560;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:0.9rem}
 .btn:hover{background:#ff6b6b}
 .btn-sm{padding:0.35rem 0.65rem;font-size:0.8rem}
@@ -742,6 +928,14 @@ setTimeout(function(){document.getElementById('restart-msg').style.display='none
 <button type="button" class="btn btn-sm" id="btn-reset-political" style="background:#0f3460;">Сбросить счётчик полит. сообщений</button>
 <span id="reset-result" style="font-size:0.85rem;margin-left:0.5rem;"></span>
 </div>
+<details style="margin-bottom:1rem;background:#16213e;border-radius:10px;padding:0.9rem;" open>
+<summary style="cursor:pointer;list-style:none;font-weight:700;">Дайджест чата (превью)</summary>
+<div style="margin-top:0.55rem;display:flex;align-items:center;gap:0.6rem;justify-content:space-between;flex-wrap:wrap;">
+<span style="font-size:0.82rem;color:#9fb6d5;">Можно свернуть, чтобы не мешал обзору.</span>
+<button type="button" class="btn btn-sm" id="btn-refresh-digest" style="background:#0f3460;">Обновить дайджест</button>
+</div>
+<div id="chat-digest-preview" style="margin-top:0.6rem;padding:0.7rem;background:#0f3460;border:1px solid #1f4b78;border-radius:8px;white-space:pre-wrap;font-size:0.86rem;color:#d4e5ff;">{{ digest_preview or 'Данных пока недостаточно для дайджеста.' }}</div>
+</details>
 <script>
 document.getElementById('btn-reset-political').onclick=function(){
 var btn=this, span=document.getElementById('reset-result');
@@ -753,6 +947,19 @@ if(d.ok){span.textContent='Готово. Сброс применится при 
 else{span.textContent=d.error||'Ошибка';span.style.color='#e94560';}
 btn.disabled=false;
 }).catch(function(){span.textContent='Ошибка сети';span.style.color='#e94560';btn.disabled=false;});
+};
+document.getElementById('btn-refresh-digest').onclick=function(){
+var btn=this, out=document.getElementById('chat-digest-preview');
+btn.disabled=true;
+out.textContent='Обновляю дайджест…';
+fetch('{{ url_for("api_chat_digest_preview", chat_id=current_chat) }}')
+.then(function(r){return r.json();})
+.then(function(d){
+if(d.ok){out.textContent=d.digest||'Данных пока недостаточно для дайджеста.';}
+else{out.textContent=d.error||'Ошибка обновления дайджеста';}
+btn.disabled=false;
+})
+.catch(function(){out.textContent='Ошибка сети';btn.disabled=false;});
 };
 </script>
 {% endif %}
@@ -773,7 +980,10 @@ btn.disabled=false;
 <td>{{ uid }}</td>
 <td>
 <div class="user-cell">
-<img src="{{ url_for('avatar', user_id=uid) }}" alt="" class="avatar" onerror="this.style.display='none'">
+<div class="avatar-wrap">
+<img src="{{ url_for('avatar', user_id=uid) }}" alt="" class="avatar js-avatar" data-avatar-name="{{ u.get('display_name', uid) }}">
+<span class="avatar-fallback js-avatar-fallback"></span>
+</div>
 <span>{{ u.get('display_name', uid) }}</span>
 </div>
 </td>
@@ -822,6 +1032,26 @@ else location.reload();
 });
 })();
 {% endif %}
+function avatarInitials(name){
+var s=(name||'').trim();
+if(!s)return '?';
+var parts=s.split(/\\s+/).filter(Boolean);
+if(parts.length===1)return parts[0].slice(0,1).toUpperCase();
+return (parts[0].slice(0,1)+parts[1].slice(0,1)).toUpperCase();
+}
+function initAvatarFallbacks(){
+document.querySelectorAll('.avatar-wrap').forEach(function(wrap){
+var img=wrap.querySelector('.js-avatar');
+var fb=wrap.querySelector('.js-avatar-fallback');
+if(!img||!fb)return;
+fb.textContent=avatarInitials(img.getAttribute('data-avatar-name')||'');
+img.addEventListener('error', function(){img.style.display='none';fb.style.display='inline-flex';});
+img.addEventListener('load', function(){fb.style.display='none';img.style.display='inline-block';});
+if(!img.complete)return;
+if(img.naturalWidth===0){img.style.display='none';fb.style.display='inline-flex';}
+});
+}
+initAvatarFallbacks();
 </script>
 </body>
 </html>
@@ -838,7 +1068,7 @@ SETTINGS_HTML = """
 body{font-family:'Segoe UI',system-ui,sans-serif;margin:0;padding:1.5rem;background:#1a1a2e;color:#eee}
 a{color:#e94560;text-decoration:none}a:hover{text-decoration:underline}
 .back{margin-bottom:1rem}
-.tabs{display:flex;flex-wrap:wrap;gap:0.3rem;margin-bottom:1rem;border-bottom:1px solid #0f3460;padding-bottom:0.5rem}
+.tabs{display:flex;flex-wrap:wrap;gap:0.3rem;margin-bottom:1rem;border-bottom:1px solid #0f3460;padding-bottom:0.5rem;position:sticky;top:0;background:#1a1a2e;z-index:5}
 .tab{padding:0.5rem 1rem;background:#0f3460;border:none;border-radius:8px;color:#aaa;cursor:pointer;font-size:0.9rem}
 .tab:hover{color:#fff;background:#1a2a4a}
 .tab.active{background:#e94560;color:#fff}
@@ -855,11 +1085,15 @@ input[type="checkbox"]{width:18px;height:18px;cursor:pointer}
 input[type="number"],input[type="text"],select{padding:0.4rem 0.6rem;background:#0f3460;border:1px solid #1a2a4a;border-radius:6px;color:#eee;min-width:80px}
 .btn{display:inline-block;padding:0.5rem 1rem;background:#e94560;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:0.9rem}
 .btn:hover{background:#ff6b6b}
+.save-bar{position:sticky;bottom:0;background:rgba(26,26,46,0.95);padding:0.75rem 0;backdrop-filter:blur(2px);z-index:6}
 </style>
 </head>
 <body>
 <div class="back"><a href="{{ url_for('index') }}">← Назад к списку</a></div>
 <form method="post" action="{{ url_for('settings') }}">
+<div style="margin-bottom:0.75rem;">
+<input id="settings-search" type="text" placeholder="Поиск по настройкам..." style="width:100%;max-width:480px;padding:0.55rem 0.7rem;background:#0f3460;border:1px solid #1a2a4a;border-radius:8px;color:#eee;">
+</div>
 <div class="tabs">
 <button type="button" class="tab active" data-tab="moderation">Модерация</button>
 <button type="button" class="tab" data-tab="reactions">Реакции</button>
@@ -914,11 +1148,11 @@ input[type="number"],input[type="text"],select{padding:0.4rem 0.6rem;background:
 <select name="reactions_1_5_mode"><option value="reaction_only" {% if settings.get('reactions_1_5_mode')=='reaction_only' %}selected{% endif %}>Только эмодзи</option><option value="text_only" {% if settings.get('reactions_1_5_mode')=='text_only' %}selected{% endif %}>Только текст</option><option value="random" {% if settings.get('reactions_1_5_mode','random')=='random' %}selected{% endif %}>Случайно</option></select></div>
 <div class="section-desc" style="margin-bottom:0.5rem;">Эмодзи объединяются в один пул — бот ставит случайный из ~30.</div>
 <div class="setting-row"><div><strong>Позитив</strong></div>
-<input type="text" name="reactions_1_5_positive_emoji" value="{{ _fmt_emoji_list(settings.get('reactions_1_5_positive_emoji'), '👍,❤,😍,🥰,🤩,👏,😁,🔥,💯,🎉') }}" style="min-width:200px"></div>
+<input type="text" name="reactions_1_5_positive_emoji" value="{{ _fmt_emoji_list(settings.get('reactions_1_5_positive_emoji'), '👍,❤,🥰,🤩,👏,😁,🔥,🎉,🤯') }}" style="min-width:200px"></div>
 <div class="setting-row"><div><strong>Негатив</strong></div>
-<input type="text" name="reactions_1_5_negative_emoji" value="{{ _fmt_emoji_list(settings.get('reactions_1_5_negative_emoji'), '👎,🤮,😡,🤬,😤,😈,💩,🙄,😒,🤢') }}" style="min-width:200px"></div>
+<input type="text" name="reactions_1_5_negative_emoji" value="{{ _fmt_emoji_list(settings.get('reactions_1_5_negative_emoji'), '👎,🤮,🤬,💩,😢') }}" style="min-width:200px"></div>
 <div class="setting-row"><div><strong>Нейтрал</strong></div>
-<input type="text" name="reactions_1_5_neutral_emoji" value="{{ _fmt_emoji_list(settings.get('reactions_1_5_neutral_emoji'), '🤔,🤷,😐,🤨,😬,😮,👀,🤓,🫡,💭') }}" style="min-width:200px"></div>
+<input type="text" name="reactions_1_5_neutral_emoji" value="{{ _fmt_emoji_list(settings.get('reactions_1_5_neutral_emoji'), '🤔,🤯,😱,🤩') }}" style="min-width:200px"></div>
 </div>
 <div class="card"><h2>Прочие реакции (спонтанные)</h2>
 <div class="section-desc">Случайные эмодзи на обычные сообщения (без политики) — для «живости» чата. Включается отдельно от реакций на политику.</div>
@@ -946,6 +1180,8 @@ input[type="number"],input[type="text"],select{padding:0.4rem 0.6rem;background:
 <input type="number" name="question_of_day_end_hour" value="{{ settings.get('question_of_day_end_hour', 22) }}" min="0" max="23"></div>
 <div class="setting-row"><div><strong>Мин. интервал (сек)</strong><div class="setting-desc">Минимальная пауза между вопросами (60–600)</div></div>
 <input type="number" name="question_of_day_min_interval_sec" value="{{ settings.get('question_of_day_min_interval_sec', 120) }}" min="60" max="600"></div>
+<div class="setting-row"><div><strong>QOD 2.0 (контекст связей)</strong><div class="setting-desc">При генерации вопроса дня учитывать дерево связей/темы пользователя. Работает и в авто, и в ручном режиме.</div></div>
+<label><input type="checkbox" name="qod_graph_mode_enabled" value="1" {% if settings.get('qod_graph_mode_enabled', False) %}checked{% endif %}><span>Вкл.</span></label></div>
 </div>
 </div>
 
@@ -962,6 +1198,16 @@ input[type="number"],input[type="text"],select{padding:0.4rem 0.6rem;background:
 <label><input type="checkbox" name="reply_technical_enabled" value="1" {% if settings.get('reply_technical_enabled', True) %}checked{% endif %}><span>Вкл.</span></label></div>
 <div class="setting-row"><div><strong>Вероятность вчерашних цитат</strong><div class="setting-desc">Шанс 0–1 при ответе — вставить цитату из вчерашних сообщений чата</div></div>
 <input type="number" name="reply_yesterday_quotes_chance" value="{{ settings.get('reply_yesterday_quotes_chance', 0.01) }}" min="0" max="1" step="0.01"></div>
+<div class="setting-row"><div><strong>Пауза при явном отказе</strong><div class="setting-desc">Если пользователь явно посылает/не хочет общаться — бот отвечает и игнорирует его сообщения заданное время</div></div>
+<label><input type="checkbox" name="reply_pause_on_reject_enabled" value="1" {% if settings.get('reply_pause_on_reject_enabled', True) %}checked{% endif %}><span>Вкл.</span></label></div>
+<div class="setting-row"><div><strong>Длительность паузы (сек)</strong><div class="setting-desc">Время игнора после стоп-ответа (30–1800)</div></div>
+<input type="number" name="reply_pause_sec" value="{{ settings.get('reply_pause_sec', 180) }}" min="30" max="1800"></div>
+<div class="setting-row"><div><strong>Текст стоп-ответа</strong><div class="setting-desc">Короткая фраза перед включением паузы</div></div>
+<input type="text" name="reply_pause_text" value="{{ settings.get('reply_pause_text', 'пошел нахуй.') }}" style="min-width:220px"></div>
+<div class="setting-row"><div><strong>Снимать паузу по извинению</strong><div class="setting-desc">Если в игноре пользователь примиряется (в т.ч. неявно), бот снимет паузу и ответит с подколом</div></div>
+<label><input type="checkbox" name="reply_resume_on_apology_enabled" value="1" {% if settings.get('reply_resume_on_apology_enabled', True) %}checked{% endif %}><span>Вкл.</span></label></div>
+<div class="setting-row"><div><strong>Текст при снятии паузы</strong><div class="setting-desc">Фраза бота при «амнистии» после извинения</div></div>
+<input type="text" name="reply_resume_text" value="{{ settings.get('reply_resume_text', 'ладно, амнистия. но не путай это со слабостью.') }}" style="min-width:260px"></div>
 <div class="setting-row"><div><strong>Текст при ошибке ИИ</strong><div class="setting-desc">Фраза, которую бот покажет, если ИИ не смог сгенерировать ответ</div></div>
 <input type="text" name="reply_fallback_on_error" value="{{ settings.get('reply_fallback_on_error', 'сейчас не в настроении, напиши потом.') }}" style="min-width:220px"></div>
 </div>
@@ -993,9 +1239,63 @@ input[type="number"],input[type="text"],select{padding:0.4rem 0.6rem;background:
 <div class="setting-row"><div><strong>Мин. контекст для 1–5</strong><div class="setting-desc">Минимум строк для быстрых реакций 1–5 (3–15)</div></div>
 <input type="number" name="min_context_lines_1_5" value="{{ settings.get('min_context_lines_1_5', 5) }}" min="3" max="15"></div>
 </div>
+<div class="card"><h2>Производительность ИИ</h2>
+<div class="section-desc">Ускорение без изменения логики: быстрый кэш и параллельный ансамбль ответов.</div>
+<div class="setting-row"><div><strong>TTL быстрого кэша (сек)</strong><div class="setting-desc">Сколько хранить повторяющиеся результаты анализа/поиска (0–3600). 0 = отключить кэш.</div></div>
+<input type="number" name="ai_fast_cache_ttl_sec" value="{{ settings.get('ai_fast_cache_ttl_sec', 45) }}" min="0" max="3600"></div>
+<div class="setting-row"><div><strong>Размер быстрого кэша</strong><div class="setting-desc">Максимум записей в памяти (16–5000).</div></div>
+<input type="number" name="ai_fast_cache_max_items" value="{{ settings.get('ai_fast_cache_max_items', 512) }}" min="16" max="5000"></div>
+<div class="setting-row"><div><strong>Параллельный ансамбль ответов</strong><div class="setting-desc">Запрашивать кандидатов у моделей одновременно (обычно быстрее ответ в личке).</div></div>
+<label><input type="checkbox" name="ai_parallel_reply_enabled" value="1" {% if settings.get('ai_parallel_reply_enabled', True) %}checked{% endif %}><span>Вкл.</span></label></div>
+<div class="setting-row"><div><strong>Live-дерево связей</strong><div class="setting-desc">Инкрементально обновлять связи в фоне в течение дня.</div></div>
+<label><input type="checkbox" name="social_graph_realtime_enabled" value="1" {% if settings.get('social_graph_realtime_enabled', True) %}checked{% endif %}><span>Вкл.</span></label></div>
+<div class="setting-row"><div><strong>Интервал live-обновления (сек)</strong><div class="setting-desc">Как часто в фоне пересчитывать дерево связей (15–1800).</div></div>
+<input type="number" name="social_graph_realtime_interval_sec" value="{{ settings.get('social_graph_realtime_interval_sec', 90) }}" min="15" max="1800"></div>
+<div class="setting-row"><div><strong>Мин. новых реплик для пары</strong><div class="setting-desc">Порог новых сообщений между парой перед live-обновлением связи (1–20).</div></div>
+<input type="number" name="social_graph_realtime_min_new_messages" value="{{ settings.get('social_graph_realtime_min_new_messages', 1) }}" min="1" max="20"></div>
+<div class="setting-row"><div><strong>Продвинутые инсайты дерева связей</strong><div class="setting-desc">Тон, темы, confidence, алерты, фильтры и история связи в UI.</div></div>
+<label><input type="checkbox" name="social_graph_advanced_insights_enabled" value="1" {% if settings.get('social_graph_advanced_insights_enabled', False) %}checked{% endif %}><span>Вкл.</span></label></div>
+<div class="setting-row"><div><strong>Ранжированный layout графа</strong><div class="setting-desc">В графе участники с наибольшим числом связей выше остальных.</div></div>
+<label><input type="checkbox" name="social_graph_ranked_layout_enabled" value="1" {% if settings.get('social_graph_ranked_layout_enabled', False) %}checked{% endif %}><span>Вкл.</span></label></div>
+<div class="setting-row"><div><strong>Прогноз эскалации конфликтов (админка)</strong><div class="setting-desc">Показывать список рисковых связей только в админке, без влияния на ответы бота.</div></div>
+<label><input type="checkbox" name="social_graph_conflict_forecast_enabled" value="1" {% if settings.get('social_graph_conflict_forecast_enabled', False) %}checked{% endif %}><span>Вкл.</span></label></div>
+<div class="setting-row"><div><strong>Детект ролей участников (админка)</strong><div class="setting-desc">Показывать роли: связующий, эксперт, провокатор и т.п. только для анализа в UI.</div></div>
+<label><input type="checkbox" name="social_graph_roles_enabled" value="1" {% if settings.get('social_graph_roles_enabled', False) %}checked{% endif %}><span>Вкл.</span></label></div>
+<div class="setting-row"><div><strong>Рекомендатор тем/форматов (ручной)</strong><div class="setting-desc">Генерация идеи поста ботом в админке + ручная отправка в чат.</div></div>
+<label><input type="checkbox" name="chat_topic_recommender_enabled" value="1" {% if settings.get('chat_topic_recommender_enabled', False) %}checked{% endif %}><span>Вкл.</span></label></div>
+<div class="setting-row"><div><strong>Память и объяснимость действий</strong><div class="setting-desc">Сохранять причины решений бота для просмотра в админке.</div></div>
+<label><input type="checkbox" name="bot_explainability_enabled" value="1" {% if settings.get('bot_explainability_enabled', False) %}checked{% endif %}><span>Вкл.</span></label></div>
+<div class="setting-row"><div><strong>Контент-дайджесты</strong><div class="setting-desc">Генерировать периодические дайджесты по чату (включаемо/выключаемо).</div></div>
+<label><input type="checkbox" name="content_digest_enabled" value="1" {% if settings.get('content_digest_enabled', False) %}checked{% endif %}><span>Вкл.</span></label></div>
+<div class="setting-row"><div><strong>Авто-отправка дайджеста</strong><div class="setting-desc">При включении бот автоматически отправляет дайджест в целевой чат.</div></div>
+<label><input type="checkbox" name="content_digest_send_enabled" value="1" {% if settings.get('content_digest_send_enabled', False) %}checked{% endif %}><span>Вкл.</span></label></div>
+<div class="setting-row"><div><strong>Интервал дайджеста (часы)</strong><div class="setting-desc">Период между авто-дайджестами (1–168).</div></div>
+<input type="number" name="content_digest_interval_hours" value="{{ settings.get('content_digest_interval_hours', 24) }}" min="1" max="168"></div>
+<div class="setting-row"><div><strong>Чат для дайджеста (ID)</strong><div class="setting-desc">Куда отправлять дайджест при авто-режиме. 0 = отключено.</div></div>
+<input type="number" name="content_digest_chat_id" value="{{ settings.get('content_digest_chat_id', 0) }}" min="-999999999999" max="999999999999"></div>
+</div>
+{% if extra_settings %}
+<div class="card"><h2>Дополнительные настройки (авто)</h2>
+<div class="section-desc">Автоматически показываются все ключи из bot_settings.DEFAULTS, которых нет в основных секциях.</div>
+{% for it in extra_settings %}
+<div class="setting-row">
+<div><strong>{{ it.key }}</strong></div>
+{% if it.type == 'bool' %}
+<label><input type="checkbox" name="{{ it.key }}" value="1" {% if it.value %}checked{% endif %}><span>Вкл.</span></label>
+{% elif it.type == 'list' %}
+<input type="text" name="{{ it.key }}" value="{{ _fmt_emoji_list(it.value, '') }}" style="min-width:220px">
+{% elif it.type == 'number' %}
+<input type="text" name="{{ it.key }}" value="{{ it.value }}" style="min-width:120px">
+{% else %}
+<input type="text" name="{{ it.key }}" value="{{ it.value }}" style="min-width:220px">
+{% endif %}
+</div>
+{% endfor %}
+</div>
+{% endif %}
 </div>
 
-<div style="margin-top:1rem;"><button type="submit" class="btn">Сохранить настройки</button></div>
+<div class="save-bar"><button type="submit" class="btn">Сохранить настройки</button></div>
 </form>
 <script>
 document.querySelectorAll('.tab').forEach(function(btn){
@@ -1005,6 +1305,13 @@ document.querySelectorAll('.tab-panel').forEach(function(p){p.classList.remove('
 btn.classList.add('active');
 var id=btn.getAttribute('data-tab');
 document.getElementById(id).classList.add('active');
+});
+});
+document.getElementById('settings-search').addEventListener('input', function(){
+var q = (this.value || '').toLowerCase().trim();
+document.querySelectorAll('.setting-row').forEach(function(row){
+var txt = row.innerText.toLowerCase();
+row.style.display = (!q || txt.indexOf(q) !== -1) ? '' : 'none';
 });
 });
 </script>
@@ -1029,7 +1336,9 @@ a{color:#e94560}
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:0.5rem}
 .stat{background:#0f3460;padding:0.5rem;border-radius:6px}
 .user-header{display:flex;align-items:center;gap:1rem}
-.avatar-lg{width:64px;height:64px;border-radius:50%;object-fit:cover;background:#0f3460}
+.avatar-wrap-lg{position:relative;display:inline-flex;align-items:center;justify-content:center;width:64px;height:64px}
+.avatar-lg{position:absolute;inset:0;width:100%;height:100%;border-radius:50%;object-fit:cover;background:#0f3460;box-sizing:border-box;display:block}
+.avatar-fallback-lg{position:absolute;inset:0;width:100%;height:100%;border-radius:50%;display:none;align-items:center;justify-content:center;background:#1a2a4a;color:#fff;font-size:1.15rem;font-weight:700;box-sizing:border-box}
 .btn{display:inline-block;padding:0.5rem 1rem;background:#e94560;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:0.9rem;margin-top:0.5rem}
 .btn:hover{background:#ff6b6b}.btn:disabled{opacity:0.6;cursor:not-allowed}
 .telegram-info{margin-top:1rem;padding:1rem;background:#0f3460;border-radius:8px}
@@ -1042,7 +1351,10 @@ a{color:#e94560}
 <div class="card">
 <h2>Пользователь</h2>
 <div class="user-header">
-<img src="{{ url_for('avatar', user_id=user_id) }}" alt="" class="avatar-lg" onerror="this.style.display='none'">
+<div class="avatar-wrap-lg">
+<img src="{{ url_for('avatar', user_id=user_id) }}" alt="" class="avatar-lg js-avatar-lg" data-avatar-name="{{ u.get('display_name', user_id) }}">
+<span class="avatar-fallback-lg js-avatar-fallback-lg"></span>
+</div>
 <div>
 <p><strong>ID:</strong> {{ user_id }}</p>
 <p><strong>Имя:</strong> {{ u.get('display_name', '—') }}</p>
@@ -1075,6 +1387,24 @@ out.innerHTML=html;
 .catch(function(){out.innerHTML='<span class="telegram-error">Ошибка запроса</span>'})
 .finally(function(){btn.disabled=false});
 }
+function avatarInitials(name){
+var s=(name||'').trim();
+if(!s)return '?';
+var parts=s.split(/\\s+/).filter(Boolean);
+if(parts.length===1)return parts[0].slice(0,1).toUpperCase();
+return (parts[0].slice(0,1)+parts[1].slice(0,1)).toUpperCase();
+}
+function initAvatarFallbackLarge(){
+var img=document.querySelector('.js-avatar-lg');
+var fb=document.querySelector('.js-avatar-fallback-lg');
+if(!img||!fb)return;
+fb.textContent=avatarInitials(img.getAttribute('data-avatar-name')||'');
+img.addEventListener('error', function(){img.style.display='none';fb.style.display='inline-flex';});
+img.addEventListener('load', function(){fb.style.display='none';img.style.display='inline-block';});
+if(!img.complete)return;
+if(img.naturalWidth===0){img.style.display='none';fb.style.display='inline-flex';}
+}
+initAvatarFallbackLarge();
 </script>
 <div class="card">
 <h2>Статистика</h2>
@@ -1199,6 +1529,12 @@ out.innerHTML=html;
 </div>
 <div id="qod-preview" style="padding:0.75rem;background:#0f3460;border-radius:8px;font-style:italic;display:none;"></div>
 </div>
+<div class="card">
+<h2>Объяснимость действий бота</h2>
+<p style="font-size:0.85rem;color:#9bb0cf;">Показывает последние причины решений бота для этого пользователя (если включено в настройках).</p>
+<button type="button" class="btn" style="background:#0f3460;" onclick="loadExplainability()">Показать последние решения</button>
+<div id="explainability-list" style="margin-top:0.7rem;max-height:230px;overflow:auto;font-size:0.84rem;color:#cfe0f8;background:#0f3460;border-radius:8px;padding:0.6rem;"></div>
+</div>
 <script>
 function toggleQuestionOfDay(cb){
 cb.disabled=true;
@@ -1261,6 +1597,21 @@ if(d.ok){out.textContent=d.question;out.style.display='block';status.textContent
 else{status.textContent=d.error||'Ошибка';status.style.color='#e94560';}
 })
 .catch(function(){btn.disabled=false;status.textContent='Ошибка';status.style.color='#e94560';});
+}
+function loadExplainability(){
+var box=document.getElementById('explainability-list');
+box.textContent='Загрузка…';
+fetch('{{ url_for("api_explainability_recent") }}?user_id={{ user_id }}')
+.then(r=>r.json()).then(function(d){
+  if(!d.ok){box.textContent=d.error||'Ошибка';return;}
+  var rows=d.events||[];
+  if(!rows.length){box.textContent='Данных нет или функция выключена.';return;}
+  box.innerHTML=rows.map(function(e){
+    var dt=new Date((e.ts||0)*1000);
+    var t=isNaN(dt.getTime())?'—':dt.toLocaleString();
+    return '<div style="margin-bottom:0.45rem;padding-bottom:0.45rem;border-bottom:1px dashed #2a4a77;"><strong>'+t+'</strong> · '+(e.kind||'')+' · <span style="color:#9ec5ff">'+(e.decision||'')+'</span><br><span style="color:#9ab2d1">'+(e.detail||'')+'</span></div>';
+  }).join('');
+}).catch(function(){box.textContent='Ошибка сети';});
 }
 function buildPortrait(){
 var btn=document.getElementById('btn-portrait');

@@ -28,6 +28,7 @@ from ai_analyzer import (
     analyze_image,
     analyze_message_for_reply,
     should_pause_dialog,
+    should_resume_dialog,
     analyze_batch_style,
     generate_rude_reply,
     generate_kind_reply,
@@ -44,10 +45,12 @@ import user_stats
 import bot_settings
 import qod_tracking
 import social_graph
+import bot_explainability
 from handlers.chat_moderation import append_social_dialogue
 from handlers.direct_reply import build_reply_context_with_images
 from services.reactions import pick_allowed_emoji, set_photo_reaction
 from services.schedulers import restart_checker, social_graph_daily_task
+from services.schedulers import social_graph_realtime_task
 from utils.text_formatting import capitalize_sentences, reply_text_to_html, strip_leading_name
 
 
@@ -404,15 +407,15 @@ async def _run_batch_analysis(
     initiator_user_id: int | None = None,
     initiator_message_text: str = "",
     initiator_image_result: tuple[bool, str, str] | None = None,
+    event_political_count: int | None = None,
 ) -> None:
     _chat_scheduled.pop(chat_id, None)
-    _chat_last_analysis[chat_id] = time.monotonic()
 
     if not bot_settings.get("moderation_enabled", chat_id):
         logger.info("[чат %s] Пропуск: модерация выключена", chat_id)
         _debug_log("SKIP", chat_id=chat_id, user=initiator_name, detail="модерация выключена")
         return
-    political_count = _chat_political_count.get(chat_id, 0)
+    political_count = event_political_count if event_political_count is not None else _chat_political_count.get(chat_id, 0)
     msgs_before = bot_settings.get_int("msgs_before_react", chat_id, 1, 20)
     reactions_only_phase = political_count < msgs_before and bot_settings.get("reactions_political_1_5")
     min_ctx = (
@@ -479,12 +482,15 @@ async def _run_batch_analysis(
     active_freq = bot_settings.get("style_active_frequency", chat_id) or "every_other"
     beast_freq = bot_settings.get("style_beast_frequency", chat_id) or "every"
     if political_count >= msgs_before and style == "active" and active_freq == "every_other" and (political_count - msgs_before) % 2 != 0:
-        logger.info("[чат %s] Пропуск: active, every_other, чётное сообщение", chat_id)
+        logger.info("[чат %s] Пропуск: active, every_other (через раз)", chat_id)
         return
     if political_count >= msgs_before and style == "beast" and beast_freq == "every_other" and (political_count - msgs_before) % 2 != 0:
-        logger.info("[чат %s] Пропуск: beast, every_other, чётное сообщение", chat_id)
+        logger.info("[чат %s] Пропуск: beast, every_other (через раз)", chat_id)
         return
 
+    # Фикс: api_interval должен срабатывать только на реально начатый анализ,
+    # а не на задачу, которая затем пропустилась по every_other.
+    _chat_last_analysis[chat_id] = time.monotonic()
     logger.info("[чат %s] Анализ ИИ: контекст %s символов", chat_id, len(context))
     # Уточняем по контексту: политика ли и тональность (или используем результат анализа изображения)
     if initiator_image_result is not None:
@@ -763,6 +769,7 @@ async def check_and_reply(message: Message) -> None:
                 initiator_user_id=initiator_user_id,
                 initiator_message_text=display_text,
                 initiator_image_result=image_result[:3] if has_photo and image_result else None,
+                event_political_count=political_count,
             )
         except Exception as e:
             logger.exception("Ошибка в отложенной проверке: %s", e)
@@ -812,7 +819,21 @@ async def on_message_to_bot(message: Message) -> None:
     user_id = message.from_user.id
     now_mono = time.monotonic()
     if _dm_silence_until.get(user_id, 0) > now_mono:
+        pause_context = f"{first_name}: {display_text}"
+        loop = asyncio.get_event_loop()
+        wants_resume = False
+        if bot_settings.get("reply_resume_on_apology_enabled"):
+            wants_resume = await loop.run_in_executor(None, lambda: should_resume_dialog(pause_context))
+        if wants_resume:
+            _dm_silence_until.pop(user_id, None)
+            resume_text = (bot_settings.get("reply_resume_text") or "ладно, амнистия. но не путай это со слабостью.").strip()
+            await message.reply(resume_text)
+            logger.info("Чат %s: пауза диалога снята для %s после примирения", chat_id, first_name)
+            _debug_log("DM_UNPAUSE", chat_id=chat_id, user=first_name, detail="forgive-detected")
+            _explain("dm", "unpause", chat_id=chat_id, user_id=user_id, detail=display_text[:120])
+            return
         logger.info("Чат %s: пользователь %s в паузе диалога (ignore)", chat_id, first_name)
+        _explain("dm", "ignore_in_pause", chat_id=chat_id, user_id=user_id, detail=display_text[:120])
         return
 
     context = get_recent_context(chat_id)
@@ -855,13 +876,16 @@ async def on_message_to_bot(message: Message) -> None:
             return
 
         # Если пользователь явно не хочет общаться — жёстко отвечаем и ставим паузу 3 минуты.
-        pause_context = (context or "") + "\n" + f"{first_name}: {display_text}"
+        pause_context = f"{first_name}: {display_text}"
         need_pause = await loop.run_in_executor(None, lambda: should_pause_dialog(pause_context))
-        if need_pause:
-            await message.reply("пошел нахуй.")
-            _dm_silence_until[user_id] = time.monotonic() + 180
-            logger.info("Чат %s: включена пауза диалога 3 мин для %s", chat_id, first_name)
-            _debug_log("DM_PAUSE", chat_id=chat_id, user=first_name, detail="3min")
+        if need_pause and bot_settings.get("reply_pause_on_reject_enabled"):
+            pause_text = (bot_settings.get("reply_pause_text") or "пошел нахуй.").strip()
+            pause_sec = bot_settings.get_int("reply_pause_sec", lo=30, hi=1800)
+            await message.reply(pause_text)
+            _dm_silence_until[user_id] = time.monotonic() + pause_sec
+            logger.info("Чат %s: включена пауза диалога %s сек для %s", chat_id, pause_sec, first_name)
+            _debug_log("DM_PAUSE", chat_id=chat_id, user=first_name, detail=f"{pause_sec}s")
+            _explain("dm", "pause", chat_id=chat_id, user_id=user_id, detail=display_text[:120])
             return
         # Портрет — быстрый путь без вызова ИИ (обновления в фоне после ответа)
         portrait = await loop.run_in_executor(
@@ -911,16 +935,19 @@ async def on_message_to_bot(message: Message) -> None:
                 None,
                 lambda: generate_kind_reply(reply_context, reply_input, first_name, user_portrait=portrait or ""),
             )
+            _explain("dm", "kind_reply", chat_id=chat_id, user_id=user_id, detail=reply_input[:120])
         elif message_type == "technical_question" and bot_settings.get("reply_technical_enabled"):
             reply_text = await loop.run_in_executor(
                 None,
                 lambda: generate_technical_reply(reply_context, reply_input, first_name, user_portrait=portrait or ""),
             )
+            _explain("dm", "technical_reply", chat_id=chat_id, user_id=user_id, detail=reply_input[:120])
         elif is_substantive:
             reply_text = await loop.run_in_executor(
                 None,
                 lambda: generate_substantive_reply(reply_context, reply_input, first_name, user_portrait=portrait or ""),
             )
+            _explain("dm", "substantive_reply", chat_id=chat_id, user_id=user_id, detail=reply_input[:120])
         elif bot_settings.get("reply_rude_enabled"):
             yq_chance = bot_settings.get_float("reply_yesterday_quotes_chance", lo=0, hi=1)
             use_yesterday = random.random() < yq_chance
@@ -934,6 +961,7 @@ async def on_message_to_bot(message: Message) -> None:
                     ctx, reply_input, first_name, user_portrait=pt, yesterday_quotes=yq if yq else None
                 ),
             )
+            _explain("dm", "rude_reply", chat_id=chat_id, user_id=user_id, detail=reply_input[:120])
         else:
             reply_text = bot_settings.get("reply_fallback_on_error") or "сейчас не в настроении, напиши потом."
         # Убираем дубль имени/ника из начала ответа — в сообщении только тег (упоминание)
@@ -993,6 +1021,13 @@ async def cmd_stats(message: Message) -> None:
 
 
 _question_of_day_last_sent_at: float = 0
+_content_digest_last_sent_at: float = 0.0
+
+
+def _explain(kind: str, decision: str, chat_id: int | None = None, user_id: int | None = None, detail: str = "") -> None:
+    if not bot_settings.get("bot_explainability_enabled"):
+        return
+    bot_explainability.append_event(kind=kind, decision=decision, chat_id=chat_id, user_id=user_id, detail=detail)
 
 
 def _qod_tracking_find(message: Message) -> tuple[str | None, int | None, str]:
@@ -1038,8 +1073,11 @@ async def _send_question_of_day_to_user(bot: Bot, user_id: int, display_name: st
         if not messages:
             logger.warning("Вопрос дня: нет сообщений за день у пользователя %s (пропуск)", user_id)
             return False
+        graph_ctx = ""
+        if bot_settings.get("qod_graph_mode_enabled"):
+            graph_ctx = await loop.run_in_executor(None, lambda: social_graph.get_user_graph_context(user_id))
         question = await loop.run_in_executor(
-            None, lambda: generate_question_of_day(messages, display_name or str(user_id))
+            None, lambda: generate_question_of_day(messages, display_name or str(user_id), graph_context=graph_ctx)
         )
         u = user_stats.get_user(user_id)
         dest = u.get("question_of_day_destination") or "chat"
@@ -1059,6 +1097,7 @@ async def _send_question_of_day_to_user(bot: Bot, user_id: int, display_name: st
             qod_tracking.add(chat_id, sent.message_id, user_id, question)
         user_stats.mark_question_of_day_asked(user_id)
         logger.info("Вопрос дня отправлен пользователю %s (%s): %s", user_id, "чат" if dest == "chat" else "личка", question[:50])
+        _explain("qod", "sent", chat_id=chat_id, user_id=user_id, detail=question[:150])
         return True
     except Exception as e:
         logger.warning("Не удалось отправить вопрос дня пользователю %s: %s", user_id, e)
@@ -1111,6 +1150,37 @@ async def _question_of_day_scheduler(bot: Bot) -> None:
             await asyncio.sleep(jitter)
 
 
+async def _content_digest_scheduler(bot: Bot) -> None:
+    """Периодический контент-дайджест (настраиваемый, отключаемый)."""
+    global _content_digest_last_sent_at
+    await asyncio.sleep(90)
+    while True:
+        try:
+            if not bot_settings.get("content_digest_enabled"):
+                await asyncio.sleep(60)
+                continue
+            interval_h = bot_settings.get_int("content_digest_interval_hours", lo=1, hi=168)
+            if time.time() - _content_digest_last_sent_at < interval_h * 3600:
+                await asyncio.sleep(60)
+                continue
+            chat_id = int(bot_settings.get("content_digest_chat_id") or 0)
+            if chat_id == 0:
+                await asyncio.sleep(60)
+                continue
+            digest = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: social_graph.build_chat_digest(chat_id, period_days=1),
+            )
+            if bot_settings.get("content_digest_send_enabled") and digest:
+                await bot.send_message(chat_id=chat_id, text=digest[:3900])
+                _content_digest_last_sent_at = time.time()
+                logger.info("Контент-дайджест отправлен в чат %s", chat_id)
+                _explain("digest", "sent", chat_id=chat_id, detail=digest[:180])
+            await asyncio.sleep(60)
+        except Exception as e:
+            logger.warning("Ошибка дайджеста: %s", e)
+            await asyncio.sleep(90)
+
+
 async def main() -> None:
     token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
     if not token or "вставьте" in token.lower() or "your_" in token.lower():
@@ -1148,7 +1218,9 @@ async def main() -> None:
     _debug_log("SESSION_START", detail=f"ИИ={os.getenv('OPENAI_BASE_URL', '—')}")
     asyncio.create_task(restart_checker(RESTART_FLAG_PATH, logger))
     asyncio.create_task(_question_of_day_scheduler(bot))
+    asyncio.create_task(_content_digest_scheduler(bot))
     asyncio.create_task(social_graph_daily_task(social_graph.process_pending_days, logger))
+    asyncio.create_task(social_graph_realtime_task(social_graph.process_realtime_updates, logger))
     await dp.start_polling(bot)
 
 

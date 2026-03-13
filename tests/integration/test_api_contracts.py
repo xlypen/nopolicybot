@@ -24,6 +24,15 @@ def test_admin_legacy_route_still_available(monkeypatch):
         assert "Админ-панель" in html
 
 
+def test_admin_legacy_query_flag_compat(monkeypatch):
+    _disable_auth(monkeypatch)
+    with admin_app.app.test_client() as client:
+        resp = client.get("/admin?legacy=1")
+        assert resp.status_code == 200
+        html = resp.get_data(as_text=True)
+        assert "Админ-панель" in html
+
+
 def test_api_chat_graph_contract(monkeypatch):
     _disable_auth(monkeypatch)
     with admin_app.app.test_client() as client:

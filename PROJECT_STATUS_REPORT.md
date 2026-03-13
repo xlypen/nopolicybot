@@ -3,7 +3,7 @@
 Дата: 2026-03-11  
 Проект: `nopolicybot` / `telegram-political-monitor-bot`  
 Ветка: `restore-from-archive`  
-Последний commit: `a94baf2` (`Make modern dashboard the default /admin experience.`)
+Последний commit: `297f461` (`Add integration coverage for modern and legacy admin routes.`)
 
 ---
 
@@ -79,18 +79,18 @@
 
 ## 6) Тесты и проверка
 
-- `pytest -q`: **81 passed**.
+- `pytest -q`: **83 passed**.
 - `python scripts/smoke_checks.py`: **ok**.
+- `./scripts/pre_release_check.sh`: pre-release цепочка (compile + tests + smoke + deploy dry-run).
 - Контрактные/юнит-тесты покрывают ключевые зоны: graph API, monitoring, audit, rate limiting, learning loop, predictive models, recommendations, FastAPI v2.
 
 ---
 
 ## 7) Остаточные хвосты (не блокеры)
 
-1. Формализовать release-процесс в `master` (PR, changelog, runbook).
+1. Провести staging soak 24-48ч с фиксацией SLO-метрик перед прод-выкатом.
 2. Довести realtime канал до production-grade backpressure/persistence модели (при необходимости больших нагрузок).
-3. Полностью закрепить storage-cutover policy (когда окончательно отключается JSON-path для отдельных подсистем).
-4. Добавить e2e UI-сценарии для `admin-modern` (playwright/browser automation).
+3. Добавить e2e UI-сценарии для `admin-modern` (playwright/browser automation).
 
 ---
 

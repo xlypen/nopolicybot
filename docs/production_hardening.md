@@ -56,10 +56,16 @@ Env vars:
   - static compile checks,
   - full test suite,
   - smoke checks.
+- `release-readiness.yml` runs pre-release gate checks for master PRs and manual runs.
 - `deploy.yml` provides manual `staging|production` preflight + environment-gated deploy stage.
 - deployment script: `scripts/deploy_release.sh`
   - supports real deploy via SSH secrets (`DEPLOY_HOST`, `DEPLOY_SSH_KEY`, etc.),
   - falls back to dry-run in CI when secrets are not configured.
+- pre-release helper: `scripts/pre_release_check.sh`
+  - compile check,
+  - full test suite,
+  - smoke checks,
+  - staging/production deploy dry-runs.
 
 ## Ops Templates
 

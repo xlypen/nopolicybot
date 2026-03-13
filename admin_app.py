@@ -32,6 +32,7 @@ from ai.prompts import get_all_prompts, reset_prompts, set_prompt
 from services.audit_log import read_recent, write_event
 from services.cache_backend import CacheBackend
 from services.monitoring import build_alerts, record_request, snapshot, to_prometheus_text
+from services.rate_limiter import RateLimiter
 from services.structured_logging import configure_logging
 
 load_dotenv(Path(__file__).resolve().parent / ".env", encoding="utf-8-sig")
@@ -72,14 +73,68 @@ _portrait_building: set[str] = set()
 # user_id (str) → идёт генерация картинки портрета
 _portrait_image_generating: set[str] = set()
 _API_CACHE = CacheBackend(namespace="admin_api", default_ttl=45)
+_FLASK_RATE_LIMITER = RateLimiter(namespace="flask_api_ratelimit")
 
 # Токен для участников: просмотр своего профиля и графа связей (без входа в админку)
 PARTICIPANT_TOKEN_TTL_SEC = 7 * 24 * 3600  # 7 дней
 
 
+def _flask_hardening_config() -> dict:
+    return {
+        "rate_limit_per_min": max(20, int(os.getenv("FLASK_RATE_LIMIT_PER_MIN", "300"))),
+        "max_url_length": max(256, int(os.getenv("FLASK_MAX_URL_LENGTH", "2600"))),
+        "max_body_bytes": max(1024, int(os.getenv("FLASK_MAX_BODY_BYTES", "1048576"))),
+    }
+
+
+def _client_ip_from_request() -> str:
+    xff = str(request.headers.get("x-forwarded-for", "") or "").strip()
+    if xff:
+        return xff.split(",")[0].strip()[:64] or "unknown"
+    return str(request.remote_addr or "unknown")[:64]
+
+
 @app.before_request
 def _monitoring_before_request():
     g._request_started_at = time.perf_counter()
+    if app.testing or os.getenv("PYTEST_CURRENT_TEST"):
+        return None
+    path = str(request.path or "/")
+    if not path.startswith("/api/"):
+        return None
+    cfg = _flask_hardening_config()
+    full_url = str(request.url or "")
+    if len(full_url) > int(cfg["max_url_length"]):
+        write_event(
+            "flask_request_blocked_url_too_long",
+            severity="warning",
+            source="flask_admin",
+            payload={"path": path, "method": request.method, "url_length": len(full_url)},
+        )
+        return jsonify({"ok": False, "error": "url too long"}), 414
+    content_len = int(request.content_length or 0)
+    if content_len > int(cfg["max_body_bytes"]):
+        write_event(
+            "flask_request_blocked_body_too_large",
+            severity="warning",
+            source="flask_admin",
+            payload={"path": path, "method": request.method, "content_length": int(content_len)},
+        )
+        return jsonify({"ok": False, "error": "payload too large"}), 413
+    ip = _client_ip_from_request()
+    rl = _FLASK_RATE_LIMITER.hit(f"ip:{ip}", int(cfg["rate_limit_per_min"]), 60)
+    if not bool(rl.get("allowed")):
+        write_event(
+            "flask_request_rate_limited",
+            severity="warning",
+            source="flask_admin",
+            payload={"path": path, "method": request.method, "ip": ip, "limit": rl.get("limit")},
+        )
+        resp = jsonify({"ok": False, "error": "rate limit exceeded", "retry_after": int(rl.get("retry_after", 1) or 1)})
+        resp.status_code = 429
+        resp.headers["Retry-After"] = str(int(rl.get("retry_after", 1) or 1))
+        return resp
+    return None
 
 
 @app.after_request

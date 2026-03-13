@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+import api.main as api_main
 from api.main import app
 
 
@@ -59,3 +60,18 @@ def test_fastapi_alerts_contract_authorized():
         assert body["ok"] is True
         assert "alerts" in body
         assert "metrics" in body
+
+
+def test_fastapi_rate_limit_contract(monkeypatch):
+    monkeypatch.setattr(
+        api_main,
+        "_hardening_config",
+        lambda: {"rate_limit_per_min": 1, "max_url_length": 2400, "max_body_bytes": 1048576},
+    )
+    api_main._API_RATE_LIMITER.clear()
+    headers = {"Authorization": "Bearer change-me-in-production"}
+    with TestClient(app) as client:
+        first = client.get("/api/v2/graph/1?period=7", headers=headers)
+        assert first.status_code == 200
+        second = client.get("/api/v2/graph/1?period=7", headers=headers)
+        assert second.status_code == 429

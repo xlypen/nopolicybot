@@ -104,6 +104,7 @@
   var statusEl = document.getElementById('me-graph-status');
   var root = document.getElementById('me-graph-root');
   var graphData = {nodes:[], edges:[], meta:{}};
+  var graphVersion = '';
   var wsClient = null;
   var refreshTimer = null;
 
@@ -139,8 +140,84 @@
     if(refreshTimer){return;}
     refreshTimer = setTimeout(function(){
       refreshTimer = null;
-      loadGraph('live');
+      fetchAndApplyDelta();
     }, 900);
+  }
+
+  function edgeId(edge){
+    var a = Number((edge && edge.source) || 0);
+    var b = Number((edge && edge.target) || 0);
+    if(!Number.isFinite(a) || !Number.isFinite(b)){ return '0|0'; }
+    var lo = Math.min(Math.trunc(a), Math.trunc(b));
+    var hi = Math.max(Math.trunc(a), Math.trunc(b));
+    return lo + '|' + hi;
+  }
+
+  function applyDelta(delta, version){
+    var d = delta || {};
+    var full = !!d.full_replace;
+    var upsertNodes = Array.isArray(d.upsert_nodes) ? d.upsert_nodes : [];
+    var removeNodeIds = new Set((Array.isArray(d.remove_node_ids) ? d.remove_node_ids : []).map(function(x){ return Number(x); }));
+    var upsertEdges = Array.isArray(d.upsert_edges) ? d.upsert_edges : [];
+    var removeEdgeIds = new Set(Array.isArray(d.remove_edge_ids) ? d.remove_edge_ids : []);
+
+    if(full){
+      graphData = {
+        nodes: upsertNodes.slice(),
+        edges: upsertEdges.slice(),
+        meta: d.meta || {}
+      };
+      graphVersion = String(version || graphVersion || '');
+      return;
+    }
+
+    var nodeMap = new Map();
+    (graphData.nodes || []).forEach(function(n){
+      var id = Number((n && n.id) || 0);
+      if(!Number.isFinite(id) || id === 0){ return; }
+      nodeMap.set(id, n);
+    });
+    removeNodeIds.forEach(function(id){ nodeMap.delete(id); });
+    upsertNodes.forEach(function(n){
+      var id = Number((n && n.id) || 0);
+      if(!Number.isFinite(id) || id === 0){ return; }
+      nodeMap.set(id, n);
+    });
+
+    var edgeMap = new Map();
+    (graphData.edges || []).forEach(function(e){ edgeMap.set(edgeId(e), e); });
+    removeEdgeIds.forEach(function(eid){ edgeMap.delete(String(eid)); });
+    upsertEdges.forEach(function(e){ edgeMap.set(edgeId(e), e); });
+
+    graphData = {
+      nodes: Array.from(nodeMap.values()),
+      edges: Array.from(edgeMap.values()),
+      meta: d.meta || (graphData.meta || {})
+    };
+    graphVersion = String(version || graphVersion || '');
+  }
+
+  async function fetchAndApplyDelta(){
+    try{
+      var q = new URLSearchParams();
+      q.set('token', String(meToken || ''));
+      if(graphVersion){ q.set('since', String(graphVersion)); }
+      var resp = await fetch('/api/me/graph-delta?' + q.toString(), { cache: 'no-store' });
+      var body = await resp.json();
+      if(!body || !body.ok){
+        await loadGraph('live');
+        return;
+      }
+      if(!body.changed){
+        graphVersion = String(body.graph_version || graphVersion || '');
+        return;
+      }
+      applyDelta(body.delta || {}, body.graph_version || '');
+      renderGraph();
+      setStatus('Live patch: узлов ' + ((graphData.nodes||[]).length) + ' · связей ' + ((graphData.edges||[]).length));
+    }catch(_e){
+      await loadGraph('live');
+    }
   }
 
   async function loadGraph(reason){
@@ -152,6 +229,7 @@
       );
       var body = await resp.json();
       graphData = (body && body.graph) || {nodes:[], edges:[], meta:{}};
+      graphVersion = String((body && body.graph_version) || graphVersion || '');
       renderGraph();
       setStatus('Участников: ' + ((graphData.nodes||[]).length) + ' · Связей: ' + ((graphData.edges||[]).length));
     }catch(_e){

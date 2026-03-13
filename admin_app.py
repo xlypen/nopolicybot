@@ -1750,9 +1750,66 @@ def api_storage_cutover():
 def api_me_graph_compat():
     from services.graph_api import build_graph_payload
 
+    token = (request.args.get("token") or "").strip()
+    token_user_id, token_err = _participant_verify(token) if token else (None, None)
+    if token and (token_err or not token_user_id):
+        return jsonify({"ok": False, "error": token_err or "Неверная ссылка"}), 403
     ego_raw = (request.args.get("user_id") or "").strip()
     ego = int(ego_raw) if ego_raw.isdigit() else None
-    return jsonify({"ok": True, "graph": build_graph_payload(None, period="7d", ego_user=ego)})
+    if token_user_id is not None:
+        ego = int(token_user_id)
+    payload = build_graph_payload(None, period="7d", ego_user=ego)
+    version = _graph_build_version(payload)
+    scope = _graph_snapshot_scope(None, "7d", ego, None)
+    _graph_history_set(scope, version, payload, ttl_sec=360)
+    return jsonify({"ok": True, "graph": payload, "graph_version": version})
+
+
+@app.route("/api/me/graph-delta")
+def api_me_graph_delta():
+    from services.graph_api import build_graph_payload
+
+    token = (request.args.get("token") or "").strip()
+    user_id, err = _participant_verify(token)
+    if err or not user_id:
+        return jsonify({"ok": False, "error": err or "Неверная ссылка"}), 403
+    since_version = (request.args.get("since") or "").strip()
+
+    ego = int(user_id)
+    current = build_graph_payload(None, period="7d", ego_user=ego)
+    current_version = _graph_build_version(current)
+    scope = _graph_snapshot_scope(None, "7d", ego, None)
+    history = _graph_history_get(scope)
+    latest = history.get("latest") if isinstance(history, dict) else None
+    prev = history.get("prev") if isinstance(history, dict) else None
+
+    prev_graph = None
+    if isinstance(latest, dict) and str(latest.get("version") or "") == since_version:
+        prev_graph = latest.get("graph") if isinstance(latest.get("graph"), dict) else None
+    elif isinstance(prev, dict) and str(prev.get("version") or "") == since_version:
+        prev_graph = prev.get("graph") if isinstance(prev.get("graph"), dict) else None
+    elif isinstance(latest, dict):
+        prev_graph = latest.get("graph") if isinstance(latest.get("graph"), dict) else None
+
+    if since_version and since_version == current_version:
+        _graph_history_set(scope, current_version, current, ttl_sec=360)
+        return jsonify({
+            "ok": True,
+            "changed": False,
+            "graph_version": current_version,
+            "delta": {
+                "full_replace": False,
+                "remove_node_ids": [],
+                "upsert_nodes": [],
+                "remove_edge_ids": [],
+                "upsert_edges": [],
+                "meta": current.get("meta") or {},
+            },
+        })
+
+    delta = _graph_delta(prev_graph, current)
+    _graph_history_set(scope, current_version, current, ttl_sec=360)
+    return jsonify({"ok": True, "changed": bool(delta.get("changed")), "graph_version": current_version, "delta": delta.get("delta") or {}})
 
 
 @app.route("/api/me/graph-version")

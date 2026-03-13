@@ -316,3 +316,26 @@ def test_api_me_graph_version_contract(monkeypatch):
         body = resp.get_json()
         assert body["ok"] is True
         assert body["version"] == "v-test|u123"
+
+
+def test_api_me_graph_delta_contract(monkeypatch):
+    monkeypatch.setattr(admin_app, "_participant_verify", lambda token: (123, None))
+    from services import graph_api
+
+    monkeypatch.setattr(
+        graph_api,
+        "build_graph_payload",
+        lambda chat_id, period="7d", ego_user=None, limit=None: {
+            "nodes": [{"id": 123, "label": "U123", "influence_score": 0.1, "centrality": 0.2, "community_id": 0, "tier": "secondary"}],
+            "edges": [],
+            "meta": {"source": "db", "period": "7d"},
+        },
+    )
+    with admin_app.app.test_client() as client:
+        first = client.get("/api/me/graph?token=t").get_json()
+        assert first["ok"] is True
+        assert "graph_version" in first
+        second = client.get(f"/api/me/graph-delta?token=t&since={first['graph_version']}").get_json()
+        assert second["ok"] is True
+        assert second["changed"] is False
+        assert "delta" in second

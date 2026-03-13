@@ -30,6 +30,7 @@ data/churn_snapshots.json
 data/retention_actions.json
 data/bot.db
 data/storage_mode.json
+data/topic_policies.json
 bot_last_start.json
 .sqlite_migrated_from_json
 graf_ex/

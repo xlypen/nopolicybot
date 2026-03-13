@@ -86,6 +86,7 @@ DEFAULTS = {
     "content_digest_send_enabled": False,
     "content_digest_interval_hours": 24,
     "content_digest_chat_id": 0,
+    "primary_moderation_topic": "politics",
     # Retention / growth automation
     "retention_auto_dm_enabled": False,
     "retention_auto_dm_interval_sec": 3600,

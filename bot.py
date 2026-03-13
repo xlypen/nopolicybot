@@ -59,6 +59,7 @@ from services.schedulers import restart_checker, social_graph_daily_task
 from services.schedulers import social_graph_realtime_task, portrait_image_daily_task, marketing_metrics_rollup_task, churn_detection_task
 from services.marketing_metrics import record_message_event, record_signal_event
 from services.decision_engine import DecisionEngine, append_decision_event
+from services.topic_policies import get_topic_label, resolve_topic_trigger
 from utils.text_formatting import capitalize_sentences, reply_text_to_html, strip_leading_name
 
 
@@ -470,6 +471,13 @@ def _decision_suffix(strategy: str) -> str:
     return ""
 
 
+def _topic_notice_line(topic: str | None) -> str:
+    key = str(topic or "politics").strip().lower()
+    if key == "politics":
+        return POLITICS_LINE
+    return f"Обнаружена тема: {get_topic_label(key)}."
+
+
 async def _update_portrait_background(user_id: int, display_name: str) -> None:
     """Обновляет портрет и тон пользователя в фоне (после отправки ответа)."""
     try:
@@ -531,6 +539,7 @@ async def _run_batch_analysis(
     initiator_message_text: str = "",
     initiator_image_result: tuple[bool, str, str] | None = None,
     event_political_count: int | None = None,
+    event_topic: str | None = None,
 ) -> None:
     _chat_scheduled.pop(chat_id, None)
 
@@ -634,8 +643,12 @@ async def _run_batch_analysis(
     _chat_last_analysis[chat_id] = time.monotonic()
     logger.info("[чат %s] Анализ ИИ: контекст %s символов", chat_id, len(context))
     # Уточняем по контексту: политика ли и тональность (или используем результат анализа изображения)
+    moderation_topic = str(event_topic or "politics").strip().lower() or "politics"
     if initiator_image_result is not None:
         is_political, _, sentiment = initiator_image_result
+    elif moderation_topic != "politics":
+        # For non-political topics we use keyword policy trigger and keep neutral sentiment baseline.
+        is_political, sentiment = True, "neutral"
     else:
         try:
             loop = asyncio.get_event_loop()
@@ -676,7 +689,7 @@ async def _run_batch_analysis(
                 chat_id=chat_id,
                 user_id=int(initiator_user_id),
                 sentiment=sentiment,
-                is_political=bool(is_political),
+                is_political=bool(is_political and moderation_topic == "politics"),
             )
         except Exception as e:
             logger.debug("marketing_metrics record_signal_event failed: %s", e)
@@ -684,7 +697,7 @@ async def _run_batch_analysis(
             initiator_user_id,
             initiator_message_text[:500],
             sentiment,
-            is_political,
+            bool(is_political and moderation_topic == "politics"),
             initiator_name,
         )
 
@@ -885,7 +898,7 @@ async def _run_batch_analysis(
     if not insult:
         insult = _insult_by_level(effective_level, initiator_name)
     article = _random_article_line(initiator_name) if bot_settings.get("article_line_enabled", chat_id) else ""
-    body = f"{POLITICS_LINE}\n{insult}"
+    body = f"{_topic_notice_line(moderation_topic)}\n{insult}"
     if article:
         body += f"\n{article}"
     if ca_result and ca_result.get("needs_evidence") and not ca_result.get("evidence_found") and ca_result.get("demand_phrase"):
@@ -992,8 +1005,18 @@ async def check_and_reply(message: Message) -> None:
 
     reply_to = message.reply_to_message
     reply_text = (reply_to.text or reply_to.caption or "") if reply_to else ""
-    msg_has_keyword = contains_political_keyword(text)
-    reply_has_keyword = contains_political_keyword(reply_text) if reply_text else False
+    msg_topic_detect = resolve_topic_trigger(
+        text,
+        special_matchers={"politics": contains_political_keyword},
+    )
+    msg_topic = msg_topic_detect.get("trigger_topic")
+    msg_has_keyword = bool(msg_topic)
+    reply_topic_detect = resolve_topic_trigger(
+        reply_text,
+        special_matchers={"politics": contains_political_keyword},
+    ) if reply_text else {"trigger_topic": None}
+    reply_topic = reply_topic_detect.get("trigger_topic")
+    reply_has_keyword = bool(reply_topic)
 
     # Анализ изображения по содержанию (категория, описание, политика)
     image_result: tuple[bool, str, str, str, str, str] | None = None
@@ -1045,6 +1068,7 @@ async def check_and_reply(message: Message) -> None:
 
     img_is_political = image_result is not None and image_result[0]
     # Считаем «политическое событие»: текст с полит. темой, или изображение с полит. контентом, или ответ в полит. тред
+    active_topic = str(msg_topic or reply_topic or ("politics" if img_is_political else "politics")).strip().lower()
     is_political_event = msg_has_keyword or img_is_political or (reply_to and reply_has_keyword and not (reply_to.from_user and reply_to.from_user.is_bot))
     reply_to_user_id = (
         int(reply_to.from_user.id)
@@ -1058,7 +1082,7 @@ async def check_and_reply(message: Message) -> None:
             display_name=first_name,
             reply_to_user_id=reply_to_user_id,
             mentioned_user_ids=_extract_mentioned_user_ids(message),
-            is_political=is_political_event,
+            is_political=bool(is_political_event and active_topic == "politics"),
         )
     except Exception as e:
         logger.debug("marketing_metrics record_message_event failed: %s", e)
@@ -1066,8 +1090,20 @@ async def check_and_reply(message: Message) -> None:
     if is_political_event:
         _chat_political_count[chat_id] = _chat_political_count.get(chat_id, 0) + 1
         _persist_state()
-        logger.info("[чат %s] Полит.событие №%s: %s «%s»", chat_id, _chat_political_count[chat_id], first_name, display_text[:50])
-        _debug_log("POLITICAL_EVENT", chat_id=chat_id, user=first_name, detail=f"№{_chat_political_count[chat_id]} «{text[:40]}»")
+        logger.info(
+            "[чат %s] Topic event #%s [%s]: %s «%s»",
+            chat_id,
+            _chat_political_count[chat_id],
+            active_topic,
+            first_name,
+            display_text[:50],
+        )
+        _debug_log(
+            "POLITICAL_EVENT",
+            chat_id=chat_id,
+            user=first_name,
+            detail=f"topic={active_topic} №{_chat_political_count[chat_id]} «{text[:40]}»",
+        )
         # Сразу заводим запись в базе участников, чтобы user_stats.json не оставался пустым
         if message.from_user:
             user_stats.get_user(message.from_user.id, first_name)
@@ -1130,6 +1166,7 @@ async def check_and_reply(message: Message) -> None:
                 initiator_message_text=display_text,
                 initiator_image_result=image_result[:3] if has_photo and image_result else None,
                 event_political_count=political_count,
+                event_topic=active_topic,
             )
         except Exception as e:
             logger.exception("Ошибка в отложенной проверке: %s", e)

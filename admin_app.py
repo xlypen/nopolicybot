@@ -1593,6 +1593,37 @@ def api_prompts():
     return jsonify({"ok": True, "prompts": reset_prompts(names)})
 
 
+@app.route("/api/topic-policies", methods=["GET", "POST", "DELETE"])
+@login_required
+def api_topic_policies():
+    from services.topic_policies import (
+        get_primary_topic,
+        get_topic_policies,
+        reset_topic_policies,
+        set_primary_topic,
+        set_topic_policy,
+    )
+
+    if request.method == "GET":
+        return jsonify({"ok": True, "primary_topic": get_primary_topic(), "policies": get_topic_policies()})
+
+    payload = request.get_json(silent=True) or {}
+    if request.method == "POST":
+        primary_topic = payload.get("primary_topic")
+        if primary_topic is not None:
+            set_primary_topic(str(primary_topic))
+        name = str(payload.get("name") or "").strip().lower()
+        patch = payload.get("patch")
+        if name and isinstance(patch, dict):
+            set_topic_policy(name, patch)
+        return jsonify({"ok": True, "primary_topic": get_primary_topic(), "policies": get_topic_policies()})
+
+    names = payload.get("names")
+    names_list = [str(x) for x in names] if isinstance(names, list) else None
+    policies = reset_topic_policies(names_list)
+    return jsonify({"ok": True, "primary_topic": get_primary_topic(), "policies": policies})
+
+
 if __name__ == "__main__":
     host = os.getenv("ADMIN_HOST", "127.0.0.1")
     port = int(os.getenv("ADMIN_PORT", "5000"))

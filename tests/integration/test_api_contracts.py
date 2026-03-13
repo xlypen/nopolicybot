@@ -247,3 +247,18 @@ def test_api_storage_cutover_contract(monkeypatch):
         body = resp.get_json()
         assert body["ok"] is True
         assert body["mode"] == "db"
+
+
+def test_api_topic_policies_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import topic_policies as tp
+
+    monkeypatch.setattr(tp, "get_primary_topic", lambda chat_id=None: "politics")
+    monkeypatch.setattr(tp, "get_topic_policies", lambda: {"politics": {"enabled": True, "action": "moderate"}})
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/topic-policies")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["primary_topic"] == "politics"
+        assert "policies" in body

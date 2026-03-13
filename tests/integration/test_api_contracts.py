@@ -5,6 +5,25 @@ def _disable_auth(monkeypatch):
     monkeypatch.setattr(admin_app, "login_required", lambda f: f)
 
 
+def test_admin_route_defaults_to_modern_dashboard(monkeypatch):
+    _disable_auth(monkeypatch)
+    with admin_app.app.test_client() as client:
+        resp = client.get("/admin")
+        assert resp.status_code == 200
+        html = resp.get_data(as_text=True)
+        assert "Modern Dashboard" in html
+        assert "/admin-legacy" in html
+
+
+def test_admin_legacy_route_still_available(monkeypatch):
+    _disable_auth(monkeypatch)
+    with admin_app.app.test_client() as client:
+        resp = client.get("/admin-legacy")
+        assert resp.status_code == 200
+        html = resp.get_data(as_text=True)
+        assert "Админ-панель" in html
+
+
 def test_api_chat_graph_contract(monkeypatch):
     _disable_auth(monkeypatch)
     with admin_app.app.test_client() as client:

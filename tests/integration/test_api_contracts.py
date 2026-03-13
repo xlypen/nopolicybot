@@ -213,3 +213,37 @@ def test_api_storage_status_contract(monkeypatch):
         body = resp.get_json()
         assert body["ok"] is True
         assert "json" in body and "db" in body
+
+
+def test_api_storage_cutover_report_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import storage_cutover
+
+    monkeypatch.setattr(
+        storage_cutover,
+        "build_cutover_report",
+        lambda: {"ok": True, "current_mode": "hybrid", "db_ready_for_cutover": True},
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/storage/cutover-report")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["current_mode"] == "hybrid"
+
+
+def test_api_storage_cutover_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import storage_cutover
+
+    monkeypatch.setattr(
+        storage_cutover,
+        "apply_cutover",
+        lambda mode, force=False, reason="manual": {"ok": True, "mode": mode, "report": {"ok": True}},
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.post("/api/storage/cutover", json={"mode": "db", "force": False, "reason": "test"})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["mode"] == "db"

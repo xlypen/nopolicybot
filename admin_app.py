@@ -1508,6 +1508,30 @@ def api_storage_status():
     return jsonify(export_snapshot())
 
 
+@app.route("/api/storage/cutover-report")
+@login_required
+def api_storage_cutover_report():
+    from services.storage_cutover import build_cutover_report
+
+    return jsonify(build_cutover_report())
+
+
+@app.route("/api/storage/cutover", methods=["POST"])
+@login_required
+def api_storage_cutover():
+    from services.storage_cutover import apply_cutover
+
+    payload = request.get_json(silent=True) or {}
+    mode = str(payload.get("mode") or "").strip().lower()
+    force = bool(payload.get("force", False))
+    reason = str(payload.get("reason") or "manual").strip()
+    if mode not in {"json", "hybrid", "db"}:
+        return jsonify({"ok": False, "error": "mode must be one of: json, hybrid, db"}), 400
+    result = apply_cutover(mode, force=force, reason=reason)
+    status = 200 if result.get("ok") else 409
+    return jsonify(result), status
+
+
 @app.route("/api/me/graph")
 def api_me_graph_compat():
     from services.graph_api import build_graph_payload

@@ -17,6 +17,7 @@ from db.repositories.edge_repo import EdgeRepository
 from db.repositories.message_repo import MessageRepository
 from db.repositories.user_repo import UserRepository
 from services.data_platform import export_snapshot
+from services.storage_cutover import apply_cutover
 
 
 def _read_json_source() -> tuple[dict, dict]:
@@ -148,6 +149,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Migrate user_stats/social_graph JSON data to SQL database")
     parser.add_argument("--dry-run", action="store_true", default=False, help="Only calculate migration stats, do not write DB")
     parser.add_argument("--write-marker", action="store_true", default=False, help="Write .sqlite_migrated_from_json on successful validation")
+    parser.add_argument("--cutover-db", action="store_true", default=False, help="Set storage mode to db after successful migration")
     args = parser.parse_args()
     out = asyncio.run(migrate(dry_run=args.dry_run, write_marker=args.write_marker))
+    if args.cutover_db and not args.dry_run and out.get("ok") and all((out.get("validation") or {}).values()):
+        out["cutover"] = apply_cutover("db", force=False, reason="migrate_to_db.py --cutover-db")
     print(json.dumps(out, ensure_ascii=False, indent=2))

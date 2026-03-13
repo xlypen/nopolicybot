@@ -1029,13 +1029,16 @@ function startRealtimeClientIfNeeded(){
   stopRealtimeClient();
   realtimeWsClient = window.createGraphRealtimeClient({
     chatIds: realtimeWsChatIds,
+    pollUrl: '{{ url_for("api_social_graph_version") }}',
+    pollIntervalMs: 4500,
     throttleMs: 900,
     onStatus: function(statusText){
       setRealtimeWsStatus(statusText, String(statusText || '').indexOf('error') >= 0);
     },
     onDelta: function(evt){
       var n = Number((evt || {}).updated_pairs || 0);
-      setRealtimeWsStatus('delta +' + (Number.isFinite(n) ? n : 0));
+      var src = String((evt || {}).source || 'ws');
+      setRealtimeWsStatus('delta +' + (Number.isFinite(n) ? n : 0) + ' (' + src + ')');
       scheduleRealtimeReload();
     }
   });

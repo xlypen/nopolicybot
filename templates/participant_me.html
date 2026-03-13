@@ -97,6 +97,7 @@
 <script>
 (function(){
   var userId = {{ user_id|int }};
+  var meToken = {{ me_token|tojson }};
   var chatIds = {{ me_chat_ids|tojson }};
   var modeSel = document.getElementById('me-graph-mode');
   var statusEl = document.getElementById('me-graph-status');
@@ -137,7 +138,10 @@
   async function loadGraph(reason){
     setStatus(reason === 'live' ? 'Live обновление…' : 'Загрузка графа…');
     try{
-      var resp = await fetch('/api/me/graph?user_id=' + encodeURIComponent(String(userId)), { cache: 'no-store' });
+      var resp = await fetch(
+        '/api/me/graph?user_id=' + encodeURIComponent(String(userId)) + '&token=' + encodeURIComponent(String(meToken || '')),
+        { cache: 'no-store' }
+      );
       var body = await resp.json();
       graphData = (body && body.graph) || {nodes:[], edges:[], meta:{}};
       renderGraph();
@@ -148,18 +152,22 @@
   }
 
   function startRealtime(){
-    if(!window.createGraphRealtimeClient || !Array.isArray(chatIds) || !chatIds.length){
-      setStatus('Live недоступен (нет chat_id)', true);
+    if(!window.createGraphRealtimeClient){
+      setStatus('Live недоступен', true);
       return;
     }
     wsClient = window.createGraphRealtimeClient({
       chatIds: chatIds,
+      pollUrl: '/api/me/graph-version?token=' + encodeURIComponent(String(meToken || '')),
+      pollIntervalMs: 5000,
       throttleMs: 900,
       onStatus: function(s){
         var isErr = String(s || '').indexOf('error') >= 0;
         setStatus('WS: ' + s, isErr);
       },
-      onDelta: function(){
+      onDelta: function(evt){
+        var src = String((evt || {}).source || 'ws');
+        setStatus('Live delta (' + src + ')');
         scheduleRefresh();
       }
     });

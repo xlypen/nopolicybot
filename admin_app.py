@@ -324,6 +324,7 @@ def participant_me():
         portrait_exists=portrait_exists,
         me_url=me_url_refresh,
         me_chat_ids=me_chat_ids,
+        me_token=token,
     )
 
 
@@ -1621,6 +1622,17 @@ def api_me_graph_compat():
     ego_raw = (request.args.get("user_id") or "").strip()
     ego = int(ego_raw) if ego_raw.isdigit() else None
     return jsonify({"ok": True, "graph": build_graph_payload(None, period="7d", ego_user=ego)})
+
+
+@app.route("/api/me/graph-version")
+def api_me_graph_version():
+    token = (request.args.get("token") or "").strip()
+    user_id, err = _participant_verify(token)
+    if err or not user_id:
+        return jsonify({"ok": False, "error": err or "Неверная ссылка"}), 403
+    import social_graph
+
+    return jsonify({"ok": True, "version": f"{social_graph.get_graph_version()}|u{int(user_id)}"})
 
 
 @app.route("/api/log-tail")

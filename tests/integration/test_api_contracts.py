@@ -281,3 +281,16 @@ def test_api_topic_policies_update_contract(monkeypatch):
         body = resp.get_json()
         assert body["ok"] is True
         assert "policies" in body
+
+
+def test_api_me_graph_version_contract(monkeypatch):
+    monkeypatch.setattr(admin_app, "_participant_verify", lambda token: (123, None))
+    import social_graph
+
+    monkeypatch.setattr(social_graph, "get_graph_version", lambda: "v-test")
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/me/graph-version?token=test-token")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["version"] == "v-test|u123"

@@ -52,13 +52,19 @@
         <option value="bubble">Bubble</option>
         <option value="ego">Ego</option>
       </select>
+      <label style="display:flex;gap:6px;align-items:center;">
+        <input type="checkbox" id="autoRefreshChk" checked>
+        автообновление
+      </label>
       <button class="btn" id="loadGraphBtn">Загрузить</button>
+      <span id="graphLiveStatus" style="font-size:12px;color:var(--text-secondary);">Live: init</span>
     </div>
   </div>
 </div>
 
 <div class="card">
   <div class="title">Graph Canvas</div>
+  <div id="graphMetaLine" style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">Источник: —</div>
   <div id="modernGraphRoot" style="min-height:520px;border:1px solid var(--border-input);border-radius:10px;padding:10px;background:#0b1630;"></div>
 </div>
 
@@ -111,6 +117,11 @@
 <script type="module" src="{{ url_for('static', filename='js/graph_visualizations.jsx') }}"></script>
 <script type="module" src="{{ url_for('static', filename='js/advanced_graph_viz.jsx') }}"></script>
 <script>
+let _loadPromise = null;
+let _versionPollTimer = null;
+let _autoRefreshTimer = null;
+let _lastGraphVersion = null;
+
 function fmt(num, digits = 2) {
   const n = Number(num || 0);
   return Number.isFinite(n) ? n.toFixed(digits) : '0.00';
@@ -124,13 +135,32 @@ function esc(text) {
 }
 
 async function loadAndRender() {
+  if (_loadPromise) {
+    return _loadPromise;
+  }
+  _loadPromise = (async () => {
   const chat = document.getElementById('chatSel').value;
   const mode = document.getElementById('modeSel').value;
   const root = document.getElementById('modernGraphRoot');
+  const metaLine = document.getElementById('graphMetaLine');
+  const live = document.getElementById('graphLiveStatus');
   root.textContent = 'Загрузка данных...';
+  if (live) {
+    live.textContent = 'Live: loading...';
+    live.style.color = 'var(--text-secondary)';
+  }
   const resp = await fetch(`/api/chat/${encodeURIComponent(chat)}/graph?period=7d`);
   const body = await resp.json();
   const graph = (body && body.graph) || {nodes: [], edges: [], meta: {}};
+  const meta = graph.meta || {};
+  const loadedAt = new Date().toLocaleTimeString('ru-RU');
+  if (metaLine) {
+    const source = String(meta.source || 'unknown');
+    const nodesCount = Number(meta.nodes_count || (graph.nodes || []).length || 0);
+    const edgesCount = Number(meta.edges_count || (graph.edges || []).length || 0);
+    const period = String(meta.period || '7d');
+    metaLine.textContent = `Источник: ${source} · Период: ${period} · Узлы: ${nodesCount} · Связи: ${edgesCount} · Обновлено: ${loadedAt}`;
+  }
   const payload = { root, data: graph, mode };
   try {
     if (window.AdvancedGraphViz && window.AdvancedGraphViz.modes && window.AdvancedGraphViz.modes.includes(mode)) {
@@ -142,6 +172,16 @@ async function loadAndRender() {
     }
   } finally {
     await loadInsights(chat);
+    if (live) {
+      live.textContent = 'Live: synced';
+      live.style.color = '#4ade80';
+    }
+  }
+  })();
+  try {
+    await _loadPromise;
+  } finally {
+    _loadPromise = null;
   }
 }
 
@@ -238,6 +278,63 @@ document.getElementById('loadGraphBtn').addEventListener('click', () => {
   });
 });
 
+function setupAutoRefresh() {
+  if (_autoRefreshTimer) {
+    clearInterval(_autoRefreshTimer);
+    _autoRefreshTimer = null;
+  }
+  const chk = document.getElementById('autoRefreshChk');
+  if (!chk || !chk.checked) {
+    return;
+  }
+  _autoRefreshTimer = setInterval(() => {
+    loadAndRender().catch(() => {});
+  }, 30000);
+}
+
+async function pollGraphVersion() {
+  const live = document.getElementById('graphLiveStatus');
+  try {
+    const r = await fetch('/api/social-graph-version', { cache: 'no-store' });
+    const b = await r.json();
+    const ver = String((b || {}).version || '');
+    if (!ver) {
+      return;
+    }
+    if (_lastGraphVersion === null) {
+      _lastGraphVersion = ver;
+      if (live) {
+        live.textContent = 'Live: ready';
+        live.style.color = '#4ade80';
+      }
+      return;
+    }
+    if (ver !== _lastGraphVersion) {
+      _lastGraphVersion = ver;
+      if (live) {
+        live.textContent = 'Live: delta detected';
+        live.style.color = '#4ade80';
+      }
+      await loadAndRender();
+    }
+  } catch (_e) {
+    if (live) {
+      live.textContent = 'Live: polling error';
+      live.style.color = '#fbbf24';
+    }
+  }
+}
+
+function setupVersionPolling() {
+  if (_versionPollTimer) {
+    clearInterval(_versionPollTimer);
+    _versionPollTimer = null;
+  }
+  _versionPollTimer = setInterval(() => {
+    pollGraphVersion().catch(() => {});
+  }, 5000);
+}
+
 document.getElementById('runChurnBtn').addEventListener('click', async () => {
   const chat = document.getElementById('chatSel').value;
   const btn = document.getElementById('runChurnBtn');
@@ -263,6 +360,18 @@ document.getElementById('reloadStorageBtn').addEventListener('click', () => {
   });
 });
 
+document.getElementById('chatSel').addEventListener('change', () => {
+  _lastGraphVersion = null;
+  loadAndRender().catch(() => {});
+});
+document.getElementById('modeSel').addEventListener('change', () => {
+  loadAndRender().catch(() => {});
+});
+document.getElementById('autoRefreshChk').addEventListener('change', setupAutoRefresh);
+
 loadAndRender().catch(() => {});
+setupAutoRefresh();
+setupVersionPolling();
+pollGraphVersion().catch(() => {});
 </script>
 {% endblock %}

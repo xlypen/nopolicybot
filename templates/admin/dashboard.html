@@ -61,12 +61,68 @@
   <div class="title">Graph Canvas</div>
   <div id="modernGraphRoot" style="min-height:520px;border:1px solid var(--border-input);border-radius:10px;padding:10px;background:#0b1630;"></div>
 </div>
+
+<div class="grid">
+  <div class="card">
+    <div class="title">Retention & At-Risk</div>
+    <div id="retentionSummary" style="color:var(--text-secondary);margin-bottom:8px;">Загрузка...</div>
+    <div style="overflow:auto;max-height:280px;">
+      <table style="width:100%;border-collapse:collapse;">
+        <thead>
+          <tr>
+            <th style="text-align:left;padding:6px;border-bottom:1px solid var(--border-card);">Пользователь</th>
+            <th style="text-align:right;padding:6px;border-bottom:1px solid var(--border-card);">Risk</th>
+            <th style="text-align:right;padding:6px;border-bottom:1px solid var(--border-card);">Influence</th>
+          </tr>
+        </thead>
+        <tbody id="atRiskRows"></tbody>
+      </table>
+    </div>
+    <div style="margin-top:8px;">
+      <button class="btn btn-secondary" id="runChurnBtn">Пересчитать churn сейчас</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="title">Recommendations</div>
+    <ul id="recoList" style="margin:0;padding-left:18px;color:var(--text-secondary);">
+      <li>Загрузка...</li>
+    </ul>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <div class="title">Storage Status</div>
+    <div id="storageStatus" style="color:var(--text-secondary);">Загрузка...</div>
+    <div style="margin-top:8px;">
+      <button class="btn btn-secondary" id="reloadStorageBtn">Обновить статус</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="title">Decision Audit (recent)</div>
+    <ul id="decisionList" style="margin:0;padding-left:18px;color:var(--text-secondary);">
+      <li>Загрузка...</li>
+    </ul>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <script type="module" src="{{ url_for('static', filename='js/graph_visualizations.jsx') }}"></script>
 <script type="module" src="{{ url_for('static', filename='js/advanced_graph_viz.jsx') }}"></script>
 <script>
+function fmt(num, digits = 2) {
+  const n = Number(num || 0);
+  return Number.isFinite(n) ? n.toFixed(digits) : '0.00';
+}
+
+function esc(text) {
+  return String(text || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+}
+
 async function loadAndRender() {
   const chat = document.getElementById('chatSel').value;
   const mode = document.getElementById('modeSel').value;
@@ -76,21 +132,134 @@ async function loadAndRender() {
   const body = await resp.json();
   const graph = (body && body.graph) || {nodes: [], edges: [], meta: {}};
   const payload = { root, data: graph, mode };
+  try {
+    if (window.AdvancedGraphViz && window.AdvancedGraphViz.modes && window.AdvancedGraphViz.modes.includes(mode)) {
+      window.AdvancedGraphViz.render(payload);
+    } else if (window.GraphVisualizations) {
+      window.GraphVisualizations.render(payload);
+    } else {
+      root.textContent = 'Graph modules not loaded.';
+    }
+  } finally {
+    await loadInsights(chat);
+  }
+}
 
-  if (window.AdvancedGraphViz && window.AdvancedGraphViz.modes && window.AdvancedGraphViz.modes.includes(mode)) {
-    window.AdvancedGraphViz.render(payload);
+async function loadInsights(chat) {
+  await Promise.allSettled([
+    loadRetention(chat),
+    loadRecommendations(chat),
+    loadStorageStatus(),
+    loadDecisions(chat),
+  ]);
+}
+
+async function loadRetention(chat) {
+  const sumEl = document.getElementById('retentionSummary');
+  const rowsEl = document.getElementById('atRiskRows');
+  sumEl.textContent = 'Загрузка...';
+  rowsEl.innerHTML = '';
+  const r = await fetch(`/api/retention-dashboard?chat_id=${encodeURIComponent(chat)}&days=30&limit=50`);
+  const b = await r.json();
+  const d = (b && b.dashboard) || {};
+  const s = d.summary || {};
+  sumEl.textContent = `Users: ${s.users_considered || 0} | At-risk: ${s.at_risk_count || 0} | High-value: ${s.high_value_at_risk_count || 0}`;
+  const atRisk = d.at_risk || [];
+  if (!atRisk.length) {
+    rowsEl.innerHTML = `<tr><td colspan="3" style="padding:6px;color:var(--text-secondary);">Нет пользователей в зоне риска</td></tr>`;
     return;
   }
-  if (window.GraphVisualizations) {
-    window.GraphVisualizations.render(payload);
+  rowsEl.innerHTML = atRisk.slice(0, 12).map((u) => `
+    <tr>
+      <td style="padding:6px;border-bottom:1px solid var(--border-card);">${esc(u.display_name || u.user_id)}</td>
+      <td style="padding:6px;text-align:right;border-bottom:1px solid var(--border-card);">${fmt(u.churn_risk)}</td>
+      <td style="padding:6px;text-align:right;border-bottom:1px solid var(--border-card);">${fmt(u.influence_score)}</td>
+    </tr>
+  `).join('');
+}
+
+async function loadRecommendations(chat) {
+  const list = document.getElementById('recoList');
+  list.innerHTML = '<li>Загрузка...</li>';
+  const r = await fetch(`/api/recommendations?chat_id=${encodeURIComponent(chat)}&days=30&limit=10`);
+  const b = await r.json();
+  const items = (((b || {}).recommendations || {}).items) || [];
+  if (!items.length) {
+    list.innerHTML = '<li>Рекомендаций пока нет.</li>';
     return;
   }
-  root.textContent = 'Graph modules not loaded.';
+  list.innerHTML = items.map((item) => {
+    const who = item.display_name ? ` <strong>${esc(item.display_name)}</strong>` : '';
+    return `<li><span style="color:#dfe9ff;">[${esc(item.priority || 'low')}] ${esc(item.type || 'item')}</span>${who}: ${esc(item.action || '')}</li>`;
+  }).join('');
+}
+
+async function loadStorageStatus() {
+  const el = document.getElementById('storageStatus');
+  el.textContent = 'Загрузка...';
+  const [stResp, reportResp] = await Promise.all([
+    fetch('/api/storage/status'),
+    fetch('/api/storage/cutover-report'),
+  ]);
+  const st = await stResp.json();
+  const rep = await reportResp.json();
+  const j = (st && st.json) || {};
+  const d = (st && st.db) || {};
+  const ok = !!(rep && rep.db_ready_for_cutover);
+  el.innerHTML = `
+    <div>Mode: <strong>${esc(rep.current_mode || st.storage_primary || 'hybrid')}</strong></div>
+    <div>DB ready: <strong style="color:${ok ? '#4ade80' : '#fbbf24'}">${ok ? 'yes' : 'no'}</strong></div>
+    <div style="margin-top:4px;">JSON → users ${j.users || 0}, messages ${j.messages || 0}, edges ${j.edges || 0}</div>
+    <div>DB → users ${d.users || 0}, messages ${d.messages || 0}, edges ${d.edges || 0}</div>
+  `;
+}
+
+async function loadDecisions(chat) {
+  const list = document.getElementById('decisionList');
+  list.innerHTML = '<li>Загрузка...</li>';
+  const r = await fetch(`/api/decisions/recent?chat_id=${encodeURIComponent(chat)}&limit=12`);
+  const b = await r.json();
+  const rows = (b && b.decisions) || [];
+  if (!rows.length) {
+    list.innerHTML = '<li>Решений пока нет.</li>';
+    return;
+  }
+  list.innerHTML = rows.map((row) => {
+    const strategy = esc(row.strategy || 'standard');
+    const outcome = esc(row.outcome || '');
+    const user = row.user_id ? `u${row.user_id}` : '—';
+    return `<li><strong>${strategy}</strong> (${outcome}) · ${user}</li>`;
+  }).join('');
 }
 
 document.getElementById('loadGraphBtn').addEventListener('click', () => {
   loadAndRender().catch((e) => {
     document.getElementById('modernGraphRoot').textContent = 'Ошибка: ' + e;
+  });
+});
+
+document.getElementById('runChurnBtn').addEventListener('click', async () => {
+  const chat = document.getElementById('chatSel').value;
+  const btn = document.getElementById('runChurnBtn');
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = 'Считаю...';
+  try {
+    await fetch('/api/churn/run', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({chat_id: chat, days: 30}),
+    });
+    await loadInsights(chat);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+});
+
+document.getElementById('reloadStorageBtn').addEventListener('click', () => {
+  loadStorageStatus().catch(() => {
+    document.getElementById('storageStatus').textContent = 'Ошибка загрузки статуса storage.';
   });
 });
 

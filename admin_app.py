@@ -526,6 +526,15 @@ def participant_me():
 @app.route("/admin")
 @login_required
 def admin():
+    legacy = str(request.args.get("legacy") or "").strip().lower() in {"1", "true", "yes", "on"}
+    if not legacy:
+        return admin_modern()
+    return admin_legacy()
+
+
+@app.route("/admin-legacy")
+@login_required
+def admin_legacy():
     from user_stats import get_chats, get_users_in_chat
 
     data = _load_users()

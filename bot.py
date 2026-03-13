@@ -59,6 +59,7 @@ from services.schedulers import restart_checker, social_graph_daily_task
 from services.schedulers import social_graph_realtime_task, portrait_image_daily_task, marketing_metrics_rollup_task, churn_detection_task
 from services.marketing_metrics import record_message_event, record_signal_event
 from services.decision_engine import DecisionEngine, append_decision_event
+from services.db_ingest import ingest_message_event
 from services.topic_policies import get_topic_label, resolve_topic_trigger
 from utils.text_formatting import capitalize_sentences, reply_text_to_html, strip_leading_name
 
@@ -1086,6 +1087,26 @@ async def check_and_reply(message: Message) -> None:
         )
     except Exception as e:
         logger.debug("marketing_metrics record_message_event failed: %s", e)
+
+    try:
+        media_type = "photo" if has_photo else ("voice" if has_voice else "text")
+        asyncio.create_task(
+            ingest_message_event(
+                chat_id=int(chat_id),
+                user_id=int(message.from_user.id),
+                message_id=int(message.message_id),
+                text=display_text,
+                username=(message.from_user.username or "") if message.from_user else "",
+                first_name=(message.from_user.first_name or "") if message.from_user else "",
+                last_name=(message.from_user.last_name or "") if message.from_user else "",
+                media_type=media_type,
+                replied_to_user_id=reply_to_user_id,
+                sentiment=None,
+                is_political=bool(is_political_event and active_topic == "politics"),
+            )
+        )
+    except Exception as e:
+        logger.debug("db ingest scheduling failed: %s", e)
 
     if is_political_event:
         _chat_political_count[chat_id] = _chat_political_count.get(chat_id, 0) + 1

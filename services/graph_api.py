@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 
 import social_graph
 import user_stats
+from db.engine import get_db
+from db.repositories.edge_repo import EdgeRepository
+from db.repositories.user_repo import UserRepository
+from services.storage_cutover import get_storage_mode
 
 
 def _downsample_large_graph(nodes: list[dict], edges: list[dict], max_nodes: int = 320, max_edges: int = 900):
@@ -117,11 +122,24 @@ def _build_payload_from_rows(chat_id, rows, names, period: str = "all", ego_user
 
 
 def build_graph_payload(chat_id: int | None, period: str = "all", ego_user: int | None = None, limit: int | None = None) -> dict:
+    mode = get_storage_mode()
+    if chat_id is not None and mode in {"db", "hybrid"}:
+        try:
+            db_payload = asyncio.run(_build_graph_payload_from_db(chat_id, period=period, ego_user=ego_user, limit=limit))
+            has_graph = bool((db_payload.get("nodes") or []) or (db_payload.get("edges") or []))
+            if has_graph or mode == "db":
+                return db_payload
+        except Exception:
+            if mode == "db":
+                return {"nodes": [], "edges": [], "meta": {"chat_id": chat_id, "period": str(period or "all"), "source": "db_error"}}
+
     rows = social_graph.get_connections(chat_id)
     if not rows:
         rows = _fallback_rows_from_user_stats(chat_id)
     names = user_stats.get_user_display_names() if hasattr(user_stats, "get_user_display_names") else {}
-    return _build_payload_from_rows(chat_id=chat_id, rows=rows, names=names, period=period, ego_user=ego_user, limit=limit, rank_by_user={})
+    payload = _build_payload_from_rows(chat_id=chat_id, rows=rows, names=names, period=period, ego_user=ego_user, limit=limit, rank_by_user={})
+    payload.setdefault("meta", {})["source"] = "json"
+    return payload
 
 
 async def build_payload(chat_id: int, edge_repo, user_repo, period: int = 7, ego_user: int | None = None, limit: int | None = None) -> dict:
@@ -147,7 +165,35 @@ async def build_payload(chat_id: int, edge_repo, user_repo, period: int = 7, ego
         for e in edge_models or []
     ]
     period_key = "7d" if int(period) == 7 else ("30d" if int(period) == 30 else ("24h" if int(period) == 1 else "all"))
-    return _build_payload_from_rows(chat_id=chat_id, rows=rows, names=names, period=period_key, ego_user=ego_user, limit=limit, rank_by_user={})
+    payload = _build_payload_from_rows(chat_id=chat_id, rows=rows, names=names, period=period_key, ego_user=ego_user, limit=limit, rank_by_user={})
+    payload.setdefault("meta", {})["source"] = "db"
+    return payload
+
+
+async def _build_graph_payload_from_db(chat_id: int, period: str = "all", ego_user: int | None = None, limit: int | None = None) -> dict:
+    period_key = str(period or "all").lower()
+    period_days = 7
+    if period_key in {"24h", "1"}:
+        period_days = 1
+    elif period_key in {"30d", "30"}:
+        period_days = 30
+    elif period_key in {"7d", "7"}:
+        period_days = 7
+    else:
+        period_days = 7
+
+    async with get_db() as session:
+        edge_repo = EdgeRepository(session)
+        user_repo = UserRepository(session)
+        payload = await build_payload(
+            int(chat_id),
+            edge_repo,
+            user_repo,
+            period=period_days,
+            ego_user=ego_user,
+            limit=limit,
+        )
+    return payload
 
 
 def _fallback_rows_from_user_stats(chat_id: int | None) -> list[dict]:

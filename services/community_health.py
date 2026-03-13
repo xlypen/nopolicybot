@@ -1,12 +1,51 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import date, timedelta
 
 import user_stats
+from db.engine import get_db
+from db.repositories.message_repo import MessageRepository
+from services.storage_cutover import get_storage_mode
 from services.tone_analyzer import analyze_tone_context
 
 
-def _daily_activity(chat_id: int | None = None, days: int = 30) -> list[dict]:
+async def _daily_activity_db(chat_id: int, days: int = 30) -> tuple[list[dict], list[str]]:
+    async with get_db() as session:
+        repo = MessageRepository(session)
+        daily = await repo.get_daily_counts(chat_id=chat_id, days=days)
+        rows_map: dict[str, int] = {}
+        for row in daily:
+            raw_date = row.get("date")
+            key = str(raw_date)
+            rows_map[key] = int(row.get("count", 0) or 0)
+        msgs = await repo.get_by_period(chat_id=chat_id, days=days)
+        texts = [str(m.text) for m in msgs if getattr(m, "text", None)]
+
+    today = date.today()
+    out = []
+    for i in range(days):
+        d = (today - timedelta(days=days - i - 1)).isoformat()
+        out.append({"date": d, "count": int(rows_map.get(d, 0))})
+    return out, texts
+
+
+def _daily_activity(chat_id: int | None = None, days: int = 30) -> tuple[list[dict], list[str]]:
+    mode = get_storage_mode()
+    if chat_id is not None and mode in {"db", "hybrid"}:
+        try:
+            out, texts = asyncio.run(_daily_activity_db(chat_id=int(chat_id), days=days))
+            has_data = any(int(x.get("count", 0) or 0) > 0 for x in out)
+            if has_data or mode == "db":
+                return out, texts
+        except Exception:
+            if mode == "db":
+                today = date.today()
+                return (
+                    [{"date": (today - timedelta(days=days - i - 1)).isoformat(), "count": 0} for i in range(days)],
+                    [],
+                )
+
     data = user_stats._load()
     users = data.get("users", {}) or {}
     today = date.today()

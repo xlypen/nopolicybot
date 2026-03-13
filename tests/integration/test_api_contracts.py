@@ -260,6 +260,142 @@ def test_api_learning_summary_contract(monkeypatch):
         assert "summary" in body
 
 
+def test_api_admin_dashboard_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import admin_dashboards as adm
+
+    monkeypatch.setattr(
+        adm,
+        "build_chat_health_dashboard",
+        lambda chat_id, days=30: {"chat_id": "all", "health_score": 0.72, "messages_today": 12},
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/admin/dashboard?chat_id=all&days=30")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "dashboard" in body
+
+
+def test_api_admin_community_structure_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import admin_dashboards as adm
+
+    monkeypatch.setattr(
+        adm,
+        "build_community_structure_dashboard",
+        lambda chat_id, period="30d", limit=1200: {"chat_id": "all", "density": 0.15, "bridge_users": []},
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/admin/community-structure?chat_id=all&period=30d")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "community" in body
+
+
+def test_api_admin_leaderboard_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import admin_dashboards as adm
+
+    monkeypatch.setattr(
+        adm,
+        "build_user_leaderboard_dashboard",
+        lambda chat_id, metric="engagement", limit=10, days=30: {"metric": metric, "users": [{"rank": 1, "user_id": 1}]},
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/admin/leaderboard?chat_id=all&metric=engagement&limit=5")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "leaderboard" in body
+
+
+def test_api_admin_at_risk_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import admin_dashboards as adm
+
+    monkeypatch.setattr(
+        adm,
+        "build_at_risk_users_dashboard",
+        lambda chat_id, threshold=0.6, days=30, limit=30: {"count": 1, "users": [{"user_id": 1, "churn_risk": 0.8}]},
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/admin/at-risk-users?chat_id=all&threshold=0.6")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "at_risk" in body
+
+
+def test_api_admin_decision_quality_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import admin_dashboards as adm
+
+    monkeypatch.setattr(
+        adm,
+        "build_decision_quality_dashboard",
+        lambda chat_id, period_days=7: {"total_decisions": 10, "approval_rate": 0.8},
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/admin/decision-quality?chat_id=all&period_days=7")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "quality" in body
+
+
+def test_api_admin_content_analysis_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import admin_dashboards as adm
+
+    monkeypatch.setattr(
+        adm,
+        "build_content_analysis_dashboard",
+        lambda chat_id, period_days=30: {"top_topics": [], "sentiment": {"positive": 0.5}},
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/admin/content-analysis?chat_id=all&period_days=30")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "analysis" in body
+
+
+def test_api_admin_moderation_activity_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import admin_dashboards as adm
+
+    monkeypatch.setattr(
+        adm,
+        "build_moderation_activity_dashboard",
+        lambda chat_id, period_days=7: {"total_messages": 100, "ai_decisions": 20},
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/admin/moderation-activity?chat_id=all&period_days=7")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "activity" in body
+
+
+def test_api_admin_trends_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import admin_dashboards as adm
+
+    monkeypatch.setattr(
+        adm,
+        "build_growth_trends_dashboard",
+        lambda chat_id, lookback_days=30, horizon_days=7: {"user_growth": {"net_growth": 3}, "forecast": {}},
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/admin/trends?chat_id=all&lookback_days=30&horizon_days=7")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "trends" in body
+
+
 def test_api_retention_dashboard_contract(monkeypatch):
     _disable_auth(monkeypatch)
     from services import recommendations

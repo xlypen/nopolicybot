@@ -225,6 +225,15 @@ def _cached_json(prefix: str, ttl: int, builder, **params):
     return payload
 
 
+def _parse_chat_id_arg(name: str = "chat_id") -> tuple[int | None, str | None]:
+    raw = (request.args.get(name) or "all").strip().lower()
+    if raw == "all":
+        return None, None
+    if str(raw).lstrip("-").isdigit():
+        return int(raw), None
+    return None, f"invalid {name}"
+
+
 def _graph_snapshot_scope(chat_id: int | None, period: str, ego_user: int | None, limit: int | None) -> str:
     return _cache_key(
         "graph_snapshot",
@@ -1888,6 +1897,194 @@ def api_retention_dashboard():
 def admin_retention_dashboard():
     """Alias endpoint for retention dashboard in admin namespace."""
     return api_retention_dashboard()
+
+
+@app.route("/api/admin/dashboard")
+@login_required
+def api_admin_dashboard():
+    from services.admin_dashboards import build_chat_health_dashboard
+
+    chat_id, err = _parse_chat_id_arg("chat_id")
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    try:
+        days = max(1, min(180, int(request.args.get("days", "30"))))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid days"}), 400
+    payload = _cached_json(
+        "admin_dashboard_health",
+        20,
+        lambda: build_chat_health_dashboard(chat_id, days=days),
+        chat_id="all" if chat_id is None else int(chat_id),
+        days=days,
+    )
+    return jsonify({"ok": True, "dashboard": payload})
+
+
+@app.route("/api/admin/community-structure")
+@login_required
+def api_admin_community_structure():
+    from services.admin_dashboards import build_community_structure_dashboard
+
+    chat_id, err = _parse_chat_id_arg("chat_id")
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    period = (request.args.get("period") or "30d").strip().lower()
+    try:
+        limit = max(200, min(5000, int(request.args.get("limit", "1200"))))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid limit"}), 400
+    payload = _cached_json(
+        "admin_dashboard_community",
+        20,
+        lambda: build_community_structure_dashboard(chat_id, period=period, limit=limit),
+        chat_id="all" if chat_id is None else int(chat_id),
+        period=period,
+        limit=limit,
+    )
+    return jsonify({"ok": True, "community": payload})
+
+
+@app.route("/api/admin/leaderboard")
+@login_required
+def api_admin_leaderboard():
+    from services.admin_dashboards import build_user_leaderboard_dashboard
+
+    chat_id, err = _parse_chat_id_arg("chat_id")
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    metric = (request.args.get("metric") or "engagement").strip().lower()
+    try:
+        days = max(1, min(180, int(request.args.get("days", "30"))))
+        limit = max(1, min(100, int(request.args.get("limit", "10"))))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid params"}), 400
+    payload = _cached_json(
+        "admin_dashboard_leaderboard",
+        20,
+        lambda: build_user_leaderboard_dashboard(chat_id, metric=metric, limit=limit, days=days),
+        chat_id="all" if chat_id is None else int(chat_id),
+        metric=metric,
+        days=days,
+        limit=limit,
+    )
+    return jsonify({"ok": True, "leaderboard": payload})
+
+
+@app.route("/api/admin/at-risk-users")
+@login_required
+def api_admin_at_risk_users():
+    from services.admin_dashboards import build_at_risk_users_dashboard
+
+    chat_id, err = _parse_chat_id_arg("chat_id")
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    try:
+        days = max(1, min(180, int(request.args.get("days", "30"))))
+        limit = max(1, min(200, int(request.args.get("limit", "30"))))
+        threshold = max(0.0, min(1.0, float(request.args.get("threshold", "0.6"))))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid params"}), 400
+    payload = _cached_json(
+        "admin_dashboard_at_risk",
+        20,
+        lambda: build_at_risk_users_dashboard(chat_id, threshold=threshold, days=days, limit=limit),
+        chat_id="all" if chat_id is None else int(chat_id),
+        threshold=threshold,
+        days=days,
+        limit=limit,
+    )
+    return jsonify({"ok": True, "at_risk": payload})
+
+
+@app.route("/api/admin/decision-quality")
+@login_required
+def api_admin_decision_quality():
+    from services.admin_dashboards import build_decision_quality_dashboard
+
+    chat_id, err = _parse_chat_id_arg("chat_id")
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    try:
+        period_days = max(1, min(180, int(request.args.get("period_days", "7"))))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid period_days"}), 400
+    payload = _cached_json(
+        "admin_dashboard_decision_quality",
+        20,
+        lambda: build_decision_quality_dashboard(chat_id, period_days=period_days),
+        chat_id="all" if chat_id is None else int(chat_id),
+        period_days=period_days,
+    )
+    return jsonify({"ok": True, "quality": payload})
+
+
+@app.route("/api/admin/content-analysis")
+@login_required
+def api_admin_content_analysis():
+    from services.admin_dashboards import build_content_analysis_dashboard
+
+    chat_id, err = _parse_chat_id_arg("chat_id")
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    try:
+        period_days = max(1, min(180, int(request.args.get("period_days", "30"))))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid period_days"}), 400
+    payload = _cached_json(
+        "admin_dashboard_content",
+        20,
+        lambda: build_content_analysis_dashboard(chat_id, period_days=period_days),
+        chat_id="all" if chat_id is None else int(chat_id),
+        period_days=period_days,
+    )
+    return jsonify({"ok": True, "analysis": payload})
+
+
+@app.route("/api/admin/moderation-activity")
+@login_required
+def api_admin_moderation_activity():
+    from services.admin_dashboards import build_moderation_activity_dashboard
+
+    chat_id, err = _parse_chat_id_arg("chat_id")
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    try:
+        period_days = max(1, min(90, int(request.args.get("period_days", "7"))))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid period_days"}), 400
+    payload = _cached_json(
+        "admin_dashboard_moderation",
+        20,
+        lambda: build_moderation_activity_dashboard(chat_id, period_days=period_days),
+        chat_id="all" if chat_id is None else int(chat_id),
+        period_days=period_days,
+    )
+    return jsonify({"ok": True, "activity": payload})
+
+
+@app.route("/api/admin/trends")
+@login_required
+def api_admin_trends():
+    from services.admin_dashboards import build_growth_trends_dashboard
+
+    chat_id, err = _parse_chat_id_arg("chat_id")
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    try:
+        lookback_days = max(7, min(180, int(request.args.get("lookback_days", "30"))))
+        horizon_days = max(1, min(30, int(request.args.get("horizon_days", "7"))))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid params"}), 400
+    payload = _cached_json(
+        "admin_dashboard_trends",
+        20,
+        lambda: build_growth_trends_dashboard(chat_id, lookback_days=lookback_days, horizon_days=horizon_days),
+        chat_id="all" if chat_id is None else int(chat_id),
+        lookback_days=lookback_days,
+        horizon_days=horizon_days,
+    )
+    return jsonify({"ok": True, "trends": payload})
 
 
 @app.route("/api/churn/snapshots")

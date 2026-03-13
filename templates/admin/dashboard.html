@@ -122,6 +122,65 @@
     <div id="learningSummary" style="color:var(--text-secondary);">Загрузка...</div>
   </div>
 </div>
+
+<div class="grid">
+  <div class="card">
+    <div class="title">Chat Health Overview</div>
+    <div id="healthOverviewMain" style="color:var(--text-secondary);">Загрузка...</div>
+    <div id="healthOverviewTopics" style="margin-top:8px;color:var(--text-secondary);font-size:12px;"></div>
+  </div>
+  <div class="card">
+    <div class="title">Community Structure</div>
+    <div id="communityStructureMain" style="color:var(--text-secondary);">Загрузка...</div>
+    <ol id="communityBridgeRows" style="margin:8px 0 0;padding-left:18px;color:var(--text-secondary);">
+      <li>Загрузка...</li>
+    </ol>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <div class="title">User Leaderboard</div>
+    <div class="row" style="margin-bottom:8px;">
+      <label>Metric:</label>
+      <select id="leaderboardMetricSel">
+        <option value="engagement">engagement</option>
+        <option value="influence">influence</option>
+        <option value="retention">retention</option>
+        <option value="viral">viral</option>
+        <option value="churn">churn</option>
+      </select>
+    </div>
+    <div style="overflow:auto;max-height:260px;">
+      <table style="width:100%;border-collapse:collapse;">
+        <thead>
+          <tr>
+            <th style="text-align:left;padding:6px;border-bottom:1px solid var(--border-card);">#</th>
+            <th style="text-align:left;padding:6px;border-bottom:1px solid var(--border-card);">User</th>
+            <th style="text-align:right;padding:6px;border-bottom:1px solid var(--border-card);">Score</th>
+          </tr>
+        </thead>
+        <tbody id="leaderboardRows">
+          <tr><td colspan="3" style="padding:6px;color:var(--text-secondary);">Загрузка...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <div class="title">Advanced Analytics Panel</div>
+    <div class="row" style="margin-bottom:8px;">
+      <label>View:</label>
+      <select id="analyticsPanelSel">
+        <option value="at-risk-users">At-risk users</option>
+        <option value="decision-quality">Decision quality</option>
+        <option value="content-analysis">Content analysis</option>
+        <option value="moderation-activity">Moderation activity</option>
+        <option value="trends">Growth & trends</option>
+      </select>
+    </div>
+    <div id="analyticsPanelBody" style="color:var(--text-secondary);">Загрузка...</div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -335,6 +394,10 @@ async function loadInsights(chat) {
     loadDecisionQuality(chat),
     loadLearningSummary(chat),
     loadDecisions(chat),
+    loadAdminHealth(chat),
+    loadAdminCommunity(chat),
+    loadAdminLeaderboard(chat),
+    loadAdminPanel(chat),
   ]);
 }
 
@@ -507,6 +570,136 @@ async function loadLearningSummary(chat) {
   `;
 }
 
+function trendMark(value){
+  const v = Number(value || 0);
+  if (!Number.isFinite(v) || Math.abs(v) < 0.0001) return '→';
+  return v > 0 ? '↗' : '↘';
+}
+
+async function loadAdminHealth(chat) {
+  const main = document.getElementById('healthOverviewMain');
+  const topics = document.getElementById('healthOverviewTopics');
+  if (!main || !topics) return;
+  main.textContent = 'Загрузка...';
+  topics.textContent = '';
+  const r = await fetch(`/api/admin/dashboard?chat_id=${encodeURIComponent(chat)}&days=30`);
+  const b = await r.json();
+  const d = (b && b.dashboard) || {};
+  main.innerHTML = `
+    <div>Health: <strong>${fmt(d.health_score, 3)}</strong> ${trendMark(d.health_trend)} (${fmt(d.health_trend, 3)})</div>
+    <div>Engagement: <strong>${fmt(d.engagement, 3)}</strong> ${trendMark(d.engagement_trend)} · Retention: <strong>${fmt(d.retention, 3)}</strong> ${trendMark(d.retention_trend)}</div>
+    <div>Toxicity: <strong>${fmt(d.toxicity, 3)}</strong> ${trendMark(d.toxicity_trend)} · Active 24h: <strong>${Number(d.active_users_24h || 0)}</strong> · Messages today: <strong>${Number(d.messages_today || 0)}</strong></div>
+  `;
+  const topicRows = Array.isArray(d.dominant_topics) ? d.dominant_topics : [];
+  topics.textContent = topicRows.length
+    ? `Topics: ${topicRows.slice(0, 5).map((x) => `${String(x.topic || 'topic')} (${Number(x.count || 0)})`).join(' · ')}`
+    : 'Topics: no data';
+}
+
+async function loadAdminCommunity(chat) {
+  const main = document.getElementById('communityStructureMain');
+  const rows = document.getElementById('communityBridgeRows');
+  if (!main || !rows) return;
+  main.textContent = 'Загрузка...';
+  rows.innerHTML = '';
+  const r = await fetch(`/api/admin/community-structure?chat_id=${encodeURIComponent(chat)}&period=30d&limit=1200`);
+  const b = await r.json();
+  const d = (b && b.community) || {};
+  main.innerHTML = `
+    <div>Density: <strong>${fmt(d.density, 4)}</strong> · Avg degree: <strong>${fmt(d.avg_degree, 2)}</strong></div>
+    <div>Communities: <strong>${Number(d.number_of_communities || 0)}</strong> · Largest: <strong>${Number(d.largest_community_size || 0)}</strong> (${fmt(Number(d.largest_community_percentage || 0) * 100, 1)}%)</div>
+    <div>Modularity: <strong>${fmt(d.modularity, 3)}</strong></div>
+  `;
+  const bridge = Array.isArray(d.bridge_users) ? d.bridge_users : [];
+  if (!bridge.length) {
+    rows.innerHTML = '<li>Bridge users not found.</li>';
+    return;
+  }
+  rows.innerHTML = bridge.slice(0, 8).map((u) => `<li>${esc(u.username || u.user_id)} · ${fmt(u.betweenness, 3)}</li>`).join('');
+}
+
+async function loadAdminLeaderboard(chat) {
+  const body = document.getElementById('leaderboardRows');
+  const metricSel = document.getElementById('leaderboardMetricSel');
+  if (!body || !metricSel) return;
+  const metric = String(metricSel.value || 'engagement');
+  body.innerHTML = '<tr><td colspan="3" style="padding:6px;color:var(--text-secondary);">Загрузка...</td></tr>';
+  const r = await fetch(`/api/admin/leaderboard?chat_id=${encodeURIComponent(chat)}&metric=${encodeURIComponent(metric)}&limit=12&days=30`);
+  const b = await r.json();
+  const users = (((b || {}).leaderboard || {}).users) || [];
+  if (!users.length) {
+    body.innerHTML = '<tr><td colspan="3" style="padding:6px;color:var(--text-secondary);">Нет данных.</td></tr>';
+    return;
+  }
+  body.innerHTML = users.map((u) => `
+    <tr>
+      <td style="padding:6px;border-bottom:1px solid var(--border-card);">#${Number(u.rank || 0)}</td>
+      <td style="padding:6px;border-bottom:1px solid var(--border-card);">${esc(u.username || u.user_id)}</td>
+      <td style="padding:6px;text-align:right;border-bottom:1px solid var(--border-card);">${fmt(u.score, 3)}</td>
+    </tr>
+  `).join('');
+}
+
+async function loadAdminPanel(chat) {
+  const sel = document.getElementById('analyticsPanelSel');
+  const body = document.getElementById('analyticsPanelBody');
+  if (!sel || !body) return;
+  const view = String(sel.value || 'at-risk-users');
+  body.textContent = 'Загрузка...';
+  const endpoint = `/api/admin/${encodeURIComponent(view)}?chat_id=${encodeURIComponent(chat)}&period_days=30&lookback_days=30&horizon_days=7&limit=12`;
+  const r = await fetch(endpoint);
+  const b = await r.json();
+  if (!b || !b.ok) {
+    body.textContent = 'Ошибка загрузки.';
+    return;
+  }
+  if (view === 'at-risk-users') {
+    const p = b.at_risk || {};
+    const rows = Array.isArray(p.users) ? p.users : [];
+    body.innerHTML = `
+      <div style="margin-bottom:6px;">At-risk users: <strong>${Number(p.count || 0)}</strong> (threshold=${fmt(p.threshold, 2)})</div>
+      <ul style="margin:0;padding-left:18px;">${rows.slice(0, 6).map((u) => `<li>${esc(u.username || u.user_id)} · risk ${fmt(u.churn_risk, 2)} · ${esc(u.recommended_action || '')}</li>`).join('')}</ul>
+    `;
+    return;
+  }
+  if (view === 'decision-quality') {
+    const p = b.quality || {};
+    body.innerHTML = `
+      <div>Total: <strong>${Number(p.total_decisions || 0)}</strong> · Approval: <strong>${fmt(p.approval_rate, 2)}</strong></div>
+      <div>Decision quality: <strong>${fmt(p.decision_quality, 2)}</strong> · Avg confidence: <strong>${fmt(p.avg_confidence, 2)}</strong></div>
+      <div style="margin-top:6px;">A/B winner: <strong>${esc(((p.ab_test || {}).winner) || 'n/a')}</strong></div>
+    `;
+    return;
+  }
+  if (view === 'content-analysis') {
+    const p = b.analysis || {};
+    const sentiment = p.sentiment || {};
+    const topics = Array.isArray(p.top_topics) ? p.top_topics : [];
+    body.innerHTML = `
+      <div>Sentiment: +${fmt(Number(sentiment.positive || 0) * 100, 1)}% / 0 ${fmt(Number(sentiment.neutral || 0) * 100, 1)}% / - ${fmt(Number(sentiment.negative || 0) * 100, 1)}%</div>
+      <div style="margin-top:6px;">Top topics: ${topics.slice(0, 5).map((x) => `${esc(x.topic || '')} (${Number(x.messages || 0)})`).join(' · ') || 'n/a'}</div>
+    `;
+    return;
+  }
+  if (view === 'moderation-activity') {
+    const p = b.activity || {};
+    const eff = p.effectiveness || {};
+    body.innerHTML = `
+      <div>Messages: <strong>${Number(p.total_messages || 0)}</strong> · Political: <strong>${Number(p.political_detected || 0)}</strong> · AI decisions: <strong>${Number(p.ai_decisions || 0)}</strong></div>
+      <div>Warnings: <strong>${Number(eff.warnings_issued || 0)}</strong> · Users paused: <strong>${Number(eff.users_paused || 0)}</strong> · Prevented: <strong>${Number(eff.conflicts_prevented || 0)}</strong></div>
+    `;
+    return;
+  }
+  const p = b.trends || {};
+  const growth = p.user_growth || {};
+  const fc = p.forecast || {};
+  body.innerHTML = `
+    <div>Growth: new <strong>${Number(growth.new_users || 0)}</strong> / churned <strong>${Number(growth.churned_users || 0)}</strong> / net <strong>${Number(growth.net_growth || 0)}</strong> (${esc(growth.trend || 'flat')})</div>
+    <div>Engagement trend: <strong>${fmt(p.engagement_trend, 3)}</strong> · Retention trend: <strong>${fmt(p.retention_trend, 3)}</strong></div>
+    <div>Forecast: health <strong>${fmt(fc.expected_health, 3)}</strong> · churn users <strong>${Number(fc.expected_churn_users || 0)}</strong> · new users <strong>${Number(fc.expected_new_users || 0)}</strong></div>
+  `;
+}
+
 document.getElementById('loadGraphBtn').addEventListener('click', () => {
   loadAndRender().catch((e) => {
     document.getElementById('modernGraphRoot').textContent = 'Ошибка: ' + e;
@@ -641,6 +834,14 @@ document.getElementById('modeSel').addEventListener('change', () => {
   renderGraphFromState();
 });
 document.getElementById('autoRefreshChk').addEventListener('change', handleAutoToggle);
+document.getElementById('leaderboardMetricSel').addEventListener('change', () => {
+  const chat = document.getElementById('chatSel').value;
+  loadAdminLeaderboard(chat).catch(() => {});
+});
+document.getElementById('analyticsPanelSel').addEventListener('change', () => {
+  const chat = document.getElementById('chatSel').value;
+  loadAdminPanel(chat).catch(() => {});
+});
 
 loadAndRender().catch(() => {});
 restartRealtime();

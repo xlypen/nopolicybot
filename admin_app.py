@@ -29,6 +29,7 @@ from dotenv import load_dotenv
 from routes.social_graph_routes import register_social_graph_routes
 import bot_settings
 from ai.prompts import get_all_prompts, reset_prompts, set_prompt
+from services.cache_backend import CacheBackend
 
 load_dotenv(Path(__file__).resolve().parent / ".env", encoding="utf-8-sig")
 
@@ -67,6 +68,7 @@ _AVATAR_IMG_CACHE_TTL_SEC = 3600
 _portrait_building: set[str] = set()
 # user_id (str) → идёт генерация картинки портрета
 _portrait_image_generating: set[str] = set()
+_API_CACHE = CacheBackend(namespace="admin_api", default_ttl=45)
 
 # Токен для участников: просмотр своего профиля и графа связей (без входа в админку)
 PARTICIPANT_TOKEN_TTL_SEC = 7 * 24 * 3600  # 7 дней
@@ -121,6 +123,23 @@ def _participant_me_url(user_id: int, base_url: str | None = None) -> str:
     if not base:
         base = "http://127.0.0.1:5000"
     return f"{base}/me?token={_participant_token(user_id)}"
+
+
+def _cache_key(prefix: str, **params) -> str:
+    parts = [str(prefix)]
+    for key in sorted(params):
+        parts.append(f"{key}={params[key]}")
+    return "|".join(parts)
+
+
+def _cached_json(prefix: str, ttl: int, builder, **params):
+    key = _cache_key(prefix, **params)
+    payload = _API_CACHE.get(key)
+    if payload is not None:
+        return payload
+    payload = builder()
+    _API_CACHE.set(key, payload, ttl=ttl)
+    return payload
 
 
 def _load_users() -> dict:
@@ -1280,7 +1299,14 @@ def api_decisions_recent():
         user_id = request.args.get("user_id")
         cid = int(chat_id) if chat_id and str(chat_id).lstrip("-").isdigit() else None
         uid = int(user_id) if user_id and str(user_id).lstrip("-").isdigit() else None
-        events = get_recent_decisions(limit=limit, chat_id=cid, user_id=uid)
+        events = _cached_json(
+            "decisions_recent",
+            15,
+            lambda: get_recent_decisions(limit=limit, chat_id=cid, user_id=uid),
+            limit=limit,
+            chat_id=cid,
+            user_id=uid,
+        )
         return jsonify({"ok": True, "decisions": events})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -1377,7 +1403,14 @@ def api_metrics_user(user_id: str):
         return jsonify({"ok": False, "error": "invalid days"}), 400
     if chat_raw != "all" and chat_id is None:
         return jsonify({"ok": False, "error": "invalid chat_id"}), 400
-    payload = get_user_metrics(int(user_id), chat_id=chat_id, days=days)
+    payload = _cached_json(
+        "metrics_user",
+        45,
+        lambda: get_user_metrics(int(user_id), chat_id=chat_id, days=days),
+        user_id=int(user_id),
+        chat_id=chat_id,
+        days=days,
+    )
     return jsonify({"ok": True, "metrics": payload})
 
 
@@ -1392,7 +1425,13 @@ def api_metrics_chat_health(chat_id: str):
         days = max(1, min(90, int(request.args.get("days", "30"))))
     except ValueError:
         return jsonify({"ok": False, "error": "invalid days"}), 400
-    payload = get_chat_health(int(chat_id), days=days)
+    payload = _cached_json(
+        "metrics_chat_health",
+        45,
+        lambda: get_chat_health(int(chat_id), days=days),
+        chat_id=int(chat_id),
+        days=days,
+    )
     return jsonify({"ok": True, "health": payload})
 
 
@@ -1411,7 +1450,15 @@ def api_leaderboard():
         limit = max(1, min(100, int(request.args.get("limit", "10"))))
     except ValueError:
         return jsonify({"ok": False, "error": "invalid pagination params"}), 400
-    rows = get_leaderboard(metric=metric, chat_id=chat_id, days=days, limit=limit)
+    rows = _cached_json(
+        "metrics_leaderboard",
+        30,
+        lambda: get_leaderboard(metric=metric, chat_id=chat_id, days=days, limit=limit),
+        metric=metric,
+        chat_id=chat_id,
+        days=days,
+        limit=limit,
+    )
     return jsonify({"ok": True, "metric": metric, "rows": rows})
 
 
@@ -1429,7 +1476,14 @@ def api_recommendations():
         limit = max(1, min(100, int(request.args.get("limit", "20"))))
     except ValueError:
         return jsonify({"ok": False, "error": "invalid params"}), 400
-    payload = build_recommendations(chat_id, days=days, limit=limit)
+    payload = _cached_json(
+        "recommendations",
+        30,
+        lambda: build_recommendations(chat_id, days=days, limit=limit),
+        chat_id=chat_id,
+        days=days,
+        limit=limit,
+    )
     return jsonify({"ok": True, "recommendations": payload})
 
 
@@ -1454,7 +1508,14 @@ def api_retention_dashboard():
         limit = max(1, min(500, int(request.args.get("limit", "50"))))
     except ValueError:
         return jsonify({"ok": False, "error": "invalid params"}), 400
-    payload = build_retention_dashboard(chat_id, days=days, limit=limit)
+    payload = _cached_json(
+        "retention_dashboard",
+        30,
+        lambda: build_retention_dashboard(chat_id, days=days, limit=limit),
+        chat_id=chat_id,
+        days=days,
+        limit=limit,
+    )
     return jsonify({"ok": True, "dashboard": payload})
 
 
@@ -1478,7 +1539,13 @@ def api_churn_snapshots():
         limit = max(1, min(100, int(request.args.get("limit", "10"))))
     except ValueError:
         return jsonify({"ok": False, "error": "invalid limit"}), 400
-    rows = get_recent_churn_snapshots(limit=limit, chat_id=chat_id)
+    rows = _cached_json(
+        "churn_snapshots",
+        20,
+        lambda: get_recent_churn_snapshots(limit=limit, chat_id=chat_id),
+        limit=limit,
+        chat_id=chat_id,
+    )
     return jsonify({"ok": True, "snapshots": rows})
 
 
@@ -1497,6 +1564,9 @@ def api_churn_run():
     except (ValueError, TypeError):
         return jsonify({"ok": False, "error": "invalid days"}), 400
     snapshot = run_churn_detection(chat_id, days=days, limit=300)
+    _API_CACHE.clear_prefix("churn_snapshots")
+    _API_CACHE.clear_prefix("recommendations")
+    _API_CACHE.clear_prefix("retention_dashboard")
     return jsonify({"ok": True, "snapshot": snapshot})
 
 
@@ -1505,7 +1575,8 @@ def api_churn_run():
 def api_storage_status():
     from services.data_platform import export_snapshot
 
-    return jsonify(export_snapshot())
+    payload = _cached_json("storage_status", 15, export_snapshot, scope="global")
+    return jsonify(payload)
 
 
 @app.route("/api/storage/cutover-report")
@@ -1513,7 +1584,8 @@ def api_storage_status():
 def api_storage_cutover_report():
     from services.storage_cutover import build_cutover_report
 
-    return jsonify(build_cutover_report())
+    payload = _cached_json("storage_cutover_report", 15, build_cutover_report, scope="global")
+    return jsonify(payload)
 
 
 @app.route("/api/storage/cutover", methods=["POST"])
@@ -1528,6 +1600,8 @@ def api_storage_cutover():
     if mode not in {"json", "hybrid", "db"}:
         return jsonify({"ok": False, "error": "mode must be one of: json, hybrid, db"}), 400
     result = apply_cutover(mode, force=force, reason=reason)
+    _API_CACHE.clear_prefix("storage_status")
+    _API_CACHE.clear_prefix("storage_cutover_report")
     status = 200 if result.get("ok") else 409
     return jsonify(result), status
 
@@ -1605,7 +1679,13 @@ def api_topic_policies():
     )
 
     if request.method == "GET":
-        return jsonify({"ok": True, "primary_topic": get_primary_topic(), "policies": get_topic_policies()})
+        payload = _cached_json(
+            "topic_policies_get",
+            20,
+            lambda: {"ok": True, "primary_topic": get_primary_topic(), "policies": get_topic_policies()},
+            scope="global",
+        )
+        return jsonify(payload)
 
     payload = request.get_json(silent=True) or {}
     if request.method == "POST":
@@ -1616,11 +1696,13 @@ def api_topic_policies():
         patch = payload.get("patch")
         if name and isinstance(patch, dict):
             set_topic_policy(name, patch)
+        _API_CACHE.clear_prefix("topic_policies_get")
         return jsonify({"ok": True, "primary_topic": get_primary_topic(), "policies": get_topic_policies()})
 
     names = payload.get("names")
     names_list = [str(x) for x in names] if isinstance(names, list) else None
     policies = reset_topic_policies(names_list)
+    _API_CACHE.clear_prefix("topic_policies_get")
     return jsonify({"ok": True, "primary_topic": get_primary_topic(), "policies": policies})
 
 

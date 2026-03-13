@@ -57,3 +57,14 @@ Env vars:
   - full test suite,
   - smoke checks.
 - `deploy.yml` provides manual `staging|production` preflight + environment-gated deploy stage.
+- deployment script: `scripts/deploy_release.sh`
+  - supports real deploy via SSH secrets (`DEPLOY_HOST`, `DEPLOY_SSH_KEY`, etc.),
+  - falls back to dry-run in CI when secrets are not configured.
+
+## Ops Templates
+
+Prepared templates are included in `deploy-ubuntu/`:
+
+- `nginx-nopolicybot.conf` — reverse proxy layout for Flask + FastAPI,
+- `logrotate-nopolicybot.conf` — log rotation policy,
+- `prometheus-nopolicybot.yml` — scrape config for both metrics endpoints.

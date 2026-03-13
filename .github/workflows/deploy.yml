@@ -34,6 +34,19 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.target }}
     steps:
-      - name: Deployment placeholder
+      - uses: actions/checkout@v4
+      - name: Execute deploy script
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_BRANCH: ${{ secrets.DEPLOY_BRANCH }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
-          echo "Preflight passed. Attach deployment steps for ${{ inputs.target }} (systemd/nginx rollout)."
+          chmod +x scripts/deploy_release.sh
+          if [ -n "${DEPLOY_HOST}" ] && [ -n "${DEPLOY_SSH_KEY}" ]; then
+            ./scripts/deploy_release.sh --target "${{ inputs.target }}"
+          else
+            ./scripts/deploy_release.sh --target "${{ inputs.target }}" --dry-run
+          fi

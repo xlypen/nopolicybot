@@ -1500,6 +1500,14 @@ def api_churn_run():
     return jsonify({"ok": True, "snapshot": snapshot})
 
 
+@app.route("/api/storage/status")
+@login_required
+def api_storage_status():
+    from services.data_platform import export_snapshot
+
+    return jsonify(export_snapshot())
+
+
 @app.route("/api/me/graph")
 def api_me_graph_compat():
     from services.graph_api import build_graph_payload

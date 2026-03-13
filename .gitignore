@@ -24,6 +24,11 @@ mode_changes.log
 
 portrait_images/
 data/admin_password.txt
+data/marketing_metrics.json
+data/decision_events.json
+data/churn_snapshots.json
+data/retention_actions.json
+data/bot.db
 bot_last_start.json
 .sqlite_migrated_from_json
 graf_ex/

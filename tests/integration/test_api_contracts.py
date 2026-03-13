@@ -191,3 +191,25 @@ def test_admin_recommendations_alias_contract(monkeypatch):
         assert resp.status_code == 200
         body = resp.get_json()
         assert body["ok"] is True
+
+
+def test_api_storage_status_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import data_platform
+
+    monkeypatch.setattr(
+        data_platform,
+        "export_snapshot",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "storage_primary": "hybrid",
+            "json": {"users": 1, "messages": 2, "edges": 3, "chats": 1},
+            "db": {"users": 1, "messages": 2, "edges": 3, "chats": 1},
+        },
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/storage/status")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "json" in body and "db" in body

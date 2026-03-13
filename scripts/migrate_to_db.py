@@ -16,24 +16,51 @@ from db.engine import get_db, init_db
 from db.repositories.edge_repo import EdgeRepository
 from db.repositories.message_repo import MessageRepository
 from db.repositories.user_repo import UserRepository
+from services.data_platform import export_snapshot
 
 
-async def migrate(dry_run: bool = True):
-    if not dry_run:
-        await init_db()
-    stats = {"users": 0, "messages": 0, "edges": 0, "errors": 0}
-
+def _read_json_source() -> tuple[dict, dict]:
     user_stats_path = "user_stats.json" if os.path.exists("user_stats.json") else None
     graph_path = "social_graph.json" if os.path.exists("social_graph.json") else None
-
     us = {}
     sg = {}
     if user_stats_path:
         us = json.loads(Path(user_stats_path).read_text(encoding="utf-8"))
     if graph_path:
         sg = json.loads(Path(graph_path).read_text(encoding="utf-8"))
+    return us, sg
+
+
+def _source_counts(us: dict, sg: dict) -> dict:
+    users = 0
+    messages = 0
+    edges = 0
+    if us:
+        users = len((us.get("users", us) or {}))
+        for payload in (us.get("users", us) or {}).values():
+            by_chat = payload.get("messages_by_chat") or {}
+            for msgs in by_chat.values():
+                messages += len(msgs or [])
+    if sg:
+        edges = len(sg.get("edges", sg.get("connections", [])) or [])
+    return {"users": users, "messages": messages, "edges": edges}
+
+
+async def migrate(dry_run: bool = True, write_marker: bool = False):
+    if not dry_run:
+        await init_db()
+    stats = {"users": 0, "messages": 0, "edges": 0, "errors": 0, "skipped": 0}
+
+    us, sg = _read_json_source()
+    source = _source_counts(us, sg)
     if not us and not sg:
-        return stats
+        return {
+            "ok": True,
+            "mode": "dry-run" if dry_run else "migrate",
+            "source": source,
+            "migrated": stats,
+            "validation": {"users_ok": True, "messages_ok": True, "edges_ok": True},
+        }
 
     if us:
         async with get_db() as session:
@@ -41,8 +68,9 @@ async def migrate(dry_run: bool = True):
             mrepo = MessageRepository(session)
             for uid, payload in (us.get("users", us) or {}).items():
                 try:
+                    uid_int = int(uid)
                     if not dry_run:
-                        await urepo.get_or_create(int(uid), int(payload.get("chat_id", 0) or 0))
+                        await urepo.get_or_create(uid_int, int(payload.get("chat_id", 0) or 0))
                     stats["users"] += 1
                     by_chat = payload.get("messages_by_chat") or {}
                     for cid, msgs in by_chat.items():
@@ -58,7 +86,7 @@ async def migrate(dry_run: bool = True):
                                 if not dry_run:
                                     await mrepo.add(
                                         chat_id=int(cid),
-                                        user_id=int(uid),
+                                        user_id=uid_int,
                                         text=str(m.get("text", "") or ""),
                                         media_type="text",
                                         sent_at=sent_at,
@@ -74,22 +102,52 @@ async def migrate(dry_run: bool = True):
             erepo = EdgeRepository(session)
             for e in sg.get("edges", sg.get("connections", [])) or []:
                 try:
+                    chat_id = int(e.get("chat_id", 0) or 0)
+                    from_user = int(e.get("from", e.get("user_a", 0)) or 0)
+                    to_user = int(e.get("to", e.get("user_b", 0)) or 0)
+                    if not from_user or not to_user:
+                        stats["skipped"] += 1
+                        continue
                     if not dry_run:
                         await erepo.upsert(
-                            chat_id=int(e.get("chat_id", 0) or 0),
-                            from_user=int(e.get("from", e.get("user_a", 0)) or 0),
-                            to_user=int(e.get("to", e.get("user_b", 0)) or 0),
+                            chat_id=chat_id,
+                            from_user=from_user,
+                            to_user=to_user,
                             weight_delta=float(e.get("weight", e.get("message_count_total", 1.0)) or 1.0),
                         )
                     stats["edges"] += 1
                 except Exception:
                     stats["errors"] += 1
-    return stats
+    snapshot = export_snapshot()
+    db_counts = snapshot.get("db") or {}
+    validation = {
+        "users_ok": int(db_counts.get("users", 0)) >= int(source.get("users", 0)),
+        "messages_ok": int(db_counts.get("messages", 0)) >= int(source.get("messages", 0)),
+        "edges_ok": int(db_counts.get("edges", 0)) >= int(source.get("edges", 0)),
+    }
+    result = {
+        "ok": True,
+        "mode": "dry-run" if dry_run else "migrate",
+        "source": source,
+        "migrated": stats,
+        "db_snapshot": db_counts,
+        "validation": validation,
+    }
+    if write_marker and not dry_run and all(validation.values()):
+        Path(".sqlite_migrated_from_json").write_text(
+            json.dumps({"at": datetime.utcnow().isoformat(), "source": source, "db": db_counts}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        result["marker_written"] = True
+    else:
+        result["marker_written"] = False
+    return result
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dry-run", action="store_true", default=False)
+    parser = argparse.ArgumentParser(description="Migrate user_stats/social_graph JSON data to SQL database")
+    parser.add_argument("--dry-run", action="store_true", default=False, help="Only calculate migration stats, do not write DB")
+    parser.add_argument("--write-marker", action="store_true", default=False, help="Write .sqlite_migrated_from_json on successful validation")
     args = parser.parse_args()
-    out = asyncio.run(migrate(dry_run=args.dry_run))
-    print(out)
+    out = asyncio.run(migrate(dry_run=args.dry_run, write_marker=args.write_marker))
+    print(json.dumps(out, ensure_ascii=False, indent=2))

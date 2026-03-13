@@ -47,6 +47,7 @@
         <option value="radial">Radial</option>
         <option value="community">Community</option>
         <option value="matrix">Matrix</option>
+        <option value="webgl">WebGL</option>
         <option value="sankey">Sankey</option>
         <option value="hierarchy">Hierarchy</option>
         <option value="bubble">Bubble</option>
@@ -115,6 +116,7 @@
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/realtime_graph_client.js') }}"></script>
+<script src="{{ url_for('static', filename='js/graph_webgl_viz.js') }}"></script>
 <script src="{{ url_for('static', filename='js/graph_render_pipeline.js') }}"></script>
 <script type="module" src="{{ url_for('static', filename='js/graph_visualizations.jsx') }}"></script>
 <script type="module" src="{{ url_for('static', filename='js/advanced_graph_viz.jsx') }}"></script>
@@ -124,6 +126,7 @@ let _dashboardRealtimeClient = null;
 let _deltaPromise = null;
 let _graphState = {nodes: [], edges: [], meta: {}};
 let _graphVersion = '';
+let _graphRenderEngine = 'auto';
 
 function fmt(num, digits = 2) {
   const n = Number(num || 0);
@@ -169,7 +172,7 @@ function updateGraphMetaLine(graph) {
   const nodesCount = Number(meta.nodes_count || (g.nodes || []).length || 0);
   const edgesCount = Number(meta.edges_count || (g.edges || []).length || 0);
   const period = String(meta.period || '7d');
-  metaLine.textContent = `Источник: ${source} · Период: ${period} · Узлы: ${nodesCount} · Связи: ${edgesCount} · Обновлено: ${loadedAt}`;
+  metaLine.textContent = `Источник: ${source} · Период: ${period} · Узлы: ${nodesCount} · Связи: ${edgesCount} · Render: ${_graphRenderEngine} · Обновлено: ${loadedAt}`;
 }
 
 function renderGraphFromState() {
@@ -183,8 +186,13 @@ function renderGraphFromState() {
     const ok = window.GraphRenderPipeline.render({
       ...payload,
       defer: true,
+      largeGraphThresholds: { nodes: 260, edges: 1100 },
       onUnavailable: function () {
         root.textContent = 'Graph modules not loaded.';
+      },
+      onEngineSelected: function (info) {
+        _graphRenderEngine = String((info && info.engine) || 'auto');
+        updateGraphMetaLine(_graphState);
       },
     });
     if (!ok) {

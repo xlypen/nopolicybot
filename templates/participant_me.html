@@ -76,6 +76,7 @@
           <option value="radial">radial</option>
           <option value="community">community</option>
           <option value="matrix">matrix</option>
+          <option value="webgl">webgl</option>
         </select>
         <span id="me-graph-status" class="text-muted" style="font-size: 0.82rem;">Загрузка…</span>
       </div>
@@ -94,6 +95,7 @@
 {% if not error %}
 <script src="{{ url_for('static', filename='js/graph_render_pipeline.js') }}"></script>
 <script type="module" src="{{ url_for('static', filename='js/graph_visualizations.jsx') }}"></script>
+<script src="{{ url_for('static', filename='js/graph_webgl_viz.js') }}"></script>
 <script src="{{ url_for('static', filename='js/realtime_graph_client.js') }}"></script>
 <script>
 (function(){
@@ -121,6 +123,7 @@
         root: root,
         mode: (modeSel && modeSel.value) || 'force',
         data: graphData,
+        largeGraphThresholds: { nodes: 240, edges: 1000 },
         defer: true,
         onUnavailable: function(){
           root.innerHTML = '<div style="padding:0.8rem;color:var(--text-muted);">Граф-модуль не загружен</div>';

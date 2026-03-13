@@ -1,0 +1,99 @@
+{% extends "admin/base.html" %}
+{% block title %}Modern Dashboard — Nopolicybot{% endblock %}
+{% block body %}
+<div class="hero">
+  <div class="header" style="margin-bottom:6px;">
+    <h1>Modern Dashboard</h1>
+    <div class="actions">
+      <a class="btn btn-secondary" href="{{ url_for('admin') }}">Legacy Admin</a>
+      <a class="btn btn-secondary" href="{{ url_for('settings') }}">Настройки</a>
+      <a class="btn btn-secondary" href="{{ url_for('social_graph') }}">Дерево связей</a>
+      <a class="btn btn-secondary" href="{{ url_for('logout') }}">Выйти</a>
+    </div>
+  </div>
+  <div style="color:var(--text-secondary)">Восстановленный UI по recovery-плану: метрики + интерактивные граф-режимы.</div>
+</div>
+
+<div class="cards">
+  <div class="card"><h3>Пользователей</h3><span class="val">{{ metrics.users }}</span></div>
+  <div class="card"><h3>Сообщений</h3><span class="val">{{ metrics.messages }}</span></div>
+  <div class="card"><h3>Политических</h3><span class="val">{{ metrics.political }}</span></div>
+  <div class="card"><h3>Замечаний</h3><span class="val">{{ metrics.warnings }}</span></div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <div class="title">Ранги</div>
+    <ul>
+      <li>Лояльные: {{ metrics.ranks.loyal or 0 }}</li>
+      <li>Нейтральные: {{ metrics.ranks.neutral or 0 }}</li>
+      <li>Оппозиция: {{ metrics.ranks.opposition or 0 }}</li>
+      <li>Unknown: {{ metrics.ranks.unknown or 0 }}</li>
+    </ul>
+  </div>
+  <div class="card">
+    <div class="title">Выбор чата и режима</div>
+    <div class="row">
+      <label>Чат:</label>
+      <select id="chatSel">
+        <option value="all">Все чаты</option>
+        {% for c in chats %}
+        <option value="{{ c.chat_id }}">{{ c.title or c.chat_id }}</option>
+        {% endfor %}
+      </select>
+      <label>Режим:</label>
+      <select id="modeSel">
+        <option value="force">Force</option>
+        <option value="radial">Radial</option>
+        <option value="community">Community</option>
+        <option value="matrix">Matrix</option>
+        <option value="sankey">Sankey</option>
+        <option value="hierarchy">Hierarchy</option>
+        <option value="bubble">Bubble</option>
+        <option value="ego">Ego</option>
+      </select>
+      <button class="btn" id="loadGraphBtn">Загрузить</button>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="title">Graph Canvas</div>
+  <div id="modernGraphRoot" style="min-height:520px;border:1px solid var(--border-input);border-radius:10px;padding:10px;background:#0b1630;"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module" src="{{ url_for('static', filename='js/graph_visualizations.jsx') }}"></script>
+<script type="module" src="{{ url_for('static', filename='js/advanced_graph_viz.jsx') }}"></script>
+<script>
+async function loadAndRender() {
+  const chat = document.getElementById('chatSel').value;
+  const mode = document.getElementById('modeSel').value;
+  const root = document.getElementById('modernGraphRoot');
+  root.textContent = 'Загрузка данных...';
+  const resp = await fetch(`/api/chat/${encodeURIComponent(chat)}/graph?period=7d`);
+  const body = await resp.json();
+  const graph = (body && body.graph) || {nodes: [], edges: [], meta: {}};
+  const payload = { root, data: graph, mode };
+
+  if (window.AdvancedGraphViz && window.AdvancedGraphViz.modes && window.AdvancedGraphViz.modes.includes(mode)) {
+    window.AdvancedGraphViz.render(payload);
+    return;
+  }
+  if (window.GraphVisualizations) {
+    window.GraphVisualizations.render(payload);
+    return;
+  }
+  root.textContent = 'Graph modules not loaded.';
+}
+
+document.getElementById('loadGraphBtn').addEventListener('click', () => {
+  loadAndRender().catch((e) => {
+    document.getElementById('modernGraphRoot').textContent = 'Ошибка: ' + e;
+  });
+});
+
+loadAndRender().catch(() => {});
+</script>
+{% endblock %}

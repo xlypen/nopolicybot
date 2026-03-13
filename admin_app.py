@@ -11,7 +11,9 @@ import hashlib
 import hmac
 import json
 import logging
+import mimetypes
 import os
+import subprocess
 import time
 import urllib.request
 import urllib.parse
@@ -26,6 +28,7 @@ from flask import Flask, jsonify, redirect, render_template, Response, request, 
 from dotenv import load_dotenv
 from routes.social_graph_routes import register_social_graph_routes
 import bot_settings
+from ai.prompts import get_all_prompts, reset_prompts, set_prompt
 
 load_dotenv(Path(__file__).resolve().parent / ".env", encoding="utf-8-sig")
 
@@ -33,6 +36,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 app = Flask(__name__)
 app.secret_key = os.getenv("ADMIN_SECRET_KEY", "change-me-in-production")
+mimetypes.add_type("text/javascript", ".jsx")
 USERS_JSON = Path(__file__).resolve().parent / "user_stats.json"
 # Пароль админа: из переменной окружения или из файла (задаётся один раз через страницу /login)
 _ADMIN_PASSWORD_ENV = (os.getenv("ADMIN_PASSWORD") or "").strip()
@@ -210,6 +214,11 @@ def login_required(f):
 register_social_graph_routes(app, login_required)
 
 
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok", "service": "flask-admin"})
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     pw = _get_admin_password()
@@ -360,6 +369,39 @@ def admin():
         chat_mode=chat_mode or "default",
         chat_mode_presets={"default": "По умолчанию", "soft": "Мягкий", "active": "Активный", "beast": "Зверь"},
         chat_mode_descriptions=chat_mode_descriptions,
+    )
+
+
+@app.route("/admin-modern")
+@login_required
+def admin_modern():
+    from user_stats import get_chats
+
+    data = _load_users()
+    users = data.get("users", {}) or {}
+    total_users = len(users)
+    total_messages = 0
+    total_political = 0
+    total_warnings = 0
+    rank_counts: dict[str, int] = {"loyal": 0, "neutral": 0, "opposition": 0, "unknown": 0}
+    for u in users.values():
+        stats = u.get("stats", {}) or {}
+        total_messages += int(stats.get("total_messages", 0) or 0)
+        total_political += int(stats.get("political_messages", 0) or 0)
+        total_warnings += int(stats.get("warnings_received", 0) or 0)
+        rank = str(u.get("rank", "unknown") or "unknown")
+        rank_counts[rank] = rank_counts.get(rank, 0) + 1
+
+    return render_template(
+        "admin/dashboard.html",
+        chats=get_chats(),
+        metrics={
+            "users": total_users,
+            "messages": total_messages,
+            "political": total_political,
+            "warnings": total_warnings,
+            "ranks": rank_counts,
+        },
     )
 
 
@@ -1305,6 +1347,58 @@ def api_me_graph_compat():
     ego_raw = (request.args.get("user_id") or "").strip()
     ego = int(ego_raw) if ego_raw.isdigit() else None
     return jsonify({"ok": True, "graph": build_graph_payload(None, period="7d", ego_user=ego)})
+
+
+@app.route("/api/log-tail")
+@login_required
+def api_log_tail():
+    lines = max(20, min(500, int(request.args.get("lines", "120"))))
+    source = (request.args.get("source") or "telegram-bot.service").strip()
+    if source.endswith(".service"):
+        allowed = {"telegram-bot.service", "telegram-bot-admin.service", "telegram-bot-api.service"}
+        if source not in allowed:
+            source = "telegram-bot.service"
+        try:
+            cp = subprocess.run(
+                ["journalctl", "-u", source, "-n", str(lines), "--no-pager", "-o", "cat"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            content = (cp.stdout or "").splitlines()
+        except Exception:
+            content = []
+        return jsonify({"ok": True, "lines": content[-lines:], "source": source, "kind": "systemd"})
+    path = Path(source)
+    if not path.exists():
+        return jsonify({"ok": True, "lines": [], "source": str(path), "kind": "file"})
+    try:
+        content = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        content = []
+    return jsonify({"ok": True, "lines": content[-lines:], "source": str(path), "kind": "file"})
+
+
+@app.route("/api/prompts", methods=["GET", "POST", "DELETE"])
+@login_required
+def api_prompts():
+    if request.method == "GET":
+        return jsonify({"ok": True, "prompts": get_all_prompts()})
+    if request.method == "POST":
+        payload = request.get_json(silent=True) or {}
+        name = str(payload.get("name") or "").strip()
+        value = str(payload.get("value") or "")
+        if not name:
+            return jsonify({"ok": False, "error": "name is required"}), 400
+        set_prompt(name, value)
+        return jsonify({"ok": True, "prompts": get_all_prompts()})
+    payload = request.get_json(silent=True) or {}
+    names = payload.get("names")
+    if isinstance(names, list):
+        names = [str(x) for x in names if str(x).strip()]
+    else:
+        names = None
+    return jsonify({"ok": True, "prompts": reset_prompts(names)})
 
 
 if __name__ == "__main__":

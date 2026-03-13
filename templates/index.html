@@ -12,6 +12,7 @@
 <div class="header">
 <h1>Админ-панель — Политмонитор</h1>
 <div class="flex gap-sm align-center">
+<a href="{{ url_for('admin_modern') }}" class="btn btn-secondary">Modern Dashboard</a>
 <a href="{{ url_for('social_graph') }}" class="btn btn-secondary">Дерево связей</a>
 <a href="{{ url_for('settings') }}" class="btn btn-secondary">Настройки</a>
 <form method="post" action="{{ url_for('restart_bot') }}" style="display:inline;">

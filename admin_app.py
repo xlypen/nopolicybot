@@ -293,6 +293,13 @@ def participant_me():
         if int(r.get("user_a", 0) or 0) == user_id or int(r.get("user_b", 0) or 0) == user_id
     ]
     my_connections = sorted(my_connections, key=lambda r: int(r.get("message_count_7d", 0) or 0), reverse=True)[:50]
+    me_chat_ids = sorted(
+        {
+            int(r.get("chat_id", 0) or 0)
+            for r in my_connections
+            if int(r.get("chat_id", 0) or 0) != 0
+        }
+    )
     from user_stats import get_user_display_names
     names = get_user_display_names()
     for r in my_connections:
@@ -316,6 +323,7 @@ def participant_me():
         topic_ru=TOPIC_RU,
         portrait_exists=portrait_exists,
         me_url=me_url_refresh,
+        me_chat_ids=me_chat_ids,
     )
 
 

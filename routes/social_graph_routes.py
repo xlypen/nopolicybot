@@ -355,6 +355,16 @@ def register_social_graph_routes(app, login_required):
                 "summary_preview": conn.get("summary_preview", ""),
                 "summary_full": conn.get("summary_latest_full", conn.get("summary", "")) or "",
             })
+        realtime_chat_ids: list[int] = []
+        if chat_id and str(chat_id).lstrip("-").isdigit():
+            realtime_chat_ids = [int(chat_id)]
+        else:
+            for c in chats:
+                raw = c.get("chat_id")
+                if str(raw).lstrip("-").isdigit():
+                    realtime_chat_ids.append(int(raw))
+            # Limit websocket fanout in "all chats" mode.
+            realtime_chat_ids = sorted(set(realtime_chat_ids))[:12]
 
         return render_template(
             "social_graph.html",
@@ -392,6 +402,7 @@ def register_social_graph_routes(app, login_required):
             empty_state_kind=empty_state_kind,
             total_connections_before_filter=total_connections_before_filter,
             graph_focus_rows=graph_focus_rows,
+            realtime_chat_ids=realtime_chat_ids,
         )
 
     @app.route("/api/social-graph-version")

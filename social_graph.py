@@ -450,11 +450,14 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
 def process_realtime_updates(
     user_display_names: dict[str, str] | None = None,
     min_new_messages: int = 4,
-) -> int:
+    return_details: bool = False,
+) -> int | dict:
     """
     Инкрементально обновляет дерево связей по сообщениям текущего дня.
     Обновляет только пары, у которых накопилось минимум min_new_messages новых реплик.
     Возвращает число обновлённых связей.
+    Если return_details=True, возвращает dict:
+    {"updated": int, "by_chat": {chat_id: updated_pairs}}.
     """
     import os
     try:
@@ -475,6 +478,7 @@ def process_realtime_updates(
         names = user_display_names
 
     updated = 0
+    updated_by_chat: dict[str, int] = {}
     data.setdefault("connections", {})
     data.setdefault("realtime_cursors", {})
 
@@ -520,10 +524,16 @@ def process_realtime_updates(
             )
             chat_cursor[pk] = len(pair_msgs)
             updated += 1
+            updated_by_chat[ckey] = int(updated_by_chat.get(ckey, 0) or 0) + 1
 
     if updated > 0:
         _save(data)
-    return updated
+    if return_details:
+        return {
+            "updated": int(updated),
+            "by_chat": {int(k): int(v) for k, v in (updated_by_chat or {}).items()},
+        }
+    return int(updated)
 
 
 def get_connections(chat_id: int | None = None) -> list[dict]:

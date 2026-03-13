@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.routers.graph import router as graph_router
 from api.routers.health import router as health_router
 from api.routers.realtime import router as realtime_router
+from api.routers.realtime import start_realtime_worker, stop_realtime_worker
 from db.engine import init_db
 
 load_dotenv()
@@ -16,6 +17,12 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 @app.on_event("startup")
 async def startup():
     await init_db()
+    await start_realtime_worker()
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await stop_realtime_worker()
 
 
 @app.get("/api/v2/health")

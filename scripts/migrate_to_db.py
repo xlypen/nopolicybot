@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -16,8 +17,9 @@ from db.engine import get_db, init_db
 from db.repositories.edge_repo import EdgeRepository
 from db.repositories.message_repo import MessageRepository
 from db.repositories.user_repo import UserRepository
-from services.data_platform import export_snapshot
+from services.data_platform import get_db_counts_async
 from services.storage_cutover import apply_cutover
+from sqlalchemy.exc import IntegrityError
 
 
 def _read_json_source() -> tuple[dict, dict]:
@@ -43,8 +45,48 @@ def _source_counts(us: dict, sg: dict) -> dict:
             for msgs in by_chat.values():
                 messages += len(msgs or [])
     if sg:
-        edges = len(sg.get("edges", sg.get("connections", [])) or [])
+        edges = len(list(_iter_social_edges(sg)))
     return {"users": users, "messages": messages, "edges": edges}
+
+
+def _iter_social_edges(sg: dict):
+    if not isinstance(sg, dict):
+        return
+    edges = sg.get("edges")
+    if isinstance(edges, list):
+        for edge in edges:
+            if isinstance(edge, dict):
+                yield edge
+        return
+
+    connections = sg.get("connections")
+    if isinstance(connections, list):
+        for edge in connections:
+            if isinstance(edge, dict):
+                yield edge
+        return
+    if isinstance(connections, dict):
+        for chat_key, bucket in connections.items():
+            if isinstance(bucket, list):
+                for edge in bucket:
+                    if isinstance(edge, dict):
+                        if edge.get("chat_id") is None:
+                            edge = dict(edge)
+                            edge["chat_id"] = chat_key
+                        yield edge
+            elif isinstance(bucket, dict):
+                for edge in bucket.values():
+                    if isinstance(edge, dict):
+                        if edge.get("chat_id") is None:
+                            edge = dict(edge)
+                            edge["chat_id"] = chat_key
+                        yield edge
+
+
+def _pseudo_telegram_id(chat_id: int, user_id: int, idx: int, raw_date: str, text: str) -> int:
+    seed = f"{chat_id}|{user_id}|{idx}|{raw_date}|{text[:120]}".encode("utf-8", errors="ignore")
+    digest = hashlib.blake2b(seed, digest_size=8).digest()
+    return int.from_bytes(digest, "big") & ((1 << 63) - 1)
 
 
 async def migrate(dry_run: bool = True, write_marker: bool = False):
@@ -75,9 +117,9 @@ async def migrate(dry_run: bool = True, write_marker: bool = False):
                     stats["users"] += 1
                     by_chat = payload.get("messages_by_chat") or {}
                     for cid, msgs in by_chat.items():
-                        for m in msgs or []:
+                        for idx, m in enumerate(msgs or []):
                             try:
-                                sent_at = datetime.utcnow()
+                                sent_at = datetime.now(tz=timezone.utc)
                                 raw = str(m.get("date", "") or "")[:19]
                                 if raw:
                                     try:
@@ -85,13 +127,19 @@ async def migrate(dry_run: bool = True, write_marker: bool = False):
                                     except Exception:
                                         pass
                                 if not dry_run:
-                                    await mrepo.add(
-                                        chat_id=int(cid),
-                                        user_id=uid_int,
-                                        text=str(m.get("text", "") or ""),
-                                        media_type="text",
-                                        sent_at=sent_at,
-                                    )
+                                    text = str(m.get("text", "") or "")
+                                    try:
+                                        await mrepo.add(
+                                            telegram_id=_pseudo_telegram_id(int(cid), uid_int, idx, raw, text),
+                                            chat_id=int(cid),
+                                            user_id=uid_int,
+                                            text=text,
+                                            media_type="text",
+                                            sent_at=sent_at,
+                                        )
+                                    except IntegrityError:
+                                        stats["skipped"] += 1
+                                        continue
                                 stats["messages"] += 1
                             except Exception:
                                 stats["errors"] += 1
@@ -101,7 +149,7 @@ async def migrate(dry_run: bool = True, write_marker: bool = False):
     if sg:
         async with get_db() as session:
             erepo = EdgeRepository(session)
-            for e in sg.get("edges", sg.get("connections", [])) or []:
+            for e in _iter_social_edges(sg) or []:
                 try:
                     chat_id = int(e.get("chat_id", 0) or 0)
                     from_user = int(e.get("from", e.get("user_a", 0)) or 0)
@@ -119,8 +167,7 @@ async def migrate(dry_run: bool = True, write_marker: bool = False):
                     stats["edges"] += 1
                 except Exception:
                     stats["errors"] += 1
-    snapshot = export_snapshot()
-    db_counts = snapshot.get("db") or {}
+    db_counts = await get_db_counts_async()
     validation = {
         "users_ok": int(db_counts.get("users", 0)) >= int(source.get("users", 0)),
         "messages_ok": int(db_counts.get("messages", 0)) >= int(source.get("messages", 0)),
@@ -136,7 +183,7 @@ async def migrate(dry_run: bool = True, write_marker: bool = False):
     }
     if write_marker and not dry_run and all(validation.values()):
         Path(".sqlite_migrated_from_json").write_text(
-            json.dumps({"at": datetime.utcnow().isoformat(), "source": source, "db": db_counts}, ensure_ascii=False, indent=2),
+            json.dumps({"at": datetime.now(tz=timezone.utc).isoformat(), "source": source, "db": db_counts}, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         result["marker_written"] = True

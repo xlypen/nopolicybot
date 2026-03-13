@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 
@@ -8,6 +9,25 @@ from sqlalchemy import func, select
 
 from db.engine import get_db
 from db.models import Edge, Message, User
+
+
+_MODE_PATH = Path(__file__).resolve().parent.parent / "data" / "storage_mode.json"
+_ALLOWED_MODES = {"json", "hybrid", "db"}
+
+
+def _effective_storage_mode() -> str:
+    if _MODE_PATH.exists():
+        try:
+            payload = json.loads(_MODE_PATH.read_text(encoding="utf-8"))
+            mode = str(payload.get("mode", "")).strip().lower()
+            if mode in _ALLOWED_MODES:
+                return mode
+        except Exception:
+            pass
+    env_mode = (os.getenv("STORAGE_PRIMARY") or "hybrid").strip().lower()
+    if env_mode in _ALLOWED_MODES:
+        return env_mode
+    return "hybrid"
 
 
 def _json_counts() -> dict:
@@ -65,7 +85,16 @@ async def _db_counts() -> dict:
     }
 
 
+async def get_db_counts_async() -> dict:
+    return await _db_counts()
+
+
 def _safe_db_counts() -> tuple[dict, str | None]:
+    try:
+        asyncio.get_running_loop()
+        return {"users": 0, "messages": 0, "edges": 0, "chats": 0}, "running_event_loop"
+    except RuntimeError:
+        pass
     try:
         return asyncio.run(_db_counts()), None
     except Exception as e:
@@ -77,7 +106,7 @@ def export_snapshot(*args, **kwargs) -> dict:
     json_counts = _json_counts()
     db_counts, db_error = _safe_db_counts()
     delta = {k: int(db_counts.get(k, 0)) - int(json_counts.get(k, 0)) for k in ("users", "messages", "edges", "chats")}
-    storage_primary = (os.getenv("STORAGE_PRIMARY") or "hybrid").strip().lower()
+    storage_primary = _effective_storage_mode()
     return {
         "ok": True,
         "storage_primary": storage_primary,

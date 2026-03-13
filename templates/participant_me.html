@@ -11,6 +11,10 @@
 .connections-list .peer-name { font-weight: bold; }
 .connections-list .meta { font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem; }
 .me-bookmark { margin-top: 1rem; padding: 0.75rem; background: var(--bg-input); border-radius: 8px; font-size: 0.9rem; word-break: break-all; }
+.me-graph-wrap { margin-top: 1.2rem; padding: 0.8rem; background: var(--bg-input); border-radius: 10px; }
+.me-graph-head { display: flex; gap: 0.6rem; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 0.6rem; }
+.me-graph-controls { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.me-graph-root { min-height: 420px; border: 1px solid var(--border-card); border-radius: 10px; overflow: auto; }
 </style>
 {% endblock %}
 {% block body %}
@@ -62,6 +66,22 @@
   {% else %}
   <p class="text-muted">Пока нет данных о связях. Они обновляются по мере общения в чате.</p>
   {% endif %}
+  <div class="me-graph-wrap">
+    <div class="me-graph-head">
+      <h2 style="font-size: 1rem; margin: 0;">Мой граф связей (live)</h2>
+      <div class="me-graph-controls">
+        <label for="me-graph-mode" class="text-muted" style="font-size: 0.85rem;">Режим</label>
+        <select id="me-graph-mode">
+          <option value="force">force</option>
+          <option value="radial">radial</option>
+          <option value="community">community</option>
+          <option value="matrix">matrix</option>
+        </select>
+        <span id="me-graph-status" class="text-muted" style="font-size: 0.82rem;">Загрузка…</span>
+      </div>
+    </div>
+    <div id="me-graph-root" class="me-graph-root"></div>
+  </div>
 
   <div class="me-bookmark">
     <strong>Сохраните ссылку</strong> — по ней вы всегда сможете открыть этот профиль и граф связей:<br>
@@ -69,4 +89,92 @@
   </div>
 {% endif %}
 </div>
+{% endblock %}
+{% block scripts %}
+{% if not error %}
+<script type="module" src="{{ url_for('static', filename='js/graph_visualizations.jsx') }}"></script>
+<script src="{{ url_for('static', filename='js/realtime_graph_client.js') }}"></script>
+<script>
+(function(){
+  var userId = {{ user_id|int }};
+  var chatIds = {{ me_chat_ids|tojson }};
+  var modeSel = document.getElementById('me-graph-mode');
+  var statusEl = document.getElementById('me-graph-status');
+  var root = document.getElementById('me-graph-root');
+  var graphData = {nodes:[], edges:[], meta:{}};
+  var wsClient = null;
+  var refreshTimer = null;
+
+  function setStatus(text, isError){
+    if(!statusEl){return;}
+    statusEl.textContent = String(text || '');
+    statusEl.style.color = isError ? '#e94560' : 'var(--text-muted)';
+  }
+
+  function renderGraph(){
+    if(!root){return;}
+    if(window.GraphVisualizations && typeof window.GraphVisualizations.render === 'function'){
+      window.GraphVisualizations.render({
+        root: root,
+        mode: (modeSel && modeSel.value) || 'force',
+        data: graphData
+      });
+      return;
+    }
+    var nodes = (graphData && graphData.nodes) || [];
+    var edges = (graphData && graphData.edges) || [];
+    root.innerHTML = '<div style="padding:0.8rem;color:var(--text-muted);">Участников: ' + nodes.length + ' · Связей: ' + edges.length + '</div>';
+  }
+
+  function scheduleRefresh(){
+    if(refreshTimer){return;}
+    refreshTimer = setTimeout(function(){
+      refreshTimer = null;
+      loadGraph('live');
+    }, 900);
+  }
+
+  async function loadGraph(reason){
+    setStatus(reason === 'live' ? 'Live обновление…' : 'Загрузка графа…');
+    try{
+      var resp = await fetch('/api/me/graph?user_id=' + encodeURIComponent(String(userId)), { cache: 'no-store' });
+      var body = await resp.json();
+      graphData = (body && body.graph) || {nodes:[], edges:[], meta:{}};
+      renderGraph();
+      setStatus('Участников: ' + ((graphData.nodes||[]).length) + ' · Связей: ' + ((graphData.edges||[]).length));
+    }catch(_e){
+      setStatus('Ошибка загрузки графа', true);
+    }
+  }
+
+  function startRealtime(){
+    if(!window.createGraphRealtimeClient || !Array.isArray(chatIds) || !chatIds.length){
+      setStatus('Live недоступен (нет chat_id)', true);
+      return;
+    }
+    wsClient = window.createGraphRealtimeClient({
+      chatIds: chatIds,
+      throttleMs: 900,
+      onStatus: function(s){
+        var isErr = String(s || '').indexOf('error') >= 0;
+        setStatus('WS: ' + s, isErr);
+      },
+      onDelta: function(){
+        scheduleRefresh();
+      }
+    });
+    wsClient.start();
+  }
+
+  if(modeSel){
+    modeSel.addEventListener('change', renderGraph);
+  }
+  loadGraph('init');
+  startRealtime();
+  window.addEventListener('beforeunload', function(){
+    if(wsClient && wsClient.stop){ wsClient.stop(); }
+  });
+})();
+</script>
+{% endif %}
 {% endblock %}

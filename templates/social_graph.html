@@ -215,6 +215,7 @@
 <a href="{{ url_for('admin') }}" class="btn btn-secondary">← Назад</a>
 <button type="button" class="btn btn-sm" id="btn-process" style="background:#0f3460;">Обработать накопленные диалоги</button>
 <span id="process-result" style="font-size:0.85rem;margin-left:0.5rem;"></span>
+<span id="realtime-ws-status" style="font-size:0.8rem;color:#9bb0cf;margin-left:0.5rem;">WS: off</span>
 </div>
 </div>
 <p style="color:#888;font-size:0.9rem;margin-bottom:1rem;">
@@ -492,6 +493,7 @@
 {% endif %}
 {% endblock %}
 {% block scripts %}
+<script src="{{ url_for('static', filename='js/realtime_graph_client.js') }}"></script>
 <script>
 function openSidePanel(){
   var p=document.getElementById('side-panel');
@@ -513,6 +515,9 @@ function toggleSidePanel(){
 var graphNodes = {{ graph_nodes|tojson }};
 var graphEdges = {{ graph_edges|tojson }};
 var graphFocusRows = {{ graph_focus_rows|tojson }};
+var realtimeWsChatIds = {{ realtime_chat_ids|tojson }};
+var realtimeWsClient = null;
+var realtimeReloadTimer = null;
 var rankedLayoutEnabled = {{ ranked_layout_enabled|tojson }};
 var graphLayout = (function(){ try{ var s=localStorage.getItem('sg_layout'); if(s==='force'||s==='ranked'||s==='circular')return s; }catch(_e){} return rankedLayoutEnabled?'ranked':'circular'; })();
 var graphFocusUserId = null;
@@ -984,6 +989,59 @@ function getInitials(label){
   return (parts[0].slice(0,1)+parts[1].slice(0,1)).toUpperCase();
 }
 
+function setRealtimeWsStatus(text, isError){
+  var el = document.getElementById('realtime-ws-status');
+  if(!el){return;}
+  el.textContent = 'WS: ' + String(text || 'off');
+  el.style.color = isError ? '#e94560' : '#9bb0cf';
+}
+
+function scheduleRealtimeReload(){
+  if(realtimeReloadTimer){return;}
+  realtimeReloadTimer = setTimeout(function(){
+    realtimeReloadTimer = null;
+    location.reload();
+  }, 1000);
+}
+
+function stopRealtimeClient(){
+  if(realtimeWsClient && realtimeWsClient.stop){
+    realtimeWsClient.stop();
+  }
+  realtimeWsClient = null;
+}
+
+function startRealtimeClientIfNeeded(){
+  var liveToggle = document.getElementById('sg-live');
+  if(!liveToggle || !liveToggle.checked){
+    stopRealtimeClient();
+    setRealtimeWsStatus('disabled');
+    return;
+  }
+  if(!Array.isArray(realtimeWsChatIds) || !realtimeWsChatIds.length){
+    setRealtimeWsStatus('no chats', true);
+    return;
+  }
+  if(!window.createGraphRealtimeClient){
+    setRealtimeWsStatus('unavailable', true);
+    return;
+  }
+  stopRealtimeClient();
+  realtimeWsClient = window.createGraphRealtimeClient({
+    chatIds: realtimeWsChatIds,
+    throttleMs: 900,
+    onStatus: function(statusText){
+      setRealtimeWsStatus(statusText, String(statusText || '').indexOf('error') >= 0);
+    },
+    onDelta: function(evt){
+      var n = Number((evt || {}).updated_pairs || 0);
+      setRealtimeWsStatus('delta +' + (Number.isFinite(n) ? n : 0));
+      scheduleRealtimeReload();
+    }
+  });
+  realtimeWsClient.start();
+}
+
 function activateView(view){
   document.querySelectorAll('.view-btn').forEach(function(b){
     b.classList.toggle('active', b.getAttribute('data-view') === view);
@@ -1173,6 +1231,21 @@ if(_btnOpen){_btnOpen.onclick=toggleSidePanel;}
 if(_btnClose){_btnClose.onclick=closeSidePanel;}
 document.addEventListener('keydown', function(e){
   if(e.key === 'Escape'){closeSidePanel();}
+});
+var _sgLiveToggle = document.getElementById('sg-live');
+if(_sgLiveToggle){
+  _sgLiveToggle.addEventListener('change', function(){
+    if(_sgLiveToggle.checked){
+      startRealtimeClientIfNeeded();
+    }else{
+      stopRealtimeClient();
+      setRealtimeWsStatus('disabled');
+    }
+  });
+}
+startRealtimeClientIfNeeded();
+window.addEventListener('beforeunload', function(){
+  stopRealtimeClient();
 });
 {% if recommender_enabled %}
 document.getElementById('btn-topic-generate').onclick=function(){

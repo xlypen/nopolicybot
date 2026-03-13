@@ -90,10 +90,12 @@
     </div>
   </div>
   <div class="card">
-    <div class="title">Recommendations</div>
+    <div class="title">Recommendations + Predictive</div>
     <ul id="recoList" style="margin:0;padding-left:18px;color:var(--text-secondary);">
       <li>Загрузка...</li>
     </ul>
+    <div id="predictiveSummary" style="margin-top:10px;color:var(--text-secondary);font-size:12px;">Predictive: загрузка...</div>
+    <div id="predictiveRows" style="margin-top:8px;display:grid;gap:6px;"></div>
   </div>
 </div>
 
@@ -107,9 +109,17 @@
   </div>
   <div class="card">
     <div class="title">Decision Audit (recent)</div>
+    <div id="decisionQualitySummary" style="color:var(--text-secondary);font-size:12px;margin-bottom:8px;">Quality: загрузка...</div>
     <ul id="decisionList" style="margin:0;padding-left:18px;color:var(--text-secondary);">
       <li>Загрузка...</li>
     </ul>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <div class="title">Learning Summary (A/B + feedback)</div>
+    <div id="learningSummary" style="color:var(--text-secondary);">Загрузка...</div>
   </div>
 </div>
 {% endblock %}
@@ -320,7 +330,10 @@ async function loadInsights(chat) {
   await Promise.allSettled([
     loadRetention(chat),
     loadRecommendations(chat),
+    loadPredictive(chat),
     loadStorageStatus(),
+    loadDecisionQuality(chat),
+    loadLearningSummary(chat),
     loadDecisions(chat),
   ]);
 }
@@ -365,6 +378,44 @@ async function loadRecommendations(chat) {
   }).join('');
 }
 
+function signalBadge(signal){
+  const d = String(signal.direction || 'flat');
+  const color = d === 'up' ? '#f59e0b' : (d === 'down' ? '#4ade80' : '#94a3b8');
+  return `<span style="display:inline-block;padding:2px 7px;border-radius:999px;border:1px solid ${color};color:${color};font-size:11px;">${esc(d)}</span>`;
+}
+
+async function loadPredictive(chat) {
+  const sumEl = document.getElementById('predictiveSummary');
+  const rowsEl = document.getElementById('predictiveRows');
+  if (!sumEl || !rowsEl) return;
+  sumEl.textContent = 'Predictive: загрузка...';
+  rowsEl.innerHTML = '';
+  const r = await fetch(`/api/predictive/overview?chat_id=${encodeURIComponent(chat)}&horizon_days=7&lookback_days=30`);
+  const b = await r.json();
+  const ov = (b && b.overview) || {};
+  const signals = ov.signals || {};
+  const churn = signals.churn_risk || {};
+  const tox = signals.toxicity || {};
+  const vir = signals.virality || {};
+  sumEl.textContent = `Predictive horizon: ${Number(ov.horizon_days || 7)}d`;
+  const renderSignal = (title, s) => `
+    <div style="border:1px solid var(--border-card);border-radius:8px;padding:8px;">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">
+        <strong>${esc(title)}</strong>
+        ${signalBadge(s)}
+      </div>
+      <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">
+        current: ${fmt(s.current, 3)} · predicted: ${fmt(s.predicted, 3)} · delta: ${fmt(s.delta, 3)} · conf: ${fmt(s.confidence, 2)}
+      </div>
+    </div>
+  `;
+  rowsEl.innerHTML = [
+    renderSignal('churn_risk', churn),
+    renderSignal('toxicity', tox),
+    renderSignal('virality', vir),
+  ].join('');
+}
+
 async function loadStorageStatus() {
   const el = document.getElementById('storageStatus');
   el.textContent = 'Загрузка...';
@@ -399,8 +450,61 @@ async function loadDecisions(chat) {
     const strategy = esc(row.strategy || 'standard');
     const outcome = esc(row.outcome || '');
     const user = row.user_id ? `u${row.user_id}` : '—';
-    return `<li><strong>${strategy}</strong> (${outcome}) · ${user}</li>`;
+    const eventId = String(row.event_id || '');
+    const hasFeedback = !!eventId;
+    const currentFb = row.feedback_label ? ` · fb:${esc(row.feedback_label)}` : '';
+    const controls = hasFeedback
+      ? `<span style="margin-left:6px;">
+          <button class="btn btn-secondary" data-did="${esc(eventId)}" data-fb="approve" style="padding:1px 6px;font-size:11px;">approve</button>
+          <button class="btn btn-secondary" data-did="${esc(eventId)}" data-fb="reject" style="padding:1px 6px;font-size:11px;">reject</button>
+        </span>`
+      : '';
+    return `<li><strong>${strategy}</strong> (${outcome}) · ${user}${currentFb}${controls}</li>`;
   }).join('');
+}
+
+async function submitDecisionFeedback(eventId, feedback) {
+  const resp = await fetch('/api/decisions/feedback', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({event_id: String(eventId || ''), feedback: String(feedback || 'neutral')}),
+  });
+  const body = await resp.json();
+  if (!resp.ok || !body || !body.ok) {
+    throw new Error((body && body.error) || 'feedback error');
+  }
+}
+
+async function loadDecisionQuality(chat) {
+  const el = document.getElementById('decisionQualitySummary');
+  if (!el) return;
+  el.textContent = 'Quality: загрузка...';
+  const r = await fetch(`/api/decisions/quality?chat_id=${encodeURIComponent(chat)}&days=30`);
+  const b = await r.json();
+  const q = (b && b.quality) || {};
+  el.textContent = `Quality: approval=${fmt(q.approval_rate, 2)} · feedback=${Number(q.feedback_count || 0)} · avg_score=${fmt(q.avg_feedback_score, 2)}`;
+}
+
+async function loadLearningSummary(chat) {
+  const el = document.getElementById('learningSummary');
+  if (!el) return;
+  el.textContent = 'Загрузка...';
+  const r = await fetch(`/api/learning/summary?chat_id=${encodeURIComponent(chat)}&days=30`);
+  const b = await r.json();
+  const s = (b && b.summary) || {};
+  const byVariant = Array.isArray(s.variant) ? s.variant.slice(0, 3) : [];
+  const byStrategy = Array.isArray(s.strategy) ? s.strategy.slice(0, 3) : [];
+  const variantLine = byVariant.length
+    ? byVariant.map((x) => `${esc(x.name)}:${fmt(x.approval_rate, 2)}`).join(' · ')
+    : 'нет данных';
+  const strategyLine = byStrategy.length
+    ? byStrategy.map((x) => `${esc(x.name)}:${fmt(x.avg_score, 2)}`).join(' · ')
+    : 'нет данных';
+  el.innerHTML = `
+    <div style="font-size:13px;">Events: <strong>${Number(s.total_events || 0)}</strong></div>
+    <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">Variants: ${variantLine}</div>
+    <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">Strategies: ${strategyLine}</div>
+  `;
 }
 
 document.getElementById('loadGraphBtn').addEventListener('click', () => {
@@ -506,6 +610,26 @@ document.getElementById('reloadStorageBtn').addEventListener('click', () => {
   loadStorageStatus().catch(() => {
     document.getElementById('storageStatus').textContent = 'Ошибка загрузки статуса storage.';
   });
+});
+
+document.getElementById('decisionList').addEventListener('click', async (evt) => {
+  const btn = evt.target && evt.target.closest ? evt.target.closest('button[data-did][data-fb]') : null;
+  if (!btn) return;
+  const eventId = btn.getAttribute('data-did') || '';
+  const feedback = btn.getAttribute('data-fb') || 'neutral';
+  const chat = document.getElementById('chatSel').value;
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = '...';
+  try {
+    await submitDecisionFeedback(eventId, feedback);
+    await Promise.allSettled([loadDecisions(chat), loadDecisionQuality(chat), loadLearningSummary(chat)]);
+  } catch (_e) {
+    setLiveStatus('feedback error', '#ef4444');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
 });
 
 document.getElementById('chatSel').addEventListener('change', () => {

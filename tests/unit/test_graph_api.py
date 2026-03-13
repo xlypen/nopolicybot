@@ -30,6 +30,22 @@ def test_downsampling_applies_for_large_graph():
     assert len(out_edges) <= 100
 
 
+def test_downsampling_preserves_bridge_endpoints():
+    nodes = [{"id": i, "influence_score": float(i)} for i in range(1, 11)]
+    edges = [
+        {"source": 10, "target": 9, "weight": 4.0, "weight_period": 4.0, "bridge_score": 0.0, "community_id": 0},
+        {"source": 9, "target": 8, "weight": 3.0, "weight_period": 3.0, "bridge_score": 0.0, "community_id": 0},
+        {"source": 8, "target": 7, "weight": 2.0, "weight_period": 2.0, "bridge_score": 0.0, "community_id": 0},
+        {"source": 1, "target": 2, "weight": 1.0, "weight_period": 1.0, "bridge_score": 1.0, "community_id": -1},
+    ]
+    out_nodes, out_edges, meta = graph_api._downsample_large_graph(nodes, edges, max_nodes=4, max_edges=4)
+    out_ids = {int(n["id"]) for n in out_nodes}
+    assert 1 in out_ids and 2 in out_ids
+    assert any(int(e.get("source", 0)) in {1, 2} and int(e.get("target", 0)) in {1, 2} for e in out_edges)
+    assert meta["bridge_nodes_detected"] >= 2
+    assert meta["bridge_nodes_kept"] >= 2
+
+
 def test_build_payload_contains_graph_engine_analytics_fields():
     rows = [
         {"user_a": 1, "user_b": 2, "message_count_total": 10, "message_count_7d": 8, "message_count_30d": 10},

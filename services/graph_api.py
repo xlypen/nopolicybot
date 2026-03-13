@@ -20,15 +20,55 @@ def _downsample_large_graph(nodes: list[dict], edges: list[dict], max_nodes: int
     if len(nodes) <= max_nodes and len(edges) <= max_edges:
         return nodes, edges, {"applied": False, "original_nodes": len(nodes), "original_edges": len(edges)}
     ranked = sorted(nodes, key=lambda n: float(n.get("influence_score", 0.0) or 0.0), reverse=True)
-    kept_nodes = ranked[:max_nodes]
+    node_by_id = {int(n.get("id", 0) or 0): n for n in nodes if int(n.get("id", 0) or 0) != 0}
+
+    # Preserve bridge endpoints first so community connectors do not disappear.
+    bridge_ids: set[int] = set()
+    for e in edges or []:
+        s = int(e.get("source", 0) or 0)
+        t = int(e.get("target", 0) or 0)
+        if not s or not t:
+            continue
+        is_bridge = float(e.get("bridge_score", 0.0) or 0.0) > 0.0 or int(e.get("community_id", 0) or 0) == -1
+        if is_bridge:
+            bridge_ids.add(s)
+            bridge_ids.add(t)
+
+    bridge_ranked = sorted(
+        [node_by_id[x] for x in bridge_ids if x in node_by_id],
+        key=lambda n: float(n.get("influence_score", 0.0) or 0.0),
+        reverse=True,
+    )
+    ordered_candidates = []
+    seen_ids = set()
+    for n in bridge_ranked + ranked:
+        nid = int(n.get("id", 0) or 0)
+        if not nid or nid in seen_ids:
+            continue
+        seen_ids.add(nid)
+        ordered_candidates.append(n)
+
+    kept_nodes = ordered_candidates[: max(1, int(max_nodes))]
     kept_ids = {int(n.get("id", 0) or 0) for n in kept_nodes}
-    kept_edges = [e for e in edges if int(e.get("source", 0) or 0) in kept_ids and int(e.get("target", 0) or 0) in kept_ids][:max_edges]
+
+    intra_edges = [e for e in edges if int(e.get("source", 0) or 0) in kept_ids and int(e.get("target", 0) or 0) in kept_ids]
+    intra_edges.sort(
+        key=lambda e: (
+            1 if (float(e.get("bridge_score", 0.0) or 0.0) > 0.0 or int(e.get("community_id", 0) or 0) == -1) else 0,
+            float(e.get("weight_period", e.get("weight", 0.0)) or 0.0),
+        ),
+        reverse=True,
+    )
+    kept_edges = intra_edges[: max(1, int(max_edges))]
+    kept_bridge_ids = {int(n.get("id", 0) or 0) for n in kept_nodes if int(n.get("id", 0) or 0) in bridge_ids}
     return kept_nodes, kept_edges, {
         "applied": True,
         "original_nodes": len(nodes),
         "original_edges": len(edges),
         "kept_nodes": len(kept_nodes),
         "kept_edges": len(kept_edges),
+        "bridge_nodes_detected": len(bridge_ids),
+        "bridge_nodes_kept": len(kept_bridge_ids),
     }
 
 

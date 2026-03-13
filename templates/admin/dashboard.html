@@ -115,6 +115,7 @@
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/realtime_graph_client.js') }}"></script>
+<script src="{{ url_for('static', filename='js/graph_render_pipeline.js') }}"></script>
 <script type="module" src="{{ url_for('static', filename='js/graph_visualizations.jsx') }}"></script>
 <script type="module" src="{{ url_for('static', filename='js/advanced_graph_viz.jsx') }}"></script>
 <script>
@@ -178,13 +179,24 @@ function renderGraphFromState() {
     return;
   }
   const payload = { root, data: _graphState, mode };
-  if (window.AdvancedGraphViz && window.AdvancedGraphViz.modes && window.AdvancedGraphViz.modes.includes(mode)) {
-    window.AdvancedGraphViz.render(payload);
-  } else if (window.GraphVisualizations) {
-    window.GraphVisualizations.render(payload);
-  } else {
-    root.textContent = 'Graph modules not loaded.';
+  if (window.GraphRenderPipeline && typeof window.GraphRenderPipeline.render === 'function') {
+    const ok = window.GraphRenderPipeline.render({
+      ...payload,
+      defer: true,
+      onUnavailable: function () {
+        root.textContent = 'Graph modules not loaded.';
+      },
+    });
+    if (!ok) {
+      root.textContent = 'Graph modules loading...';
+    }
+    return;
   }
+  if (window.GraphVisualizations && typeof window.GraphVisualizations.render === 'function') {
+    window.GraphVisualizations.render(payload);
+    return;
+  }
+  root.textContent = 'Graph modules not loaded.';
 }
 
 async function loadAndRender() {

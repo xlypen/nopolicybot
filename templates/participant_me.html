@@ -92,6 +92,7 @@
 {% endblock %}
 {% block scripts %}
 {% if not error %}
+<script src="{{ url_for('static', filename='js/graph_render_pipeline.js') }}"></script>
 <script type="module" src="{{ url_for('static', filename='js/graph_visualizations.jsx') }}"></script>
 <script src="{{ url_for('static', filename='js/realtime_graph_client.js') }}"></script>
 <script>
@@ -114,12 +115,19 @@
 
   function renderGraph(){
     if(!root){return;}
-    if(window.GraphVisualizations && typeof window.GraphVisualizations.render === 'function'){
-      window.GraphVisualizations.render({
+    if(window.GraphRenderPipeline && typeof window.GraphRenderPipeline.render === 'function'){
+      const ok = window.GraphRenderPipeline.render({
         root: root,
         mode: (modeSel && modeSel.value) || 'force',
-        data: graphData
+        data: graphData,
+        defer: true,
+        onUnavailable: function(){
+          root.innerHTML = '<div style="padding:0.8rem;color:var(--text-muted);">Граф-модуль не загружен</div>';
+        }
       });
+      if(!ok){
+        root.innerHTML = '<div style="padding:0.8rem;color:var(--text-muted);">Загружаю модуль графа...</div>';
+      }
       return;
     }
     var nodes = (graphData && graphData.nodes) || [];

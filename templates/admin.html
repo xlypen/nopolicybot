@@ -64,6 +64,11 @@
           <li><a href="/api/chat/{{ current_chat }}/community-health">/api/chat/{{ current_chat }}/community-health</a></li>
           <li><a href="/api/chat/{{ current_chat }}/moderation-risk">/api/chat/{{ current_chat }}/moderation-risk</a></li>
           <li><a href="/api/log-tail">/api/log-tail</a></li>
+          <li><a href="/api/recommendations?chat_id={{ current_chat }}&days=30&limit=10">/api/recommendations</a></li>
+          <li><a href="/api/retention-dashboard?chat_id={{ current_chat }}&days=30">/api/retention-dashboard</a></li>
+          <li><a href="/api/decisions/recent?chat_id={{ current_chat }}&limit=30">/api/decisions/recent</a></li>
+          <li><a href="/api/topic-policies">/api/topic-policies</a></li>
+          <li><a href="/api/storage/status">/api/storage/status</a></li>
         </ul>
       </div>
     </div>
@@ -86,6 +91,22 @@
         <label><input id="autoLogsChk" type="checkbox" checked /> автообновление</label>
       </div>
       <pre id="logsOut">Загрузка логов...</pre>
+    </div>
+    <div class="card">
+      <div class="title">Гибкие тематические политики (beta)</div>
+      <p style="color:var(--muted);margin-top:4px;">Здесь можно включать/отключать любые темы модерации. Политика — только дефолтный профиль.</p>
+      <div class="row" style="margin-bottom:8px;">
+        <label>Primary topic:</label>
+        <select id="primaryTopicSel" style="min-width:180px;"></select>
+        <button class="btn btn-secondary" id="savePrimaryTopicBtn">Сохранить primary</button>
+        <button class="btn btn-secondary" id="reloadTopicPoliciesBtn">Обновить</button>
+      </div>
+      <div class="row" style="margin-bottom:8px;">
+        <input id="newTopicName" type="text" placeholder="Новая тема (например: profanity)" style="min-width:260px;" />
+        <button class="btn" id="addTopicBtn">Добавить тему</button>
+      </div>
+      <div id="topicPoliciesList"></div>
+      <div id="topicPoliciesStatus" style="color:var(--muted);margin-top:8px;"></div>
     </div>
   </section>
 
@@ -200,5 +221,161 @@ document.getElementById('resetAllPromptsBtn').addEventListener('click', async ()
   setPromptStatus('Все промпты восстановлены по умолчанию.');
 });
 loadPrompts().catch(() => setPromptStatus('Не удалось загрузить промпты.'));
+
+let topicPoliciesMap = {};
+let topicPrimary = 'politics';
+
+function setTopicPoliciesStatus(msg, bad = false) {
+  const el = document.getElementById('topicPoliciesStatus');
+  el.textContent = msg || '';
+  el.style.color = bad ? '#ff7a7a' : 'var(--muted)';
+}
+
+function createActionOptions(value) {
+  return `
+    <option value="moderate" ${value === 'moderate' ? 'selected' : ''}>moderate</option>
+    <option value="observe" ${value === 'observe' ? 'selected' : ''}>observe</option>
+  `;
+}
+
+function policyRowHtml(name, p) {
+  const safeName = String(name).replace(/"/g, '&quot;');
+  const keywords = (p.keywords || []).join(', ');
+  return `
+    <div class="panel" style="margin-bottom:8px;padding:10px;" data-topic="${safeName}">
+      <div class="row" style="align-items:center;gap:10px;">
+        <strong style="min-width:140px;">${safeName}</strong>
+        <label><input type="checkbox" class="tp-enabled" ${p.enabled ? 'checked' : ''}/> enabled</label>
+        <label>action:
+          <select class="tp-action">${createActionOptions(p.action || 'observe')}</select>
+        </label>
+        <label>priority:
+          <input class="tp-priority" type="number" min="0" max="999" value="${Number(p.priority || 50)}" style="width:90px;">
+        </label>
+      </div>
+      <div class="row" style="margin-top:6px;">
+        <label>label:</label>
+        <input class="tp-label" type="text" value="${(p.label || '').replace(/"/g, '&quot;')}" style="min-width:240px;">
+        <label>keywords:</label>
+        <input class="tp-keywords" type="text" value="${keywords.replace(/"/g, '&quot;')}" style="min-width:360px;">
+      </div>
+      <div class="row" style="margin-top:6px;">
+        <button class="btn tp-save">Сохранить</button>
+        <button class="btn btn-secondary tp-reset">Сбросить</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderTopicPolicies() {
+  const wrap = document.getElementById('topicPoliciesList');
+  const names = Object.keys(topicPoliciesMap).sort();
+  wrap.innerHTML = names.map((name) => policyRowHtml(name, topicPoliciesMap[name])).join('');
+
+  const primarySel = document.getElementById('primaryTopicSel');
+  primarySel.innerHTML = names.map((name) => `<option value="${name}" ${name === topicPrimary ? 'selected' : ''}>${name}</option>`).join('');
+
+  wrap.querySelectorAll('.panel[data-topic]').forEach((panel) => {
+    const topic = panel.getAttribute('data-topic');
+    panel.querySelector('.tp-save').addEventListener('click', async () => {
+      const patch = {
+        enabled: panel.querySelector('.tp-enabled').checked,
+        action: panel.querySelector('.tp-action').value,
+        priority: Number(panel.querySelector('.tp-priority').value || 50),
+        label: panel.querySelector('.tp-label').value || topic,
+        keywords: (panel.querySelector('.tp-keywords').value || '')
+          .split(',')
+          .map((x) => x.trim())
+          .filter(Boolean),
+      };
+      const resp = await fetch('/api/topic-policies', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: topic, patch}),
+      });
+      if (!resp.ok) {
+        setTopicPoliciesStatus(`Ошибка сохранения темы ${topic}`, true);
+        return;
+      }
+      await loadTopicPolicies();
+      setTopicPoliciesStatus(`Сохранено: ${topic}`);
+    });
+
+    panel.querySelector('.tp-reset').addEventListener('click', async () => {
+      const resp = await fetch('/api/topic-policies', {
+        method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({names: [topic]}),
+      });
+      if (!resp.ok) {
+        setTopicPoliciesStatus(`Ошибка сброса темы ${topic}`, true);
+        return;
+      }
+      await loadTopicPolicies();
+      setTopicPoliciesStatus(`Сброшено: ${topic}`);
+    });
+  });
+}
+
+async function loadTopicPolicies() {
+  const resp = await fetch('/api/topic-policies');
+  const body = await resp.json();
+  topicPoliciesMap = body.policies || {};
+  topicPrimary = body.primary_topic || 'politics';
+  renderTopicPolicies();
+}
+
+document.getElementById('reloadTopicPoliciesBtn').addEventListener('click', () => {
+  loadTopicPolicies()
+    .then(() => setTopicPoliciesStatus('Тематические политики обновлены.'))
+    .catch(() => setTopicPoliciesStatus('Не удалось загрузить topic policies', true));
+});
+
+document.getElementById('savePrimaryTopicBtn').addEventListener('click', async () => {
+  const primary = document.getElementById('primaryTopicSel').value;
+  const resp = await fetch('/api/topic-policies', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({primary_topic: primary}),
+  });
+  if (!resp.ok) {
+    setTopicPoliciesStatus('Ошибка сохранения primary topic', true);
+    return;
+  }
+  await loadTopicPolicies();
+  setTopicPoliciesStatus(`Primary topic: ${primary}`);
+});
+
+document.getElementById('addTopicBtn').addEventListener('click', async () => {
+  const el = document.getElementById('newTopicName');
+  const name = (el.value || '').trim().toLowerCase();
+  if (!name) {
+    setTopicPoliciesStatus('Введите имя новой темы', true);
+    return;
+  }
+  const resp = await fetch('/api/topic-policies', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      name,
+      patch: {
+        enabled: false,
+        action: 'observe',
+        priority: 50,
+        label: name,
+        keywords: [],
+      },
+    }),
+  });
+  if (!resp.ok) {
+    setTopicPoliciesStatus(`Не удалось добавить тему ${name}`, true);
+    return;
+  }
+  el.value = '';
+  await loadTopicPolicies();
+  setTopicPoliciesStatus(`Добавлена тема: ${name}`);
+});
+
+loadTopicPolicies().catch(() => setTopicPoliciesStatus('Не удалось загрузить topic policies', true));
 </script>
 {% endblock %}

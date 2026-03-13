@@ -262,3 +262,22 @@ def test_api_topic_policies_contract(monkeypatch):
         assert body["ok"] is True
         assert body["primary_topic"] == "politics"
         assert "policies" in body
+
+
+def test_api_topic_policies_update_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import topic_policies as tp
+
+    monkeypatch.setattr(tp, "set_primary_topic", lambda topic: topic)
+    monkeypatch.setattr(tp, "set_topic_policy", lambda name, patch: {"politics": {"enabled": True}})
+    monkeypatch.setattr(tp, "get_primary_topic", lambda chat_id=None: "politics")
+    monkeypatch.setattr(tp, "get_topic_policies", lambda: {"politics": {"enabled": True, "action": "moderate"}})
+    with admin_app.app.test_client() as client:
+        resp = client.post(
+            "/api/topic-policies",
+            json={"primary_topic": "politics", "name": "politics", "patch": {"enabled": True}},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "policies" in body

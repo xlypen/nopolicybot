@@ -87,3 +87,23 @@ def test_api_leaderboard_contract(monkeypatch):
         assert body["ok"] is True
         assert body["metric"] == "engagement"
         assert isinstance(body["rows"], list)
+
+
+def test_api_decisions_recent_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import decision_engine
+
+    monkeypatch.setattr(
+        decision_engine,
+        "get_recent_decisions",
+        lambda limit=80, chat_id=None, user_id=None: [
+            {"strategy": "motivating", "chat_id": 1, "user_id": 2},
+            {"strategy": "strict", "chat_id": 1, "user_id": 3},
+        ],
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/decisions/recent?limit=10&chat_id=1")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert isinstance(body["decisions"], list)

@@ -58,6 +58,7 @@ from services.reactions import pick_allowed_emoji, set_photo_reaction
 from services.schedulers import restart_checker, social_graph_daily_task
 from services.schedulers import social_graph_realtime_task, portrait_image_daily_task, marketing_metrics_rollup_task
 from services.marketing_metrics import record_message_event, record_signal_event
+from services.decision_engine import DecisionEngine, append_decision_event
 from utils.text_formatting import capitalize_sentences, reply_text_to_html, strip_leading_name
 
 
@@ -123,6 +124,7 @@ _chat_first_remark_done: dict[int, bool] = {}
 _chat_last_praise_date: dict[int, str] = {}
 _dm_silence_until: dict[int, float] = {}  # user_id -> monotonic ts
 _chat_last_factcheck: dict[int, float] = {}
+DECISION_ENGINE = DecisionEngine()
 
 
 async def _maybe_run_factcheck(
@@ -459,6 +461,15 @@ def _extract_mentioned_user_ids(message: Message) -> list[int]:
     return sorted(result)
 
 
+def _decision_suffix(strategy: str) -> str:
+    strategy = (strategy or "").strip().lower()
+    if strategy in {"motivating", "gentle", "careful"}:
+        return "Давайте аккуратнее: важно сохранить диалог и людей в чате."
+    if strategy == "strict":
+        return "Следующее нарушение будет рассмотрено строже."
+    return ""
+
+
 async def _update_portrait_background(user_id: int, display_name: str) -> None:
     """Обновляет портрет и тон пользователя в фоне (после отправки ответа)."""
     try:
@@ -677,6 +688,36 @@ async def _run_batch_analysis(
             initiator_name,
         )
 
+    decision_result = None
+    if initiator_user_id is not None:
+        try:
+            decision_result = DECISION_ENGINE.decide(
+                chat_id=chat_id,
+                user_id=int(initiator_user_id),
+                sentiment=str(sentiment),
+                is_political=bool(is_political),
+                style=str(style),
+                political_count=int(political_count),
+            )
+            _explain(
+                "decision",
+                decision_result.strategy,
+                chat_id=chat_id,
+                user_id=int(initiator_user_id),
+                detail=f"hint={decision_result.action_hint}; reasons={','.join(decision_result.reasons)}",
+            )
+            logger.info(
+                "[чат %s] DecisionEngine: strategy=%s hint=%s delta=%s reasons=%s",
+                chat_id,
+                decision_result.strategy,
+                decision_result.action_hint,
+                decision_result.level_delta,
+                ",".join(decision_result.reasons),
+            )
+        except Exception as e:
+            logger.warning("[чат %s] DecisionEngine error: %s", chat_id, e)
+            decision_result = None
+
     ca_result = None
     if initiator_user_id and user_stats.get_close_attention_enabled(initiator_user_id):
         try:
@@ -730,9 +771,33 @@ async def _run_batch_analysis(
             )
             logger.info("[чат %s] Реакция на полит. сообщение №%s", chat_id, political_count)
             _debug_log("REACTION", chat_id=chat_id, user=initiator_name, detail=f"emoji={emoji} №{political_count}")
+            if decision_result and initiator_user_id is not None:
+                append_decision_event(
+                    chat_id=chat_id,
+                    user_id=int(initiator_user_id),
+                    sentiment=str(sentiment),
+                    is_political=bool(is_political),
+                    style=str(style),
+                    political_count=int(political_count),
+                    result=decision_result,
+                    outcome="reaction_sent",
+                    detail=f"emoji={emoji}",
+                )
         except Exception as e:
             logger.warning("Реакция не поставлена: %s", e)
             _debug_log("REACTION_FAIL", chat_id=chat_id, user=initiator_name, detail=str(e))
+            if decision_result and initiator_user_id is not None:
+                append_decision_event(
+                    chat_id=chat_id,
+                    user_id=int(initiator_user_id),
+                    sentiment=str(sentiment),
+                    is_political=bool(is_political),
+                    style=str(style),
+                    political_count=int(political_count),
+                    result=decision_result,
+                    outcome="reaction_failed",
+                    detail=str(e),
+                )
         return
 
     if sentiment == "positive" and bot_settings.get("encouragement_enabled", chat_id):
@@ -760,15 +825,47 @@ async def _run_batch_analysis(
                 await bot.send_message(chat_id=chat_id, text=msg, reply_to_message_id=reply_to_message_id)
                 logger.info("Чат %s: поощрение (позитив к президенту РФ)", chat_id)
                 _debug_log("ENCOURAGEMENT", chat_id=chat_id, user=initiator_name, detail="позитив к президенту")
+                if decision_result and initiator_user_id is not None:
+                    append_decision_event(
+                        chat_id=chat_id,
+                        user_id=int(initiator_user_id),
+                        sentiment=str(sentiment),
+                        is_political=bool(is_political),
+                        style=str(style),
+                        political_count=int(political_count),
+                        result=decision_result,
+                        outcome="encouragement_sent",
+                        detail=msg[:180],
+                    )
         except Exception as e:
             logger.exception("Поощрение: %s", e)
+            if decision_result and initiator_user_id is not None:
+                append_decision_event(
+                    chat_id=chat_id,
+                    user_id=int(initiator_user_id),
+                    sentiment=str(sentiment),
+                    is_political=bool(is_political),
+                    style=str(style),
+                    political_count=int(political_count),
+                    result=decision_result,
+                    outcome="encouragement_failed",
+                    detail=str(e),
+                )
         return
 
     _chat_messages_since_political[chat_id] = 0
-    level = _chat_warning_count.get(chat_id, 0)
-    _chat_warning_count[chat_id] = level + 1
+    base_level = _chat_warning_count.get(chat_id, 0)
+    _chat_warning_count[chat_id] = base_level + 1
+    level_delta = int(decision_result.level_delta) if decision_result else 0
+    effective_level = max(0, base_level + level_delta)
     _persist_state()
-    logger.info("[чат %s] Отправка замечания (уровень %s, стиль %s)", chat_id, level, style)
+    logger.info(
+        "[чат %s] Отправка замечания (base=%s, effective=%s, стиль=%s)",
+        chat_id,
+        base_level,
+        effective_level,
+        style,
+    )
 
     use_personalized = bot_settings.get("use_personalized_remarks", chat_id)
     portrait = ""
@@ -782,17 +879,21 @@ async def _run_batch_analysis(
         insult = await loop.run_in_executor(
             None,
             lambda: generate_personalized_remark(
-                initiator_name, initiator_message_text, portrait, level
+                initiator_name, initiator_message_text, portrait, effective_level
             ),
         )
     if not insult:
-        insult = _insult_by_level(level, initiator_name)
+        insult = _insult_by_level(effective_level, initiator_name)
     article = _random_article_line(initiator_name) if bot_settings.get("article_line_enabled", chat_id) else ""
     body = f"{POLITICS_LINE}\n{insult}"
     if article:
         body += f"\n{article}"
     if ca_result and ca_result.get("needs_evidence") and not ca_result.get("evidence_found") and ca_result.get("demand_phrase"):
         body += f"\n{ca_result['demand_phrase']}"
+    if decision_result:
+        suffix = _decision_suffix(decision_result.strategy)
+        if suffix:
+            body += f"\n{suffix}"
     if bot_settings.get("patience_phrase_enabled", chat_id) and not _chat_first_remark_done.get(chat_id, False):
         body = f"{PATIENCE_PHRASE}\n{body}"
         _chat_first_remark_done[chat_id] = True
@@ -803,11 +904,35 @@ async def _run_batch_analysis(
         await bot.send_message(chat_id=chat_id, text=body, reply_to_message_id=reply_to_message_id)
         if initiator_user_id is not None:
             user_stats.record_warning(initiator_user_id)
-        logger.info("Замечание в чат %s (уровень %s, стиль %s)", chat_id, level, style)
-        _debug_log("REMARK", chat_id=chat_id, user=initiator_name, detail=f"уровень {level} стиль {style}")
+        logger.info("Замечание в чат %s (уровень %s, стиль %s)", chat_id, effective_level, style)
+        _debug_log("REMARK", chat_id=chat_id, user=initiator_name, detail=f"уровень {effective_level} стиль {style}")
+        if decision_result and initiator_user_id is not None:
+            append_decision_event(
+                chat_id=chat_id,
+                user_id=int(initiator_user_id),
+                sentiment=str(sentiment),
+                is_political=bool(is_political),
+                style=str(style),
+                political_count=int(political_count),
+                result=decision_result,
+                outcome="warning_sent",
+                detail=f"base={base_level},effective={effective_level}",
+            )
     except Exception as e:
         logger.exception("Не удалось отправить замечание: %s", e)
         _debug_log("REMARK_FAIL", chat_id=chat_id, user=initiator_name, detail=str(e))
+        if decision_result and initiator_user_id is not None:
+            append_decision_event(
+                chat_id=chat_id,
+                user_id=int(initiator_user_id),
+                sentiment=str(sentiment),
+                is_political=bool(is_political),
+                style=str(style),
+                political_count=int(political_count),
+                result=decision_result,
+                outcome="warning_failed",
+                detail=str(e),
+            )
 
 
 async def check_and_reply(message: Message) -> None:

@@ -1264,6 +1264,28 @@ def api_explainability_recent():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/api/decisions/recent")
+@login_required
+def api_decisions_recent():
+    """Recent moderation decisions made by DecisionEngine."""
+    try:
+        from services.decision_engine import get_recent_decisions
+
+        limit_raw = request.args.get("limit", "80")
+        try:
+            limit = max(1, min(200, int(limit_raw)))
+        except ValueError:
+            return jsonify({"ok": False, "error": "invalid limit"}), 400
+        chat_id = request.args.get("chat_id")
+        user_id = request.args.get("user_id")
+        cid = int(chat_id) if chat_id and str(chat_id).lstrip("-").isdigit() else None
+        uid = int(user_id) if user_id and str(user_id).lstrip("-").isdigit() else None
+        events = get_recent_decisions(limit=limit, chat_id=cid, user_id=uid)
+        return jsonify({"ok": True, "decisions": events})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/clear-images-archive", methods=["POST"])
 @login_required
 def api_clear_images_archive():

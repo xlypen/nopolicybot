@@ -1,17 +1,53 @@
-name: Tests
-on: [push, pull_request]
+name: CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
 
 jobs:
-  test:
+  quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: Static compile check
+        run: python -m compileall -q api services tests scripts admin_app.py bot.py
+
+  test:
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
       - name: Install deps
         run: |
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
       - name: Run tests
         run: pytest -q
+
+  smoke:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: Run smoke checks
+        run: python scripts/smoke_checks.py

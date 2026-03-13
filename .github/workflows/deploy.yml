@@ -1,0 +1,39 @@
+name: Deploy Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Deployment target environment"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: Run critical tests
+        run: |
+          pytest -q tests/integration/test_fastapi_v2.py tests/integration/test_api_contracts.py
+          python scripts/smoke_checks.py
+
+  deploy:
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target }}
+    steps:
+      - name: Deployment placeholder
+        run: |
+          echo "Preflight passed. Attach deployment steps for ${{ inputs.target }} (systemd/nginx rollout)."

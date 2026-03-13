@@ -142,6 +142,96 @@ def _cached_json(prefix: str, ttl: int, builder, **params):
     return payload
 
 
+def _graph_snapshot_scope(chat_id: int | None, period: str, ego_user: int | None, limit: int | None) -> str:
+    return _cache_key(
+        "graph_snapshot",
+        chat_id="all" if chat_id is None else int(chat_id),
+        period=str(period or "7d"),
+        ego_user="" if ego_user is None else int(ego_user),
+        limit="" if limit is None else int(limit),
+    )
+
+
+def _graph_edge_id(edge: dict) -> str:
+    a = int(edge.get("source", 0) or 0)
+    b = int(edge.get("target", 0) or 0)
+    if not a and not b:
+        return "0|0"
+    lo, hi = (a, b) if a <= b else (b, a)
+    return f"{int(lo)}|{int(hi)}"
+
+
+def _graph_build_version(graph: dict) -> str:
+    nodes = graph.get("nodes") or []
+    edges = graph.get("edges") or []
+    node_fp = sorted(
+        (
+            int(n.get("id", 0) or 0),
+            round(float(n.get("influence_score", 0.0) or 0.0), 6),
+            round(float(n.get("centrality", 0.0) or 0.0), 6),
+            int(n.get("community_id", 0) or 0),
+            str(n.get("tier", "") or ""),
+        )
+        for n in nodes
+    )
+    edge_fp = sorted(
+        (
+            _graph_edge_id(e),
+            round(float(e.get("weight_period", 0.0) or 0.0), 6),
+            round(float(e.get("bridge_score", 0.0) or 0.0), 6),
+            int(e.get("community_id", 0) or 0),
+        )
+        for e in edges
+    )
+    raw = json.dumps({"nodes": node_fp, "edges": edge_fp}, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _graph_delta(prev_graph: dict | None, curr_graph: dict) -> dict:
+    prev = prev_graph or {"nodes": [], "edges": [], "meta": {}}
+    p_nodes = {int(n.get("id", 0) or 0): n for n in (prev.get("nodes") or []) if int(n.get("id", 0) or 0) != 0}
+    c_nodes = {int(n.get("id", 0) or 0): n for n in (curr_graph.get("nodes") or []) if int(n.get("id", 0) or 0) != 0}
+    p_edges = {_graph_edge_id(e): e for e in (prev.get("edges") or [])}
+    c_edges = {_graph_edge_id(e): e for e in (curr_graph.get("edges") or [])}
+
+    remove_node_ids = [int(uid) for uid in p_nodes.keys() if uid not in c_nodes]
+    upsert_nodes = [n for uid, n in c_nodes.items() if uid not in p_nodes or p_nodes.get(uid) != n]
+
+    remove_edge_ids = [eid for eid in p_edges.keys() if eid not in c_edges]
+    upsert_edges = [e for eid, e in c_edges.items() if eid not in p_edges or p_edges.get(eid) != e]
+
+    changed = bool(remove_node_ids or upsert_nodes or remove_edge_ids or upsert_edges or (prev.get("meta") or {}) != (curr_graph.get("meta") or {}))
+    return {
+        "changed": changed,
+        "delta": {
+            "full_replace": prev_graph is None,
+            "remove_node_ids": remove_node_ids,
+            "upsert_nodes": upsert_nodes,
+            "remove_edge_ids": remove_edge_ids,
+            "upsert_edges": upsert_edges,
+            "meta": curr_graph.get("meta") or {},
+        },
+    }
+
+
+def _graph_history_get(scope: str) -> dict:
+    payload = _API_CACHE.get(scope)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _graph_history_set(scope: str, version: str, graph: dict, ttl_sec: int = 300) -> None:
+    history = _graph_history_get(scope)
+    latest = history.get("latest")
+    prev = history.get("prev")
+    if isinstance(latest, dict) and latest.get("version") != version:
+        prev = latest
+    history = {
+        "latest": {"version": version, "graph": graph},
+        "prev": prev if isinstance(prev, dict) else None,
+    }
+    _API_CACHE.set(scope, history, ttl=ttl_sec)
+
+
 def _load_users() -> dict:
     if not USERS_JSON.exists():
         return {"users": {}}
@@ -1376,7 +1466,48 @@ def api_chat_graph_compat(chat_id: str):
     limit_raw = (request.args.get("limit") or "").strip()
     limit = int(limit_raw) if limit_raw.isdigit() else None
     payload = build_graph_payload(cid, period=period, ego_user=ego_user, limit=limit)
-    return jsonify({"ok": True, "graph": payload})
+    version = _graph_build_version(payload)
+    scope = _graph_snapshot_scope(cid, period, ego_user, limit)
+    _graph_history_set(scope, version, payload, ttl_sec=360)
+    return jsonify({"ok": True, "graph": payload, "graph_version": version})
+
+
+@app.route("/api/chat/<path:chat_id>/graph-delta")
+@login_required
+def api_chat_graph_delta(chat_id: str):
+    """Delta patch endpoint for graph updates without full payload reload."""
+    from services.graph_api import build_graph_payload
+
+    cid = None if chat_id == "all" else (int(chat_id) if str(chat_id).lstrip("-").isdigit() else None)
+    period = (request.args.get("period") or "7d").strip().lower()
+    ego_user_raw = (request.args.get("ego_user") or "").strip()
+    ego_user = int(ego_user_raw) if ego_user_raw.lstrip("-").isdigit() else None
+    limit_raw = (request.args.get("limit") or "").strip()
+    limit = int(limit_raw) if limit_raw.isdigit() else None
+    since_version = (request.args.get("since") or "").strip()
+
+    current = build_graph_payload(cid, period=period, ego_user=ego_user, limit=limit)
+    current_version = _graph_build_version(current)
+    scope = _graph_snapshot_scope(cid, period, ego_user, limit)
+    history = _graph_history_get(scope)
+    latest = history.get("latest") if isinstance(history, dict) else None
+    prev = history.get("prev") if isinstance(history, dict) else None
+
+    prev_graph = None
+    if isinstance(latest, dict) and str(latest.get("version") or "") == since_version:
+        prev_graph = latest.get("graph") if isinstance(latest.get("graph"), dict) else None
+    elif isinstance(prev, dict) and str(prev.get("version") or "") == since_version:
+        prev_graph = prev.get("graph") if isinstance(prev.get("graph"), dict) else None
+    elif isinstance(latest, dict):
+        prev_graph = latest.get("graph") if isinstance(latest.get("graph"), dict) else None
+
+    if since_version and since_version == current_version:
+        _graph_history_set(scope, current_version, current, ttl_sec=360)
+        return jsonify({"ok": True, "changed": False, "graph_version": current_version, "delta": {"full_replace": False, "remove_node_ids": [], "upsert_nodes": [], "remove_edge_ids": [], "upsert_edges": [], "meta": current.get("meta") or {}}})
+
+    delta = _graph_delta(prev_graph, current)
+    _graph_history_set(scope, current_version, current, ttl_sec=360)
+    return jsonify({"ok": True, "changed": bool(delta.get("changed")), "graph_version": current_version, "delta": delta.get("delta") or {}})
 
 
 @app.route("/api/chat/<path:chat_id>/community-health")

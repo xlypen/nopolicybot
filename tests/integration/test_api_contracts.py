@@ -15,6 +15,28 @@ def test_api_chat_graph_contract(monkeypatch):
         assert "graph" in body
 
 
+def test_api_chat_graph_delta_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import graph_api
+
+    monkeypatch.setattr(
+        graph_api,
+        "build_graph_payload",
+        lambda chat_id, period="7d", ego_user=None, limit=None: {
+            "nodes": [{"id": 1, "label": "U1", "influence_score": 0.1, "centrality": 0.2, "community_id": 0, "tier": "secondary"}],
+            "edges": [{"source": 1, "target": 2, "weight_period": 1.0, "bridge_score": 0.0, "community_id": -1}],
+            "meta": {"source": "db", "period": "7d"},
+        },
+    )
+    with admin_app.app.test_client() as client:
+        first = client.get("/api/chat/all/graph-delta?period=7d").get_json()
+        assert first["ok"] is True
+        assert "delta" in first
+        second = client.get(f"/api/chat/all/graph-delta?period=7d&since={first['graph_version']}").get_json()
+        assert second["ok"] is True
+        assert second["changed"] is False
+
+
 def test_api_community_health_contract(monkeypatch):
     _disable_auth(monkeypatch)
     with admin_app.app.test_client() as client:

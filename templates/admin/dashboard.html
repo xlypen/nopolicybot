@@ -120,6 +120,9 @@
 <script>
 let _loadPromise = null;
 let _dashboardRealtimeClient = null;
+let _deltaPromise = null;
+let _graphState = {nodes: [], edges: [], meta: {}};
+let _graphVersion = '';
 
 function fmt(num, digits = 2) {
   const n = Number(num || 0);
@@ -142,37 +145,63 @@ function setLiveStatus(text, color) {
   live.style.color = color || 'var(--text-secondary)';
 }
 
+function edgeId(edge) {
+  const a = Number(edge && edge.source || 0);
+  const b = Number(edge && edge.target || 0);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) {
+    return '0|0';
+  }
+  const lo = Math.min(Math.trunc(a), Math.trunc(b));
+  const hi = Math.max(Math.trunc(a), Math.trunc(b));
+  return `${lo}|${hi}`;
+}
+
+function updateGraphMetaLine(graph) {
+  const metaLine = document.getElementById('graphMetaLine');
+  if (!metaLine) {
+    return;
+  }
+  const g = graph || {nodes: [], edges: [], meta: {}};
+  const meta = g.meta || {};
+  const loadedAt = new Date().toLocaleTimeString('ru-RU');
+  const source = String(meta.source || 'unknown');
+  const nodesCount = Number(meta.nodes_count || (g.nodes || []).length || 0);
+  const edgesCount = Number(meta.edges_count || (g.edges || []).length || 0);
+  const period = String(meta.period || '7d');
+  metaLine.textContent = `Источник: ${source} · Период: ${period} · Узлы: ${nodesCount} · Связи: ${edgesCount} · Обновлено: ${loadedAt}`;
+}
+
+function renderGraphFromState() {
+  const mode = document.getElementById('modeSel').value;
+  const root = document.getElementById('modernGraphRoot');
+  if (!root) {
+    return;
+  }
+  const payload = { root, data: _graphState, mode };
+  if (window.AdvancedGraphViz && window.AdvancedGraphViz.modes && window.AdvancedGraphViz.modes.includes(mode)) {
+    window.AdvancedGraphViz.render(payload);
+  } else if (window.GraphVisualizations) {
+    window.GraphVisualizations.render(payload);
+  } else {
+    root.textContent = 'Graph modules not loaded.';
+  }
+}
+
 async function loadAndRender() {
   if (_loadPromise) {
     return _loadPromise;
   }
   _loadPromise = (async () => {
   const chat = document.getElementById('chatSel').value;
-  const mode = document.getElementById('modeSel').value;
   const root = document.getElementById('modernGraphRoot');
-  const metaLine = document.getElementById('graphMetaLine');
   root.textContent = 'Загрузка данных...';
   const resp = await fetch(`/api/chat/${encodeURIComponent(chat)}/graph?period=7d`);
   const body = await resp.json();
-  const graph = (body && body.graph) || {nodes: [], edges: [], meta: {}};
-  const meta = graph.meta || {};
-  const loadedAt = new Date().toLocaleTimeString('ru-RU');
-  if (metaLine) {
-    const source = String(meta.source || 'unknown');
-    const nodesCount = Number(meta.nodes_count || (graph.nodes || []).length || 0);
-    const edgesCount = Number(meta.edges_count || (graph.edges || []).length || 0);
-    const period = String(meta.period || '7d');
-    metaLine.textContent = `Источник: ${source} · Период: ${period} · Узлы: ${nodesCount} · Связи: ${edgesCount} · Обновлено: ${loadedAt}`;
-  }
-  const payload = { root, data: graph, mode };
+  _graphState = (body && body.graph) || {nodes: [], edges: [], meta: {}};
+  _graphVersion = String((body && body.graph_version) || '');
+  updateGraphMetaLine(_graphState);
   try {
-    if (window.AdvancedGraphViz && window.AdvancedGraphViz.modes && window.AdvancedGraphViz.modes.includes(mode)) {
-      window.AdvancedGraphViz.render(payload);
-    } else if (window.GraphVisualizations) {
-      window.GraphVisualizations.render(payload);
-    } else {
-      root.textContent = 'Graph modules not loaded.';
-    }
+    renderGraphFromState();
   } finally {
     await loadInsights(chat);
   }
@@ -181,6 +210,89 @@ async function loadAndRender() {
     await _loadPromise;
   } finally {
     _loadPromise = null;
+  }
+}
+
+function applyGraphDelta(delta, version) {
+  const d = delta || {};
+  const fullReplace = !!d.full_replace;
+  const upsertNodes = Array.isArray(d.upsert_nodes) ? d.upsert_nodes : [];
+  const removeNodeIds = new Set((Array.isArray(d.remove_node_ids) ? d.remove_node_ids : []).map((x) => Number(x)));
+  const upsertEdges = Array.isArray(d.upsert_edges) ? d.upsert_edges : [];
+  const removeEdgeIds = new Set(Array.isArray(d.remove_edge_ids) ? d.remove_edge_ids : []);
+
+  if (fullReplace) {
+    _graphState = {
+      nodes: upsertNodes.slice(),
+      edges: upsertEdges.slice(),
+      meta: d.meta || {},
+    };
+    _graphVersion = String(version || _graphVersion || '');
+    return;
+  }
+
+  const nodeMap = new Map();
+  for (const n of (_graphState.nodes || [])) {
+    const id = Number(n && n.id || 0);
+    if (!Number.isFinite(id) || id === 0) continue;
+    nodeMap.set(id, n);
+  }
+  for (const id of removeNodeIds) {
+    nodeMap.delete(id);
+  }
+  for (const n of upsertNodes) {
+    const id = Number(n && n.id || 0);
+    if (!Number.isFinite(id) || id === 0) continue;
+    nodeMap.set(id, n);
+  }
+
+  const edgeMap = new Map();
+  for (const e of (_graphState.edges || [])) {
+    edgeMap.set(edgeId(e), e);
+  }
+  for (const eid of removeEdgeIds) {
+    edgeMap.delete(String(eid));
+  }
+  for (const e of upsertEdges) {
+    edgeMap.set(edgeId(e), e);
+  }
+
+  _graphState = {
+    nodes: Array.from(nodeMap.values()),
+    edges: Array.from(edgeMap.values()),
+    meta: d.meta || (_graphState.meta || {}),
+  };
+  _graphVersion = String(version || _graphVersion || '');
+}
+
+async function fetchAndApplyDelta() {
+  if (_deltaPromise) {
+    return _deltaPromise;
+  }
+  _deltaPromise = (async () => {
+    const chat = document.getElementById('chatSel').value;
+    const q = new URLSearchParams({ period: '7d' });
+    if (_graphVersion) {
+      q.set('since', _graphVersion);
+    }
+    const resp = await fetch(`/api/chat/${encodeURIComponent(chat)}/graph-delta?${q.toString()}`, { cache: 'no-store' });
+    const body = await resp.json();
+    if (!body || !body.ok) {
+      return;
+    }
+    if (!body.changed) {
+      _graphVersion = String(body.graph_version || _graphVersion || '');
+      return;
+    }
+    applyGraphDelta(body.delta || {}, body.graph_version || '');
+    updateGraphMetaLine(_graphState);
+    renderGraphFromState();
+    await loadInsights(chat);
+  })();
+  try {
+    await _deltaPromise;
+  } finally {
+    _deltaPromise = null;
   }
 }
 
@@ -333,7 +445,9 @@ function restartRealtime() {
       const src = String((evt || {}).source || 'ws');
       const chatId = (evt && evt.chat_id != null) ? ` chat:${evt.chat_id}` : '';
       setLiveStatus(`delta (${src}${chatId})`, '#4ade80');
-      loadAndRender().catch(() => {});
+      fetchAndApplyDelta().catch(() => {
+        loadAndRender().catch(() => {});
+      });
     }
   });
   _dashboardRealtimeClient.start();
@@ -375,11 +489,12 @@ document.getElementById('reloadStorageBtn').addEventListener('click', () => {
 });
 
 document.getElementById('chatSel').addEventListener('change', () => {
+  _graphVersion = '';
   loadAndRender().catch(() => {});
   restartRealtime();
 });
 document.getElementById('modeSel').addEventListener('change', () => {
-  loadAndRender().catch(() => {});
+  renderGraphFromState();
 });
 document.getElementById('autoRefreshChk').addEventListener('change', handleAutoToggle);
 

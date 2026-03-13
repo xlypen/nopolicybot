@@ -1,0 +1,16 @@
+[Unit]
+Description=Telegram Bot Admin (Gunicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/telegram-political-monitor-bot
+Environment=PATH=/opt/telegram-political-monitor-bot/venv/bin
+ExecStart=/opt/telegram-political-monitor-bot/venv/bin/gunicorn -w 1 -b 127.0.0.1:5000 --timeout 120 admin_app:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

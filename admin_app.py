@@ -1,0 +1,1326 @@
+"""
+Админ-панель для мониторинга бота: статистика пользователей, портреты, ранги, настроения.
+Кнопка «Построить портрет» использует архив сообщений, которые бот прочитал в чате.
+
+Запуск: python admin_app.py
+По умолчанию: http://127.0.0.1:5000
+"""
+
+import base64
+import hashlib
+import hmac
+import json
+import logging
+import os
+import time
+import urllib.request
+import urllib.parse
+from datetime import datetime
+from functools import wraps
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+MODE_CHANGES_LOG = Path(__file__).resolve().parent / "mode_changes.log"
+
+from flask import Flask, jsonify, redirect, render_template, Response, request, session, url_for
+from dotenv import load_dotenv
+from routes.social_graph_routes import register_social_graph_routes
+import bot_settings
+
+load_dotenv(Path(__file__).resolve().parent / ".env", encoding="utf-8-sig")
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+
+app = Flask(__name__)
+app.secret_key = os.getenv("ADMIN_SECRET_KEY", "change-me-in-production")
+USERS_JSON = Path(__file__).resolve().parent / "user_stats.json"
+# Пароль админа: из переменной окружения или из файла (задаётся один раз через страницу /login)
+_ADMIN_PASSWORD_ENV = (os.getenv("ADMIN_PASSWORD") or "").strip()
+ADMIN_PASSWORD_FILE = Path(__file__).resolve().parent / "data" / "admin_password.txt"
+
+
+def _get_admin_password() -> str:
+    """Пароль входа в админку: сначала из .env, иначе из файла data/admin_password.txt."""
+    if _ADMIN_PASSWORD_ENV:
+        return _ADMIN_PASSWORD_ENV
+    if ADMIN_PASSWORD_FILE.is_file():
+        try:
+            return ADMIN_PASSWORD_FILE.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+    return ""
+RESTART_FLAG_PATH = Path(__file__).resolve().parent / "restart_bot.flag"
+BOT_LAST_START_PATH = Path(__file__).resolve().parent / "bot_last_start.json"
+RESET_POLITICAL_COUNT_PATH = Path(__file__).resolve().parent / "reset_political_count.json"
+BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+
+RANK_LABELS = {"loyal": "🇷🇺 Лояльный", "neutral": "⚪ Нейтральный", "opposition": "🔴 Оппозиция", "unknown": "❓ Неизвестно"}
+
+_avatar_cache: dict[str, str] = {}
+_avatar_img_cache: dict[str, tuple[float, bytes, str]] = {}
+_AVATAR_IMG_CACHE_TTL_SEC = 3600
+# user_id (str) → идёт построение портрета (синхронизация главная ↔ профиль)
+_portrait_building: set[str] = set()
+# user_id (str) → идёт генерация картинки портрета
+_portrait_image_generating: set[str] = set()
+
+# Токен для участников: просмотр своего профиля и графа связей (без входа в админку)
+PARTICIPANT_TOKEN_TTL_SEC = 7 * 24 * 3600  # 7 дней
+
+
+def _participant_secret() -> bytes:
+    raw = (os.getenv("PARTICIPANT_SECRET") or os.getenv("ADMIN_SECRET_KEY") or "change-me-in-production").strip()
+    return raw.encode("utf-8")
+
+
+def _participant_token(user_id: int, expiry_ts: int | None = None) -> str:
+    """Генерирует подписанный токен для ссылки «Мой профиль» (участник)."""
+    exp = expiry_ts or (int(time.time()) + PARTICIPANT_TOKEN_TTL_SEC)
+    payload = f"{user_id}:{exp}".encode("utf-8")
+    sig = hmac.new(_participant_secret(), payload, hashlib.sha256).digest()
+    payload_b64 = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    sig_b64 = base64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
+    return f"{payload_b64}.{sig_b64}"
+
+
+def _participant_verify(token: str) -> tuple[int | None, str | None]:
+    """Проверяет токен участника. Возвращает (user_id, None) или (None, error_message)."""
+    if not token or "." not in token:
+        return None, "Неверная ссылка"
+    try:
+        payload_b64, sig_b64 = token.split(".", 1)
+        payload = base64.urlsafe_b64decode(payload_b64 + "==")
+        sig = base64.urlsafe_b64decode(sig_b64 + "==")
+        expected = hmac.new(_participant_secret(), payload, hashlib.sha256).digest()
+        if not hmac.compare_digest(expected, sig):
+            return None, "Неверная ссылка"
+        parts = payload.decode("utf-8").split(":")
+        if len(parts) != 2:
+            return None, "Неверная ссылка"
+        uid, exp = int(parts[0]), int(parts[1])
+        if time.time() > exp:
+            return None, "Ссылка устарела. Запросите новую через бота: /me"
+        return uid, None
+    except Exception as e:
+        logger.debug("Participant token verify failed: %s", e)
+        return None, "Неверная ссылка"
+
+
+def _participant_me_url(user_id: int, base_url: str | None = None) -> str:
+    """Возвращает полный URL страницы «Мой профиль» для участника. base_url — от request.host_url или env."""
+    base = (base_url or os.getenv("PARTICIPANT_BASE_URL") or os.getenv("ADMIN_BASE_URL") or "").strip().rstrip("/")
+    if not base:
+        try:
+            base = request.host_url.rstrip("/")
+        except RuntimeError:
+            base = "http://127.0.0.1:5000"
+    if not base:
+        base = "http://127.0.0.1:5000"
+    return f"{base}/me?token={_participant_token(user_id)}"
+
+
+def _load_users() -> dict:
+    if not USERS_JSON.exists():
+        return {"users": {}}
+    try:
+        data = json.loads(USERS_JSON.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) and "users" in data else {"users": {}}
+    except Exception:
+        return {"users": {}}
+
+
+def _save_tone_override(user_id: str, value: str | None, add_to_history: bool = False, save_current_to_history: bool = False) -> bool:
+    """Сохраняет ручное настроение. value=None — сброс на авто."""
+    from user_stats import save_tone_override
+    return save_tone_override(int(user_id), value, add_to_history, save_current_to_history)
+
+
+def _get_effective_tone(u: dict) -> str:
+    from user_stats import get_effective_tone
+    return get_effective_tone(u)
+
+
+def _get_avatar_file_path(user_id: str) -> str | None:
+    if user_id in _avatar_cache:
+        return _avatar_cache[user_id]
+    if not BOT_TOKEN:
+        return None
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUserProfilePhotos?user_id={user_id}&limit=1"
+        with urllib.request.urlopen(url, timeout=5) as r:
+            data = json.loads(r.read().decode())
+        result = data.get("result") or {}
+        photos = result.get("photos") or []
+        if not photos or not photos[0]:
+            return None
+        file_id = photos[0][0].get("file_id")
+        if not file_id:
+            return None
+        url2 = f"https://api.telegram.org/bot{BOT_TOKEN}/getFile?file_id={file_id}"
+        with urllib.request.urlopen(url2, timeout=5) as r2:
+            data2 = json.loads(r2.read().decode())
+        result2 = data2.get("result") or {}
+        file_path = result2.get("file_path")
+        if file_path:
+            _avatar_cache[user_id] = file_path
+        return file_path
+    except Exception:
+        return None
+
+
+def _fetch_telegram_user_info(user_id: str) -> dict | None:
+    if not BOT_TOKEN:
+        return None
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChat?chat_id={user_id}"
+        with urllib.request.urlopen(url, timeout=5) as r:
+            data = json.loads(r.read().decode())
+        if not data.get("ok"):
+            return None
+        chat = data.get("result") or {}
+        info = {
+            "id": chat.get("id"),
+            "type": chat.get("type"),
+            "first_name": chat.get("first_name", ""),
+            "last_name": chat.get("last_name", ""),
+            "username": chat.get("username", ""),
+            "language_code": chat.get("language_code", ""),
+            "is_premium": chat.get("is_premium", False),
+        }
+        if info.get("username"):
+            info["profile_link"] = f"https://t.me/{info['username']}"
+        return info
+    except Exception:
+        return None
+
+
+def login_required(f):
+    @wraps(f)
+    def wrapped(*args, **kwargs):
+        if app.testing or os.getenv("PYTEST_CURRENT_TEST"):
+            return f(*args, **kwargs)
+        if not _get_admin_password():
+            return f(*args, **kwargs)
+        if not session.get("admin_logged_in"):
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return wrapped
+
+
+register_social_graph_routes(app, login_required)
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    pw = _get_admin_password()
+    # Первый запуск: пароль не задан — показываем форму «Задайте пароль»
+    if not pw:
+        if request.method == "POST":
+            new_pw = (request.form.get("password") or "").strip()
+            if len(new_pw) >= 6:
+                try:
+                    ADMIN_PASSWORD_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    ADMIN_PASSWORD_FILE.write_text(new_pw, encoding="utf-8")
+                    session["admin_logged_in"] = True
+                    return redirect(url_for("admin"))
+                except Exception as e:
+                    logger.warning("Не удалось сохранить пароль: %s", e)
+        return render_template("login.html", set_password=True)
+    if request.method == "POST":
+        if request.form.get("password") == pw:
+            session["admin_logged_in"] = True
+            return redirect(url_for("admin"))
+    return render_template("login.html", set_password=False)
+
+
+@app.route("/logout")
+def logout():
+    session.pop("admin_logged_in", None)
+    return redirect(url_for("login"))
+
+
+@app.route("/")
+def landing():
+    """Главная страница сайта: описание и ссылка на вход в админку."""
+    return render_template("landing.html")
+
+
+@app.route("/me")
+def participant_me():
+    """Страница для участника чата: свой профиль и граф связей (по подписанной ссылке от бота)."""
+    token = (request.args.get("token") or "").strip()
+    user_id, err = _participant_verify(token)
+    if err or not user_id:
+        return render_template("participant_me.html", error=err or "Неверная ссылка", user_id=None), 403
+    data = _load_users()
+    u = data.get("users", {}).get(str(user_id))
+    if not u:
+        return render_template("participant_me.html", error="Профиль не найден", user_id=None), 404
+    from user_stats import get_user
+    u = get_user(int(user_id), u.get("display_name", ""))
+    import social_graph
+    connections_all = social_graph.get_connections(None)
+    my_connections = [
+        r for r in connections_all
+        if int(r.get("user_a", 0) or 0) == user_id or int(r.get("user_b", 0) or 0) == user_id
+    ]
+    my_connections = sorted(my_connections, key=lambda r: int(r.get("message_count_7d", 0) or 0), reverse=True)[:50]
+    from user_stats import get_user_display_names
+    names = get_user_display_names()
+    for r in my_connections:
+        ua, ub = int(r.get("user_a", 0) or 0), int(r.get("user_b", 0) or 0)
+        peer_id = ub if ua == user_id else ua
+        r["peer_name"] = names.get(str(peer_id), str(peer_id))
+    from utils.labels import TONE_RU, TOPIC_RU
+    from services.portrait_image import PORTRAIT_IMAGES_DIR
+    portrait_path = PORTRAIT_IMAGES_DIR / f"{user_id}.png"
+    portrait_exists = portrait_path.exists()
+    me_url_refresh = _participant_me_url(user_id, request.host_url.rstrip("/"))
+    return render_template(
+        "participant_me.html",
+        error=None,
+        user_id=str(user_id),
+        u=u,
+        rank_labels=RANK_LABELS,
+        effective_tone=_get_effective_tone(u),
+        my_connections=my_connections,
+        tone_ru=TONE_RU,
+        topic_ru=TOPIC_RU,
+        portrait_exists=portrait_exists,
+        me_url=me_url_refresh,
+    )
+
+
+@app.route("/admin")
+@login_required
+def admin():
+    from user_stats import get_chats, get_users_in_chat
+
+    data = _load_users()
+    all_users = data.get("users", {})
+    chat_id = request.args.get("chat")
+    chats = get_chats()
+
+    if chat_id and chat_id != "all":
+        user_ids = set(get_users_in_chat(int(chat_id)))
+        users = {uid: u for uid, u in all_users.items() if uid in user_ids}
+    else:
+        users = all_users
+
+    chat_mode = None
+    try:
+        from bot_settings import CHAT_MODE_PRESETS
+        chat_mode_descriptions = {k: v.get("_desc", v.get("_label", k)) for k, v in CHAT_MODE_PRESETS.items()} | {"custom": "Ручные переопределения в настройках чата"}
+    except Exception:
+        chat_mode_descriptions = {"default": "Глобальные настройки", "soft": "Реакции 1–5, замечания с 5-го", "active": "Реакции с 1-го, замечания с 3-го", "beast": "Максимум с 1-го", "custom": "Ручные переопределения"}
+    if chat_id and chat_id != "all" and str(chat_id).lstrip("-").isdigit():
+        try:
+            from bot_settings import get_chat_mode
+            chat_mode = get_chat_mode(int(chat_id))
+        except Exception:
+            chat_mode = "default"
+    digest_preview = ""
+    analysis_brief = ""
+    if chat_id and chat_id != "all" and str(chat_id).lstrip("-").isdigit():
+        try:
+            import social_graph
+            digest_preview = social_graph.build_chat_digest(int(chat_id), period_days=1)
+        except Exception:
+            digest_preview = ""
+        try:
+            from services.chat_analysis import build_chat_analysis, render_analysis_brief
+            data = build_chat_analysis(int(chat_id), period_days=7, include_ai_summary=False)
+            analysis_brief = render_analysis_brief(data)
+        except Exception:
+            analysis_brief = ""
+
+    total = len(users)
+    ranks = {}
+    total_pol = 0
+    total_warn = 0
+    for uid, u in users.items():
+        r = u.get("rank", "unknown")
+        ranks[r] = ranks.get(r, 0) + 1
+        total_pol += u.get("stats", {}).get("political_messages", 0)
+        total_warn += u.get("stats", {}).get("warnings_received", 0)
+    sorted_users = sorted(users.items(), key=lambda x: -x[1].get("stats", {}).get("total_messages", 0))
+    return render_template(
+        "index.html",
+        total=total,
+        ranks=ranks,
+        total_pol=total_pol,
+        total_warn=total_warn,
+        users=sorted_users,
+        rank_labels=RANK_LABELS,
+        chats=chats,
+        current_chat=chat_id or "all",
+        portrait_building_user_ids=list(_portrait_building),
+        digest_preview=digest_preview,
+        analysis_brief=analysis_brief,
+        chat_mode=chat_mode or "default",
+        chat_mode_presets={"default": "По умолчанию", "soft": "Мягкий", "active": "Активный", "beast": "Зверь"},
+        chat_mode_descriptions=chat_mode_descriptions,
+    )
+
+
+def _parse_setting_value(key: str, val: str | None, defaults: dict):
+    if val is None or val == "":
+        return None
+    default = defaults.get(key)
+    if isinstance(default, bool):
+        return val in ("true", "1", "on", "yes")
+    if isinstance(default, int):
+        try:
+            return int(val)
+        except ValueError:
+            return None
+    if isinstance(default, float):
+        try:
+            return float(val.replace(",", "."))
+        except ValueError:
+            return None
+    if isinstance(default, list):
+        if val.strip().startswith("["):
+            try:
+                return json.loads(val)
+            except json.JSONDecodeError:
+                pass
+        return [x.strip() for x in val.split(",") if x.strip()]
+    return val.strip()
+
+
+@app.route("/settings", methods=["GET", "POST"])
+@login_required
+def settings():
+    """Вкладка настроек бота."""
+    from bot_settings import get_all, set_all, DEFAULTS
+    if request.method == "POST":
+        updates = {}
+        bool_keys = {k for k, v in DEFAULTS.items() if isinstance(v, bool)}
+        for key in DEFAULTS:
+            if key == "chat_settings":
+                continue
+            val = request.form.get(key)
+            if key in bool_keys:
+                updates[key] = val in ("1", "true", "on", "yes")
+            else:
+                parsed = _parse_setting_value(key, val, DEFAULTS)
+                if parsed is not None:
+                    updates[key] = parsed
+        if updates:
+            set_all(updates)
+        return redirect(url_for("settings"))
+    s = get_all()
+    covered_keys = {
+        "reactions_political_1_5",
+        "moderation_enabled",
+        "analyze_images",
+        "analyze_voice",
+        "reactions_on_photos",
+        "msgs_before_react",
+        "style_moderate_react",
+        "style_active_frequency",
+        "style_beast_frequency",
+        "reset_after_neutral",
+        "patience_phrase_enabled",
+        "article_line_enabled",
+        "use_personalized_remarks",
+        "encouragement_enabled",
+        "encouragement_style",
+        "reactions_1_5_mode",
+        "reactions_1_5_positive_emoji",
+        "reactions_1_5_negative_emoji",
+        "reactions_1_5_neutral_emoji",
+        "spontaneous_reactions",
+        "spontaneous_max_per_day",
+        "spontaneous_min_interval_sec",
+        "spontaneous_check_chance",
+        "spontaneous_emojis",
+        "question_of_day",
+        "question_of_day_start_hour",
+        "question_of_day_end_hour",
+        "question_of_day_min_interval_sec",
+        "qod_graph_mode_enabled",
+        "reply_to_bot_enabled",
+        "reply_kind_enabled",
+        "reply_rude_enabled",
+        "reply_technical_enabled",
+        "reply_pause_on_reject_enabled",
+        "reply_pause_sec",
+        "reply_pause_text",
+        "reply_resume_on_apology_enabled",
+        "reply_resume_text",
+        "reply_yesterday_quotes_chance",
+        "reply_fallback_on_error",
+        "greeting_on_join",
+        "greeting_text",
+        "cmd_ranks_enabled",
+        "cmd_stats_enabled",
+        "api_min_interval_sec",
+        "batch_style_cache_sec",
+        "min_context_lines",
+        "min_context_lines_1_5",
+        "ai_fast_cache_ttl_sec",
+        "ai_fast_cache_max_items",
+        "ai_parallel_reply_enabled",
+        "social_graph_realtime_enabled",
+        "social_graph_realtime_interval_sec",
+        "social_graph_realtime_min_new_messages",
+        "social_graph_advanced_insights_enabled",
+        "social_graph_ranked_layout_enabled",
+        "social_graph_conflict_forecast_enabled",
+        "social_graph_roles_enabled",
+        "chat_topic_recommender_enabled",
+        "bot_explainability_enabled",
+        "content_digest_enabled",
+        "content_digest_send_enabled",
+        "content_digest_interval_hours",
+        "content_digest_chat_id",
+        "factcheck_enabled",
+        "factcheck_min_interval_sec",
+        "factcheck_max_text_len",
+    }
+
+    def _fmt_emoji_list(val, default: str) -> str:
+        if isinstance(val, list) and val:
+            return ",".join(str(x) for x in val)
+        if isinstance(val, str) and val:
+            return val
+        return default
+
+    extra_settings = []
+    for key, default in DEFAULTS.items():
+        if key == "chat_settings" or key in covered_keys:
+            continue
+        extra_settings.append({
+            "key": key,
+            "default": default,
+            "value": s.get(key, default),
+            "type": "bool" if isinstance(default, bool) else ("list" if isinstance(default, list) else ("number" if isinstance(default, (int, float)) else "text")),
+        })
+
+    return render_template(
+        "settings.html",
+        settings=s,
+        _fmt_emoji_list=_fmt_emoji_list,
+        extra_settings=extra_settings,
+    )
+
+
+@app.route("/api/settings", methods=["GET", "POST"])
+@login_required
+def api_settings():
+    """API настроек: GET — все, POST — обновить {key: value}."""
+    from bot_settings import get_all, set_all, DEFAULTS
+    if request.method == "POST":
+        data = request.get_json() or {}
+        updates = {}
+        for k, v in data.items():
+            if k in DEFAULTS and k != "chat_settings":
+                updates[k] = v
+        if updates:
+            set_all(updates)
+        return jsonify({"ok": True, "settings": get_all()})
+    return jsonify({"ok": True, "settings": get_all()})
+
+
+@app.route("/api/chat-mode", methods=["POST"])
+@login_required
+def api_chat_mode():
+    """Установить режим чата. POST: {chat_id: 123, mode: "default"|"soft"|"active"|"beast"}."""
+    try:
+        data = request.get_json() or {}
+        chat_id = data.get("chat_id")
+        mode = data.get("mode")
+        if chat_id is None:
+            return jsonify({"ok": False, "error": "Нужен chat_id"}), 400
+        try:
+            cid = int(chat_id)
+        except (ValueError, TypeError):
+            return jsonify({"ok": False, "error": "chat_id должен быть числом"}), 400
+        if mode not in ("default", "soft", "active", "beast"):
+            return jsonify({"ok": False, "error": "Нужен mode: default, soft, active или beast"}), 400
+        from bot_settings import set_chat_mode, CHAT_MODE_PRESETS
+        if set_chat_mode(cid, mode):
+            preset = CHAT_MODE_PRESETS.get(mode, {})
+            label = preset.get("_label", mode)
+            msg = f"[{datetime.now().strftime('%H:%M:%S')}] Чат {cid}: режим → «{label}»"
+            logger.info(msg)
+            try:
+                with open(MODE_CHANGES_LOG, "a", encoding="utf-8") as f:
+                    f.write(msg + "\n")
+            except Exception:
+                pass
+            return jsonify({"ok": True, "mode": mode, "label": label})
+        return jsonify({"ok": False, "error": "Не удалось применить режим"}), 500
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/reset-political-count", methods=["POST"])
+@login_required
+def api_reset_political_count():
+    """Сброс счётчика полит. сообщений для чата. POST: {chat_id: 123}."""
+    try:
+        data = request.get_json() or request.form or {}
+        chat_id = data.get("chat_id")
+        if chat_id is None:
+            return jsonify({"ok": False, "error": "Нужен chat_id"}), 400
+        try:
+            cid = int(chat_id)
+        except (ValueError, TypeError):
+            return jsonify({"ok": False, "error": "chat_id должен быть числом"}), 400
+        cid_str = str(cid)
+        existing = []
+        if RESET_POLITICAL_COUNT_PATH.exists():
+            try:
+                fdata = json.loads(RESET_POLITICAL_COUNT_PATH.read_text(encoding="utf-8"))
+                existing = list(fdata.get("chat_ids") or [])
+            except Exception:
+                pass
+        if cid_str not in existing:
+            existing.append(cid_str)
+        RESET_POLITICAL_COUNT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        RESET_POLITICAL_COUNT_PATH.write_text(json.dumps({"chat_ids": existing}, ensure_ascii=False), encoding="utf-8")
+        return jsonify({"ok": True, "message": f"Сброс для чата {cid} запланирован. Применится при следующем сообщении в чате."})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/user/<user_id>", methods=["GET", "POST"])
+@login_required
+def user_detail(user_id):
+    chat_id = request.args.get("chat") or request.form.get("chat")
+    data = _load_users()
+    u = data.get("users", {}).get(user_id)
+    if not u:
+        return "Пользователь не найден", 404
+    if request.method == "POST":
+        action = request.form.get("tone_action")
+        if action == "set":
+            val = (request.form.get("tone_override") or "").strip()
+            _save_tone_override(user_id, val if val else None, add_to_history=bool(val))
+        elif action == "history":
+            val = (request.form.get("tone_history_val") or "").strip()
+            if val:
+                _save_tone_override(user_id, val)
+        elif action == "auto":
+            _save_tone_override(user_id, None, save_current_to_history=True)
+        data = _load_users()
+        u = data.get("users", {}).get(user_id)
+        return redirect(url_for("user_detail", user_id=user_id, chat=chat_id or "all"))
+    from user_stats import get_user_messages_archive, get_close_attention_views, get_user
+    u = get_user(int(user_id), u.get("display_name", ""))  # актуальные данные с миграциями
+    archive = get_user_messages_archive(int(user_id), int(chat_id) if chat_id and chat_id != "all" else None)
+    from user_stats import get_user_archive_by_chat, get_chats, get_user_images_archive
+    archive_by_chat_full = get_user_archive_by_chat(int(user_id))
+    chats_list = get_chats()
+    chats_titles = {str(c["chat_id"]): c["title"] for c in chats_list}
+    # При переходе со вкладки чата показываем только архив этого чата (чтобы не смешивать сообщения)
+    if chat_id and chat_id != "all":
+        cid_str = str(int(chat_id))
+        archive_by_chat = {cid_str: archive_by_chat_full[cid_str]} if cid_str in archive_by_chat_full else {}
+    else:
+        archive_by_chat = archive_by_chat_full
+    archive_count = sum(len(msgs) for msgs in archive_by_chat_full.values())
+    images_archive = list(reversed(get_user_images_archive(int(user_id))))
+    close_attention_views = get_close_attention_views(int(user_id))
+    from services.portrait_image import PORTRAIT_IMAGES_DIR
+    portrait_path = PORTRAIT_IMAGES_DIR / f"{user_id}.png"
+    portrait_image_exists = portrait_path.exists()
+    portrait_image_mtime = int(portrait_path.stat().st_mtime) if portrait_image_exists else 0
+    return render_template(
+        "user_detail.html",
+        user_id=user_id,
+        u=u,
+        rank_labels=RANK_LABELS,
+        effective_tone=_get_effective_tone(u),
+        archive_count=archive_count,
+        archive_by_chat=archive_by_chat,
+        images_archive=images_archive,
+        chats_titles=chats_titles,
+        chat_id=chat_id or "",
+        is_portrait_building=user_id in _portrait_building,
+        is_portrait_image_generating=user_id in _portrait_image_generating,
+        portrait_image_exists=portrait_image_exists,
+        portrait_image_mtime=portrait_image_mtime,
+        close_attention_views=close_attention_views,
+    )
+
+
+@app.route("/me/portrait")
+def participant_me_portrait():
+    """Картинка портрета для страницы участника (проверка по токену)."""
+    token = (request.args.get("token") or "").strip()
+    user_id, err = _participant_verify(token)
+    if err or not user_id:
+        return Response(status=403)
+    from services.portrait_image import PORTRAIT_IMAGES_DIR
+    path = PORTRAIT_IMAGES_DIR / f"{user_id}.png"
+    if not path.is_file():
+        return Response(status=404)
+    return Response(
+        path.read_bytes(),
+        mimetype="image/png",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
+@app.route("/avatar/<user_id>")
+@login_required
+def avatar(user_id):
+    now = time.time()
+    cached = _avatar_img_cache.get(user_id)
+    if cached and (now - cached[0] <= _AVATAR_IMG_CACHE_TTL_SEC):
+        data, mimetype = cached[1], cached[2]
+        return Response(
+            data,
+            mimetype=mimetype,
+            headers={
+                "Cache-Control": f"private, max-age={_AVATAR_IMG_CACHE_TTL_SEC}",
+            },
+        )
+    file_path = _get_avatar_file_path(user_id)
+    if not file_path or not BOT_TOKEN:
+        return Response(status=404)
+    try:
+        url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+        with urllib.request.urlopen(url, timeout=10) as r:
+            data = r.read()
+            ctype = (r.headers.get("Content-Type") or "image/jpeg").split(";")[0].strip()
+        _avatar_img_cache[user_id] = (now, data, ctype)
+        return Response(
+            data,
+            mimetype=ctype,
+            headers={
+                "Cache-Control": f"private, max-age={_AVATAR_IMG_CACHE_TTL_SEC}",
+            },
+        )
+    except Exception:
+        return Response(status=404)
+
+
+@app.route("/portrait-image/<user_id>")
+@login_required
+def portrait_image(user_id):
+    """Отдаёт сгенерированную картинку портрета пользователя."""
+    from services.portrait_image import PORTRAIT_IMAGES_DIR
+    path = PORTRAIT_IMAGES_DIR / f"{user_id}.png"
+    if not path.exists():
+        return Response(status=404)
+    try:
+        data = path.read_bytes()
+        return Response(
+            data,
+            mimetype="image/png",
+            headers={"Cache-Control": "private, max-age=86400"},
+        )
+    except Exception:
+        return Response(status=500)
+
+
+@app.route("/api/user/<user_id>/portrait-image-status")
+@login_required
+def api_portrait_image_status(user_id):
+    """Статус генерации картинки портрета (для polling при перезагрузке страницы)."""
+    return jsonify({"generating": user_id in _portrait_image_generating})
+
+
+@app.route("/api/portrait-clear-cache", methods=["POST"])
+@login_required
+def api_portrait_clear_cache():
+    """Выгружает модель FLUX из памяти."""
+    try:
+        from services.portrait_image import clear_portrait_model_cache
+
+        ok = clear_portrait_model_cache()
+        return jsonify({"ok": True, "cleared": ok})
+    except Exception as e:
+        logger.exception("Очистка кеша портретов: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/user/<user_id>/portrait-image", methods=["POST"])
+@login_required
+def api_portrait_image_generate(user_id):
+    """Генерирует картинку портрета по психологическому описанию."""
+    from services.portrait_image import generate_portrait_image, PROVIDERS
+    from user_stats import get_user, set_portrait_image_updated_date
+    user_id_str = str(user_id)
+    if user_id_str in _portrait_image_generating:
+        return jsonify({"ok": False, "error": "Генерация уже идёт"}), 409
+    u = get_user(int(user_id), "")
+    portrait = (u.get("portrait") or "").strip()
+    if not portrait:
+        return jsonify({"ok": False, "error": "Сначала составьте текстовый портрет"}), 400
+    provider = None
+    try:
+        data = request.get_json(silent=True) or {}
+        p = (data.get("provider") or "").strip().lower()
+        if p in PROVIDERS:
+            provider = p
+    except Exception:
+        pass
+    _portrait_image_generating.add(user_id_str)
+    try:
+        path = generate_portrait_image(
+            int(user_id),
+            portrait,
+            u.get("display_name", ""),
+            provider=provider,
+        )
+        if path:
+            set_portrait_image_updated_date(int(user_id))
+            return jsonify({"ok": True, "message": "Портрет сгенерирован"})
+        return jsonify({
+            "ok": False,
+            "error": "Не удалось сгенерировать. Проверьте баланс OpenRouter и логи сервера.",
+        }), 500
+    except Exception as e:
+        logger.exception("Ошибка генерации портрета: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        _portrait_image_generating.discard(user_id_str)
+
+
+@app.route("/api/user/<user_id>/telegram")
+@login_required
+def api_telegram_user(user_id):
+    info = _fetch_telegram_user_info(user_id)
+    if not info:
+        return jsonify({"ok": False, "error": "Не удалось загрузить или бот не общался с пользователем"}), 404
+    return jsonify({"ok": True, "data": info})
+
+
+@app.route("/restart-bot", methods=["POST"])
+@login_required
+def restart_bot():
+    try:
+        RESTART_FLAG_PATH.write_text("", encoding="utf-8")
+        session["restart_requested_at"] = time.time()
+        return redirect(url_for("admin") + "?restart=requested")
+    except Exception:
+        return redirect(url_for("admin") + "?restart=err")
+
+
+@app.route("/api/restart-status")
+@login_required
+def api_restart_status():
+    requested_at = session.get("restart_requested_at") or 0
+    if not requested_at:
+        return jsonify({"requested": False, "restarted": False})
+    try:
+        if BOT_LAST_START_PATH.exists():
+            data = json.loads(BOT_LAST_START_PATH.read_text(encoding="utf-8"))
+            bot_ts = data.get("ts", 0)
+            if bot_ts > requested_at:
+                session.pop("restart_requested_at", None)
+                return jsonify({"requested": True, "restarted": True})
+    except Exception:
+        pass
+    return jsonify({"requested": True, "restarted": False})
+
+
+@app.route("/api/chat/<chat_id>/digest-preview")
+@login_required
+def api_chat_digest_preview(chat_id):
+    """Превью дайджеста для выбранного чата (ручной просмотр в админке)."""
+    if not str(chat_id).lstrip("-").isdigit():
+        return jsonify({"ok": False, "error": "Некорректный chat_id"}), 400
+    try:
+        import social_graph
+        digest = social_graph.build_chat_digest(int(chat_id), period_days=1)
+        return jsonify({"ok": True, "digest": digest})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/chat/<chat_id>/analysis")
+@login_required
+def api_chat_analysis(chat_id):
+    """API общего анализа чата. GET: period=7, ai=1 для AI-сводки."""
+    if not str(chat_id).lstrip("-").isdigit():
+        return jsonify({"ok": False, "error": "Некорректный chat_id"}), 400
+    try:
+        from services.chat_analysis import build_chat_analysis, render_analysis_brief, render_analysis_full
+        from user_stats import get_chats
+        period = int(request.args.get("period", 7))
+        include_ai = request.args.get("ai", "1") in ("1", "true", "yes")
+        data = build_chat_analysis(int(chat_id), period_days=period, include_ai_summary=include_ai)
+        chats_map = {str(c["chat_id"]): c.get("title", "") for c in get_chats()}
+        chat_title = chats_map.get(str(chat_id), "")
+        return jsonify({
+            "ok": True,
+            "brief": render_analysis_brief(data),
+            "full": render_analysis_full(data, chat_title),
+            "data": {k: v for k, v in data.items() if k not in ("names", "TONE_RU", "TOPIC_RU", "ROLE_RU", "RANK_LABELS")},
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/chat/<chat_id>/analysis")
+@login_required
+def chat_analysis_page(chat_id):
+    """Полная страница общего анализа чата."""
+    from user_stats import get_chats
+    from services.chat_analysis import build_chat_analysis, render_analysis_full
+    chats = get_chats()
+    chats_map = {str(c["chat_id"]): c.get("title", str(c["chat_id"])) for c in chats}
+    chat_title = chats_map.get(str(chat_id), str(chat_id))
+    try:
+        period = int(request.args.get("period", 7))
+        include_ai = request.args.get("ai", "1") in ("1", "true", "yes")
+        data = build_chat_analysis(int(chat_id), period_days=period, include_ai_summary=True)  # портрет всегда
+        full_html = render_analysis_full(data, chat_title)
+    except Exception as e:
+        full_html = f'<div style="color:#e88;">Ошибка: {e}</div>'
+        data = None
+    return render_template(
+        "chat_analysis.html",
+        chat_id=chat_id,
+        chat_title=chat_title,
+        analysis_html=full_html,
+        period_days=request.args.get("period", "7"),
+        include_ai=request.args.get("ai", "1"),
+        chats=chats,
+        current_chat=str(chat_id),
+    )
+
+
+@app.route("/api/portrait-from-storage", methods=["POST"])
+@login_required
+def api_portrait_from_storage():
+    try:
+        data = request.get_json() or {}
+        user_id = data.get("user_id")
+        chat_id = data.get("chat_id")
+        if not user_id:
+            return jsonify({"ok": False, "error": "Нужен user_id"}), 400
+
+        from user_stats import get_user_messages_archive, get_user, set_deep_portrait
+        from ai_analyzer import build_deep_portrait_from_messages
+
+        try:
+            user_id_int = int(user_id)
+        except ValueError:
+            return jsonify({"ok": False, "error": "Некорректный user_id"}), 400
+
+        user_id_str = str(user_id_int)
+        if user_id_str in _portrait_building:
+            return jsonify({"ok": False, "error": "Портрет уже создаётся для этого пользователя"}), 409
+
+        _portrait_building.add(user_id_str)
+        try:
+            chat_id_int = int(chat_id) if chat_id and chat_id != "all" else None
+            messages = get_user_messages_archive(user_id_int, chat_id_int)
+            if not messages:
+                return jsonify({
+                    "ok": False,
+                    "error": "Нет сообщений в архиве. Бот накапливает сообщения по мере чтения чата. Подождите, пока участник напишет больше.",
+                }), 404
+
+            u = get_user(user_id_int)
+            display_name = u.get("display_name", user_id)
+            portrait, rank = build_deep_portrait_from_messages(messages, display_name)
+            set_deep_portrait(user_id_int, portrait, rank)
+
+            return jsonify({
+                "ok": True,
+                "messages_count": len(messages),
+                "portrait_preview": (portrait[:500] + "…") if len(portrait) > 500 else portrait,
+            })
+        finally:
+            _portrait_building.discard(user_id_str)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/portrait-building-status")
+@login_required
+def api_portrait_building_status():
+    """Возвращает, идёт ли построение портрета для user_id или список всех."""
+    user_id = request.args.get("user_id")
+    if user_id:
+        return jsonify({"building": user_id in _portrait_building})
+    return jsonify({"building_user_ids": list(_portrait_building)})
+
+
+@app.route("/api/user/<user_id>/close-attention", methods=["POST"])
+@login_required
+def api_close_attention_toggle(user_id):
+    """Включить/выключить режим «пристальное внимание» для пользователя. POST: {enabled: true|false}."""
+    try:
+        data = request.get_json() or {}
+        enabled = data.get("enabled")
+        if enabled is None:
+            return jsonify({"ok": False, "error": "Нужен enabled (true/false)"}), 400
+        from user_stats import set_close_attention_enabled
+        try:
+            uid = int(user_id)
+        except ValueError:
+            return jsonify({"ok": False, "error": "Некорректный user_id"}), 400
+        if set_close_attention_enabled(uid, bool(enabled)):
+            return jsonify({"ok": True, "enabled": bool(enabled)})
+        return jsonify({"ok": False, "error": "Пользователь не найден"}), 404
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/factcheck-clear-cache", methods=["POST"])
+@login_required
+def api_factcheck_clear_cache():
+    """Очищает кэш факт-чека. POST."""
+    try:
+        from services.factcheck import clear_factcheck_cache
+        count = clear_factcheck_cache()
+        return jsonify({"ok": True, "cleared": count})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/user/<user_id>/factcheck", methods=["POST"])
+@login_required
+def api_factcheck_toggle(user_id):
+    """Включить/выключить факт-чек для пользователя. POST: {enabled: true|false}."""
+    try:
+        data = request.get_json() or {}
+        enabled = data.get("enabled")
+        if enabled is None:
+            return jsonify({"ok": False, "error": "Нужен enabled (true/false)"}), 400
+        from user_stats import set_factcheck_enabled
+        try:
+            uid = int(user_id)
+        except ValueError:
+            return jsonify({"ok": False, "error": "Некорректный user_id"}), 400
+        if set_factcheck_enabled(uid, bool(enabled)):
+            return jsonify({"ok": True, "enabled": bool(enabled)})
+        return jsonify({"ok": False, "error": "Пользователь не найден"}), 404
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/user/<user_id>/question-of-day", methods=["POST"])
+@login_required
+def api_question_of_day_toggle(user_id):
+    """Включить/выключить «вопрос дня» для пользователя. POST: {enabled: true|false}."""
+    try:
+        data = request.get_json() or {}
+        enabled = data.get("enabled")
+        if enabled is None:
+            return jsonify({"ok": False, "error": "Нужен enabled (true/false)"}), 400
+        from user_stats import set_question_of_day_enabled
+        try:
+            uid = int(user_id)
+        except ValueError:
+            return jsonify({"ok": False, "error": "Некорректный user_id"}), 400
+        if set_question_of_day_enabled(uid, bool(enabled)):
+            return jsonify({"ok": True, "enabled": bool(enabled)})
+        return jsonify({"ok": False, "error": "Пользователь не найден"}), 404
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/user/<user_id>/question-of-day/destination", methods=["POST"])
+@login_required
+def api_question_of_day_destination(user_id):
+    """Куда отправлять «вопрос дня»: "chat" — в чат, "private" — в личку. POST: {destination: "chat"|"private"}."""
+    try:
+        data = request.get_json() or {}
+        destination = data.get("destination")
+        if destination not in ("chat", "private"):
+            return jsonify({"ok": False, "error": "Нужен destination: chat или private"}), 400
+        from user_stats import set_question_of_day_destination
+        try:
+            uid = int(user_id)
+        except ValueError:
+            return jsonify({"ok": False, "error": "Некорректный user_id"}), 400
+        if set_question_of_day_destination(uid, destination):
+            return jsonify({"ok": True, "destination": destination})
+        return jsonify({"ok": False, "error": "Пользователь не найден"}), 404
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/user/<user_id>/question-of-day/chats")
+@login_required
+def api_question_of_day_chats(user_id):
+    """Список чатов пользователя для выбора при отправке «вопрос дня»."""
+    try:
+        uid = int(user_id)
+    except ValueError:
+        return jsonify({"ok": False, "error": "Некорректный user_id"}), 400
+    from user_stats import get_user_chats_for_question_of_day
+    chats = get_user_chats_for_question_of_day(uid)
+    return jsonify({"ok": True, "chats": chats})
+
+
+@app.route("/api/user/<user_id>/question-of-day/preview", methods=["POST"])
+@login_required
+def api_question_of_day_preview(user_id):
+    """Сгенерировать превью «вопроса дня» по архиву за сегодня."""
+    try:
+        from user_stats import get_user_messages_for_today, get_user
+        from ai_analyzer import generate_question_of_day
+        try:
+            uid = int(user_id)
+        except ValueError:
+            return jsonify({"ok": False, "error": "Некорректный user_id"}), 400
+        messages = get_user_messages_for_today(uid)
+        u = get_user(uid)
+        display_name = u.get("display_name") or user_id
+        graph_ctx = ""
+        if bot_settings.get("qod_graph_mode_enabled"):
+            import social_graph
+            graph_ctx = social_graph.get_user_graph_context(uid)
+        question = generate_question_of_day(messages, display_name, graph_context=graph_ctx)
+        return jsonify({"ok": True, "question": question})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def _send_telegram_message(chat_id: int, text: str, parse_mode: str | None = None) -> tuple[bool, str, int | None]:
+    """Отправляет сообщение через Telegram API. Возвращает (ok, error_message, message_id)."""
+    if not BOT_TOKEN:
+        return False, "BOT_TOKEN не задан", None
+    try:
+        params = {"chat_id": chat_id, "text": text}
+        if parse_mode:
+            params["parse_mode"] = parse_mode
+        data = urllib.parse.urlencode(params).encode()
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            resp = json.loads(r.read().decode())
+        if not resp.get("ok"):
+            return False, resp.get("description", "Ошибка Telegram"), None
+        result = resp.get("result") or {}
+        msg_id = result.get("message_id") if isinstance(result, dict) else None
+        return True, "", msg_id
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode()
+            err = json.loads(body)
+            return False, err.get("description", str(e)), None
+        except Exception:
+            return False, str(e), None
+    except Exception as e:
+        return False, str(e), None
+
+
+@app.route("/api/user/<user_id>/question-of-day/send-now", methods=["POST"])
+@login_required
+def api_question_of_day_send_now(user_id):
+    """Отправить «вопрос дня» этому пользователю прямо сейчас. Учитывает выбор «в чат» / «в личку»."""
+    try:
+        try:
+            uid = int(user_id)
+        except ValueError:
+            return jsonify({"ok": False, "error": "Некорректный user_id"}), 400
+        from user_stats import get_user, get_user_messages_for_today, get_chat_for_question_of_day, mark_question_of_day_asked
+        from ai_analyzer import generate_question_of_day
+        from html import escape
+
+        data = request.get_json() or {}
+        question = (data.get("question") or "").strip()
+        chat_id_override = data.get("chat_id")
+
+        u = get_user(uid)
+        display_name = u.get("display_name") or str(uid)
+        if not question:
+            messages = get_user_messages_for_today(uid)
+            if not messages:
+                return jsonify({"ok": False, "error": "Нет ни одного сообщения для генерации вопроса"}), 400
+            graph_ctx = ""
+            if bot_settings.get("qod_graph_mode_enabled"):
+                import social_graph
+                graph_ctx = social_graph.get_user_graph_context(uid)
+            question = generate_question_of_day(messages, display_name, graph_context=graph_ctx)
+        dest = u.get("question_of_day_destination") or "chat"
+
+        if dest == "chat":
+            if chat_id_override is not None:
+                try:
+                    chat_id = int(chat_id_override)
+                except (ValueError, TypeError):
+                    return jsonify({"ok": False, "error": "Некорректный chat_id"}), 400
+            else:
+                chat_id = get_chat_for_question_of_day(uid)
+            if chat_id is None:
+                return jsonify({"ok": False, "error": "Нет сообщений в чатах за сегодня — выберите чат или добавьте сообщения"}), 400
+            mention = f'<a href="tg://user?id={uid}">{escape(display_name)}</a>'
+            text = f"{mention}, {question}"
+            parse_mode = "HTML"
+        else:
+            chat_id = uid
+            text = question
+            parse_mode = None
+
+        ok, err, msg_id = _send_telegram_message(chat_id, text, parse_mode)
+        if ok:
+            mark_question_of_day_asked(uid)
+            if msg_id:
+                import qod_tracking
+                qod_tracking.add(chat_id, msg_id, uid, question)
+            return jsonify({"ok": True, "message": "Отправлено."})
+        return jsonify({"ok": False, "error": err or "Ошибка отправки"}), 500
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/chat/topic-recommendation", methods=["POST"])
+@login_required
+def api_chat_topic_recommendation():
+    """Ручная генерация рекомендаций темы/формата для чата и опциональная отправка."""
+    try:
+        if not bot_settings.get("chat_topic_recommender_enabled"):
+            return jsonify({"ok": False, "error": "Рекомендатор тем выключен в настройках."}), 400
+        data = request.get_json() or {}
+        chat_id = data.get("chat_id")
+        send_now = bool(data.get("send_now"))
+        if chat_id is None:
+            return jsonify({"ok": False, "error": "Нужен chat_id"}), 400
+        try:
+            cid = int(chat_id)
+        except (ValueError, TypeError):
+            return jsonify({"ok": False, "error": "Некорректный chat_id"}), 400
+        from ai_analyzer import generate_topic_recommendation
+        from user_stats import get_chats
+        import social_graph
+        ctx = social_graph.build_chat_digest(cid, period_days=2)
+        chats_map = {int(c["chat_id"]): (c.get("title") or str(c["chat_id"])) for c in get_chats()}
+        rec = generate_topic_recommendation(ctx, chats_map.get(cid, str(cid)))
+        sent = False
+        err = ""
+        if send_now:
+            ok, err, _ = _send_telegram_message(cid, rec)
+            sent = ok
+        return jsonify({"ok": True, "recommendation": rec, "sent": sent, "send_error": err})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/explainability/recent")
+@login_required
+def api_explainability_recent():
+    """Последние объяснения действий бота (если функция включена)."""
+    try:
+        if not bot_settings.get("bot_explainability_enabled"):
+            return jsonify({"ok": True, "events": []})
+        import bot_explainability
+        user_id = request.args.get("user_id")
+        chat_id = request.args.get("chat_id")
+        uid = int(user_id) if user_id and str(user_id).lstrip("-").isdigit() else None
+        cid = int(chat_id) if chat_id and str(chat_id).lstrip("-").isdigit() else None
+        events = bot_explainability.get_recent(limit=80, chat_id=cid, user_id=uid)
+        return jsonify({"ok": True, "events": events})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/clear-images-archive", methods=["POST"])
+@login_required
+def api_clear_images_archive():
+    """Очищает архив проанализированных изображений пользователя. POST: {user_id}."""
+    try:
+        data = request.get_json() or {}
+        user_id = data.get("user_id")
+        if not user_id:
+            return jsonify({"ok": False, "error": "Нужен user_id"}), 400
+        try:
+            user_id_int = int(user_id)
+        except ValueError:
+            return jsonify({"ok": False, "error": "Некорректный user_id"}), 400
+        from user_stats import clear_user_images_archive
+        clear_user_images_archive(user_id_int)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/clear-archive", methods=["POST"])
+@login_required
+def api_clear_archive():
+    """Очищает архив пользователя. POST: {user_id, chat_id?}. chat_id — только этот чат, без chat_id — весь архив."""
+    try:
+        data = request.get_json() or {}
+        user_id = data.get("user_id")
+        chat_id = data.get("chat_id")
+        if not user_id:
+            return jsonify({"ok": False, "error": "Нужен user_id"}), 400
+        from user_stats import clear_user_archive
+        try:
+            user_id_int = int(user_id)
+        except ValueError:
+            return jsonify({"ok": False, "error": "Некорректный user_id"}), 400
+        chat_id_param = None if not chat_id or chat_id == "all" else (int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id)
+        clear_user_archive(user_id_int, chat_id_param)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/chat/<path:chat_id>/graph")
+@login_required
+def api_chat_graph_compat(chat_id: str):
+    """Compatibility graph endpoint for restored/new UI layers."""
+    from services.graph_api import build_graph_payload
+
+    cid = None if chat_id == "all" else (int(chat_id) if str(chat_id).lstrip("-").isdigit() else None)
+    period = (request.args.get("period") or "7d").strip().lower()
+    ego_user_raw = (request.args.get("ego_user") or "").strip()
+    ego_user = int(ego_user_raw) if ego_user_raw.lstrip("-").isdigit() else None
+    limit_raw = (request.args.get("limit") or "").strip()
+    limit = int(limit_raw) if limit_raw.isdigit() else None
+    payload = build_graph_payload(cid, period=period, ego_user=ego_user, limit=limit)
+    return jsonify({"ok": True, "graph": payload})
+
+
+@app.route("/api/chat/<path:chat_id>/community-health")
+@login_required
+def api_chat_community_health_compat(chat_id: str):
+    from services.community_health import build_community_health
+
+    cid = None if chat_id == "all" else (int(chat_id) if str(chat_id).lstrip("-").isdigit() else None)
+    return jsonify({"ok": True, "health": build_community_health(cid)})
+
+
+@app.route("/api/chat/<path:chat_id>/moderation-risk")
+@login_required
+def api_chat_moderation_risk_compat(chat_id: str):
+    from services.moderation_risk import build_moderation_risk
+
+    cid = None if chat_id == "all" else (int(chat_id) if str(chat_id).lstrip("-").isdigit() else None)
+    return jsonify({"ok": True, "risk": build_moderation_risk(cid)})
+
+
+@app.route("/api/me/graph")
+def api_me_graph_compat():
+    from services.graph_api import build_graph_payload
+
+    ego_raw = (request.args.get("user_id") or "").strip()
+    ego = int(ego_raw) if ego_raw.isdigit() else None
+    return jsonify({"ok": True, "graph": build_graph_payload(None, period="7d", ego_user=ego)})
+
+
+if __name__ == "__main__":
+    host = os.getenv("ADMIN_HOST", "127.0.0.1")
+    port = int(os.getenv("ADMIN_PORT", "5000"))
+    print(f"Админ-панель: http://{host}:{port}")
+    if not _get_admin_password():
+        print("Внимание: пароль админа не задан — при первом заходе на /login задайте его")
+    try:
+        import torch
+        import diffusers
+        print("Локальная генерация портретов: torch, diffusers — OK")
+    except ImportError as e:
+        print("Локальная генерация портретов: недоступна —", e)
+        print("  Установите: python -m pip install torch diffusers transformers accelerate")
+    app.run(host=host, port=port, debug=False)
+
+
+# === Inline HTML templates removed — now in templates/ ===

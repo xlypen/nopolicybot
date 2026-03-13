@@ -1,0 +1,16 @@
+[Unit]
+Description=Telegram Political Monitor Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/telegram-political-monitor-bot
+Environment=PATH=/opt/telegram-political-monitor-bot/venv/bin
+ExecStart=/opt/telegram-political-monitor-bot/venv/bin/python /opt/telegram-political-monitor-bot/bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

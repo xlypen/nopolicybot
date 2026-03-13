@@ -1,0 +1,10 @@
+sqlalchemy[asyncio]>=2.0.0
+aiosqlite>=0.19.0
+alembic>=1.13.0
+dostoevsky
+statsmodels
+fastapi>=0.115.0
+uvicorn>=0.30.0
+python-dotenv>=1.0.0
+flask>=3.0.0
+flask-caching>=2.0.0

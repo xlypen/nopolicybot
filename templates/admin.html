@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+{% block title %}Админ-панель{% endblock %}
+{% block body %}
+<div class="page">
+  <div class="header">
+    <h1>Админ-панель</h1>
+    <div class="actions">
+      <a class="btn btn-secondary" href="/social-graph?chat={{ current_chat }}">Граф</a>
+      <a class="btn btn-secondary" href="/settings">Настройки</a>
+      <a class="btn btn-secondary" href="/logout">Выйти</a>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-bottom:8px;">
+    <div class="row">
+      <button class="btn btn-secondary tab-btn is-active" data-tab="overviewTab">Обзор</button>
+      <button class="btn btn-secondary tab-btn" data-tab="settingsTab">Настройки</button>
+      <button class="btn btn-secondary tab-btn" data-tab="promptsTab">Промпты бота</button>
+    </div>
+  </div>
+
+  <section id="overviewTab" class="tab-section is-active">
+    <div class="panel">
+      <div class="row">
+        <strong>Текущий чат:</strong> {{ current_chat }}
+        <span style="color:var(--muted)">| Сообщений: {{ metrics.messages_total }}</span>
+        <span style="color:var(--muted)">| Связей: {{ metrics.connections_count }}</span>
+        <span style="color:var(--muted)">| Участников: {{ metrics.users_count }}</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="title">Чаты</div>
+      <div class="actions">
+        <a class="btn {% if current_chat == 'all' %}btn-secondary{% endif %}" href="/admin?chat=all">Все</a>
+        {% for c in chats %}
+        <a class="btn btn-secondary" href="/admin?chat={{ c.chat_id }}">{{ c.title }}</a>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="title">Граф и связи</div>
+        <p>Просмотр структуры общения и метрик графа.</p>
+        <a class="btn" href="/social-graph">Открыть /social-graph</a>
+      </div>
+      <div class="card">
+        <div class="title">Страница участника</div>
+        <p>Проверка персонального графа и payload `/api/me/graph`.</p>
+        <a class="btn" href="/me">Открыть /me</a>
+      </div>
+      <div class="card">
+        <div class="title">Аналитика</div>
+        <p>Сводка и аналитические блоки.</p>
+        <a class="btn" href="/chat/{{ current_chat }}/analysis">Открыть анализ</a>
+      </div>
+      <div class="card">
+        <div class="title">Проверка API</div>
+        <p>Быстрые endpoint'ы для диагностики.</p>
+        <ul>
+          <li><a href="/health">/health</a></li>
+          <li><a href="/api/chat/{{ current_chat }}/graph?period=7d">/api/chat/{{ current_chat }}/graph</a></li>
+          <li><a href="/api/chat/{{ current_chat }}/community-health">/api/chat/{{ current_chat }}/community-health</a></li>
+          <li><a href="/api/chat/{{ current_chat }}/moderation-risk">/api/chat/{{ current_chat }}/moderation-risk</a></li>
+          <li><a href="/api/log-tail">/api/log-tail</a></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="settingsTab" class="tab-section">
+    <div class="card">
+      <div class="title">Логи (отдельная панель)</div>
+      <div class="row">
+        <label>Источник:</label>
+        <select id="logSource">
+          <option value="telegram-bot.service" selected>telegram-bot.service</option>
+          <option value="telegram-bot-admin.service">telegram-bot-admin.service</option>
+          <option value="telegram-bot-api.service">telegram-bot-api.service</option>
+          <option value="bot_debug.log">bot_debug.log</option>
+        </select>
+        <label>Строк:</label>
+        <input id="logLines" type="number" min="20" max="500" value="120" style="width:100px;" />
+        <button class="btn" id="loadLogsBtn">Обновить</button>
+        <label><input id="autoLogsChk" type="checkbox" checked /> автообновление</label>
+      </div>
+      <pre id="logsOut">Загрузка логов...</pre>
+    </div>
+  </section>
+
+  <section id="promptsTab" class="tab-section">
+    <div class="card">
+      <div class="title">Восстановление и редактирование промптов</div>
+      <div class="row">
+        <select id="promptName" style="min-width:320px;"></select>
+        <button class="btn" id="reloadPromptBtn">Загрузить</button>
+        <button class="btn" id="savePromptBtn">Сохранить</button>
+        <button class="btn btn-secondary" id="resetPromptBtn">Сбросить выбранный</button>
+        <button class="btn btn-secondary" id="resetAllPromptsBtn">Сбросить все</button>
+      </div>
+      <textarea id="promptBody" class="prompt-editor" spellcheck="false"></textarea>
+      <div id="promptStatus" style="color:var(--muted);margin-top:8px;"></div>
+    </div>
+  </section>
+</div>
+
+<script>
+const tabs = document.querySelectorAll('.tab-btn');
+const sections = document.querySelectorAll('.tab-section');
+for (const btn of tabs) {
+  btn.addEventListener('click', () => {
+    for (const b of tabs) b.classList.remove('is-active');
+    for (const s of sections) s.classList.remove('is-active');
+    btn.classList.add('is-active');
+    document.getElementById(btn.dataset.tab).classList.add('is-active');
+  });
+}
+
+let logsTimer = null;
+async function loadLogs() {
+  const source = document.getElementById('logSource').value;
+  const lines = document.getElementById('logLines').value || '120';
+  const resp = await fetch(`/api/log-tail?source=${encodeURIComponent(source)}&lines=${encodeURIComponent(lines)}`);
+  const body = await resp.json();
+  const out = document.getElementById('logsOut');
+  out.textContent = (body.lines || []).join('\n');
+  out.scrollTop = out.scrollHeight;
+}
+function ensureLogsTimer() {
+  if (logsTimer) clearInterval(logsTimer);
+  if (document.getElementById('autoLogsChk').checked) {
+    logsTimer = setInterval(() => loadLogs().catch(() => {}), 5000);
+  }
+}
+document.getElementById('loadLogsBtn').addEventListener('click', () => loadLogs().catch(() => {}));
+document.getElementById('autoLogsChk').addEventListener('change', ensureLogsTimer);
+document.getElementById('logSource').addEventListener('change', () => loadLogs().catch(() => {}));
+loadLogs().catch(() => {
+  document.getElementById('logsOut').textContent = 'Не удалось загрузить логи.';
+});
+ensureLogsTimer();
+
+let promptsMap = {};
+async function loadPrompts() {
+  const resp = await fetch('/api/prompts');
+  const body = await resp.json();
+  promptsMap = body.prompts || {};
+  const sel = document.getElementById('promptName');
+  sel.innerHTML = '';
+  Object.keys(promptsMap).sort().forEach((name) => {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    sel.appendChild(opt);
+  });
+  if (sel.options.length) {
+    sel.value = sel.options[0].value;
+    document.getElementById('promptBody').value = promptsMap[sel.value] || '';
+  }
+}
+function setPromptStatus(msg) {
+  document.getElementById('promptStatus').textContent = msg;
+}
+document.getElementById('reloadPromptBtn').addEventListener('click', async () => {
+  await loadPrompts();
+  setPromptStatus('Промпты загружены.');
+});
+document.getElementById('promptName').addEventListener('change', (e) => {
+  document.getElementById('promptBody').value = promptsMap[e.target.value] || '';
+});
+document.getElementById('savePromptBtn').addEventListener('click', async () => {
+  const name = document.getElementById('promptName').value;
+  const value = document.getElementById('promptBody').value;
+  const r = await fetch('/api/prompts', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, value}),
+  });
+  if (r.ok) {
+    await loadPrompts();
+    setPromptStatus(`Сохранено: ${name}`);
+  } else {
+    setPromptStatus('Ошибка сохранения.');
+  }
+});
+document.getElementById('resetPromptBtn').addEventListener('click', async () => {
+  const name = document.getElementById('promptName').value;
+  await fetch('/api/prompts', {
+    method: 'DELETE',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({names: [name]}),
+  });
+  await loadPrompts();
+  setPromptStatus(`Сброшено к дефолту: ${name}`);
+});
+document.getElementById('resetAllPromptsBtn').addEventListener('click', async () => {
+  await fetch('/api/prompts', { method: 'DELETE' });
+  await loadPrompts();
+  setPromptStatus('Все промпты восстановлены по умолчанию.');
+});
+loadPrompts().catch(() => setPromptStatus('Не удалось загрузить промпты.'));
+</script>
+{% endblock %}

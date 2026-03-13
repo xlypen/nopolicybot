@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Мой профиль — Участник{% endblock %}
+{% block head_extra %}
+<style>
+.participant-header { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+.participant-portrait { max-width: 160px; max-height: 200px; border-radius: 8px; border: 1px solid var(--border-card); }
+.participant-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 0.5rem; }
+.participant-stat { background: var(--bg-input); padding: 0.5rem; border-radius: 6px; font-size: 0.9rem; }
+.connections-list { list-style: none; padding: 0; margin: 0; }
+.connections-list li { padding: 0.6rem; margin-bottom: 0.5rem; background: var(--bg-input); border-radius: 8px; }
+.connections-list .peer-name { font-weight: bold; }
+.connections-list .meta { font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem; }
+.me-bookmark { margin-top: 1rem; padding: 0.75rem; background: var(--bg-input); border-radius: 8px; font-size: 0.9rem; word-break: break-all; }
+</style>
+{% endblock %}
+{% block body %}
+<div class="card">
+{% if error %}
+  <p class="text-danger">{{ error }}</p>
+  <p>Запросите новую ссылку у бота в чате: отправьте команду <strong>/me</strong>.</p>
+{% else %}
+  <h1>Мой профиль</h1>
+  <div class="participant-header">
+    {% if portrait_exists %}
+    <img src="{{ url_for('participant_me_portrait') }}?token={{ request.args.get('token', '') }}" alt="Портрет" class="participant-portrait">
+    {% endif %}
+    <div>
+      <p><strong>{{ u.get('display_name', user_id) }}</strong></p>
+      <p>Ранг: {{ rank_labels.get(u.get('rank'), u.get('rank')) }}</p>
+      <p>Настроение: {{ effective_tone }}</p>
+      <div class="participant-stats">
+        <div class="participant-stat">Сообщений: {{ u.get('stats', {}).get('total_messages', 0) }}</div>
+        <div class="participant-stat">Полит.: {{ u.get('stats', {}).get('political_messages', 0) }}</div>
+      </div>
+    </div>
+  </div>
+  {% if u.get('portrait') %}
+  <div style="margin-top: 1rem;">
+    <h2 style="font-size: 1rem;">Психологический портрет</h2>
+    <div style="white-space: pre-wrap; line-height: 1.5; font-size: 0.9rem;">{{ u.get('portrait', '') }}</div>
+  </div>
+  {% endif %}
+
+  <h2 style="font-size: 1rem; margin-top: 1.5rem;">Мои связи в чатах</h2>
+  <p class="text-muted" style="font-size: 0.9rem;">С кем вы чаще всего общаетесь, темы и тон диалогов.</p>
+  {% if my_connections %}
+  <ul class="connections-list">
+  {% for r in my_connections %}
+    <li>
+      <span class="peer-name">{{ r.get('peer_name', '—') }}</span>
+      <div class="meta">
+        Тон: {{ tone_ru.get(r.get('tone'), r.get('tone')) }} ·
+        Темы: {{ (r.get('topics') or [])|join(', ') or '—' }} ·
+        Сообщений (7 дн.): {{ r.get('message_count_7d', 0) }}
+      </div>
+      {% if r.get('summary') %}
+      <div style="font-size: 0.85rem; margin-top: 0.35rem; color: var(--text-muted);">{{ r.get('summary')[:200] }}{% if r.get('summary')|length > 200 %}…{% endif %}</div>
+      {% endif %}
+    </li>
+  {% endfor %}
+  </ul>
+  {% else %}
+  <p class="text-muted">Пока нет данных о связях. Они обновляются по мере общения в чате.</p>
+  {% endif %}
+
+  <div class="me-bookmark">
+    <strong>Сохраните ссылку</strong> — по ней вы всегда сможете открыть этот профиль и граф связей:<br>
+    <a href="{{ me_url }}">{{ me_url }}</a>
+  </div>
+{% endif %}
+</div>
+{% endblock %}

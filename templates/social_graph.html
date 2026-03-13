@@ -1,0 +1,1204 @@
+{% extends "base.html" %}
+{% block title %}Дерево связей — Админ{% endblock %}
+{% block head_extra %}
+<style>
+.filters{display:flex;flex-wrap:wrap;gap:0.8rem;align-items:end;margin-bottom:1rem;background:#112544;padding:0.8rem;border-radius:10px}
+.filters label{font-size:0.82rem;color:var(--text-secondary);display:flex;flex-direction:column;gap:0.25rem}
+.filters .check{flex-direction:row;align-items:center;gap:0.4rem}
+.filters select,.filters input{background:var(--bg-input);border:1px solid var(--border-input);color:#e6eefb;padding:0.35rem 0.5rem;border-radius:7px}
+.connection-users{font-weight:700;white-space:normal;word-break:break-word;color:#4ade80}
+.connection-summary{font-size:1rem;color:#dbe7ff;white-space:normal;word-break:break-word;line-height:1.6}
+.connection-summary-full{margin-top:0.5rem;padding:0.6rem;background:#0b2a4f;border:1px solid #1a3d6b;border-radius:8px;max-height:280px;overflow:auto}
+.connection-meta{font-size:0.84rem;color:#8ea5c4;margin-top:0.25rem;line-height:1.4}
+.activity-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0.35rem;margin-top:0.45rem}
+.mini-stat{background:#123b68;border:1px solid #25517f;border-radius:8px;padding:0.35rem 0.45rem}
+.mini-stat .k{display:block;font-size:0.68rem;color:#a4bddc}
+.mini-stat .v{display:block;font-size:0.88rem;color:#e8f1ff;font-weight:700}
+.freshness{margin-top:0.45rem;font-size:0.8rem;color:#9db4d1;line-height:1.35}
+.summary-more{margin-top:0.45rem}
+.summary-more summary{cursor:pointer;color:#9bc2ff;font-size:0.85rem}
+.summary-more summary:hover{color:#c9deff}
+.badges{display:flex;gap:0.35rem;flex-wrap:wrap;margin-top:0.35rem}
+.badge{font-size:0.72rem;padding:0.2rem 0.45rem;border-radius:999px;background:#1a3b65;color:#d4e7ff}
+.badge.alert{background:#5a1f2b;color:#ffd6dc}
+.badge.good{background:#1f4d3c;color:#c9f7e0}
+.badge.dim{background:#234b78;color:#d8e7ff}
+.context-chip{font-size:0.72rem;color:#9db4d3;opacity:0.9}
+.cooling-chip{font-size:0.7rem;color:#94a3b8;opacity:0.85}
+.tone-trend-chip{font-size:0.7rem}.tone-trend-chip.improving{color:#4ade80}.tone-trend-chip.worsening{color:#f97316}
+.history{margin-top:0.55rem;padding-top:0.5rem;border-top:1px dashed #2a4c77}
+.history-item{font-size:0.83rem;color:#b5c7df;line-height:1.45;margin-bottom:0.35rem}
+.list-toolbar{display:flex;justify-content:space-between;gap:0.6rem;flex-wrap:wrap;align-items:end;margin-bottom:0.7rem}
+.list-controls{display:flex;gap:0.55rem;flex-wrap:wrap;align-items:end}
+.list-controls label{display:flex;flex-direction:column;gap:0.2rem;font-size:0.78rem;color:#9bb0cf}
+.list-controls input,.list-controls select{background:#0f3460;border:1px solid #1a3b65;color:#e6eefb;padding:0.35rem 0.5rem;border-radius:7px;min-width:170px}
+.list-mode-switch{display:flex;gap:0.35rem;align-items:center}
+.list-mode-btn{padding:0.32rem 0.58rem;border-radius:8px;border:1px solid #2a568a;background:#0f3460;color:#d6e7ff;cursor:pointer;font-size:0.78rem}
+.list-mode-btn.active{background:#e94560;border-color:#e94560;color:#fff}
+.list-note{font-size:0.82rem;color:#9bb0cf}
+.empty-state{padding:0.8rem;border-radius:8px;background:#0f3460;border:1px dashed #2d5b91;color:#b6cae6;font-size:0.9rem}
+.conn-tile{display:none}
+.conn-full{display:grid;grid-template-columns:minmax(260px,330px) 1fr;gap:1rem;padding:1rem;background:#0f3460;border-radius:10px;margin-bottom:0.65rem;align-items:start;border:1px solid #17406c}
+.list-compact #connections-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:0.5rem}
+.list-compact .conn-tile{display:block}
+.list-compact .conn-full{display:none}
+.list-compact .conn-card{background:#0f3460;border:1px solid #1e446f;border-radius:10px;overflow:hidden;cursor:pointer;transition:border-color .15s}
+.list-compact .conn-card:hover{border-color:#4ade80}
+.list-compact .conn-card-head{padding:0.6rem 0.7rem}
+.list-compact .conn-card-head .connection-users{font-size:0.88rem;margin-bottom:0.2rem}
+.list-compact .conn-card-metrics{display:flex;gap:0.45rem;flex-wrap:wrap;font-size:0.74rem;color:#9db4d1;margin-bottom:0.15rem}
+.list-compact .conn-card-metrics b{color:#e8f2ff}
+.list-compact .conn-card-sum{padding:0 0.7rem 0.45rem;font-size:0.8rem;color:#c3d6ee;line-height:1.35;max-height:2.7em;overflow:hidden}
+.list-compact .conn-card-badges{padding:0 0.7rem 0.5rem;display:flex;gap:0.22rem;flex-wrap:wrap}
+.list-compact .conn-card-detail{display:none;padding:0.55rem 0.7rem;border-top:1px solid #1e446f;background:#0b2a4f}
+.list-compact .conn-card.open .conn-card-detail{display:block}
+.tabs{display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem}
+.tab{padding:0.5rem 1rem;background:#16213e;border-radius:8px;color:#eee;text-decoration:none}
+.tab.active{background:#e94560}
+.view-switch{display:flex;gap:0.5rem;margin-bottom:1rem}
+.view-btn{padding:0.4rem 0.8rem;background:#0f3460;border:none;border-radius:8px;color:#ddd;cursor:pointer}
+.view-btn.active{background:#e94560;color:#fff}
+.view-panel{display:none}
+.view-panel.active{display:block}
+.graph-wrap{position:relative;height:720px;background:#0f3460;border-radius:10px;overflow:hidden;cursor:grab;touch-action:none}
+.graph-wrap:active{cursor:grabbing}
+.graph-panzoom{position:absolute;inset:0;will-change:transform}
+.graph-panzoom{transform-origin:0 0}
+.graph-svg{position:absolute;inset:0;width:100%;height:100%;shape-rendering:geometricPrecision}
+.graph-svg.force-quality{shape-rendering:optimizeQuality}
+.graph-panzoom.force-quality{backface-visibility:hidden}
+.graph-node.draggable{cursor:grab}
+.graph-node.draggable:active{cursor:grabbing}
+.tone-legend{display:flex;flex-wrap:wrap;gap:0.5rem 1rem;margin-top:0.5rem;font-size:0.76rem;color:#9db4d3;align-items:center}
+.tone-legend-title{font-weight:600;color:#b4c8e0;margin-right:0.25rem}
+.tone-legend-item{display:flex;align-items:center;gap:0.35rem}
+.tone-legend-swatch{width:10px;height:3px;border-radius:1px}
+.graph-node{position:absolute;transform:translate(-50%,-50%);text-align:center;max-width:120px}
+.graph-node.clickable{cursor:pointer}
+.graph-node.is-focused .graph-label{color:#e8f4ff;font-weight:700}
+.graph-node.is-muted{opacity:0.3}
+.graph-avatar-shell{position:relative;width:44px;height:44px;display:inline-block}
+.graph-avatar{position:absolute;inset:0;width:100%;height:100%;border-radius:50%;object-fit:cover;border:2px solid #e94560;background:#16213e;box-sizing:border-box;display:block}
+.graph-avatar-fallback{position:absolute;inset:0;width:100%;height:100%;border-radius:50%;border:2px solid #e94560;background:#1a2a4a;color:#fff;display:none;align-items:center;justify-content:center;font-weight:700;font-size:0.9rem;box-sizing:border-box}
+.graph-node.is-focused .graph-avatar,.graph-node.is-focused .graph-avatar-fallback{border-color:#4ade80;box-shadow:0 0 0 2px rgba(74,222,128,0.25)}
+.graph-label{font-size:0.75rem;color:#ddd;line-height:1.1;margin-top:0.25rem;word-break:break-word}
+.graph-meta{font-size:0.85rem;color:#888;margin-bottom:0.75rem}
+.graph-focus-bar{display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;margin-bottom:0.6rem}
+.graph-focus-note{font-size:0.82rem;color:#9bb0cf}
+.graph-focus-insight{margin-bottom:0.7rem;background:#0d2d53;border:1px solid #275789;border-radius:10px;color:#dbe8ff;display:none;overflow:hidden}
+.fi-collapsible{display:block}
+.fi-collapsible summary{display:flex;align-items:center;gap:0.4rem;padding:0.5rem 0.65rem;cursor:pointer;font-weight:700;font-size:0.88rem;color:#eef6ff;background:transparent;list-style:none;user-select:none}
+.fi-collapsible summary::-webkit-details-marker{display:none}
+.fi-collapsible summary::before{content:'';display:inline-block;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid #9bb0cf;transition:transform .2s}
+.fi-collapsible[open] summary::before{transform:rotate(180deg)}
+.fi-collapsible .fi-body{padding:0 0.65rem 0.6rem 0.65rem}
+.fi-title{font-size:0.88rem;font-weight:700;color:#eef6ff}
+.fi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:0.35rem;margin-bottom:0.4rem}
+.fi-box{background:#11345c;border:1px solid #2b5f95;border-radius:6px;padding:0.32rem 0.4rem}
+.fi-k{font-size:0.68rem;color:#9fb9da}
+.fi-v{font-size:0.84rem;color:#e8f2ff;font-weight:700}
+.fi-row{display:flex;gap:0.28rem;flex-wrap:wrap;align-items:center;margin-bottom:0.35rem}
+.fi-chip{font-size:0.7rem;padding:0.15rem 0.38rem;border-radius:999px;background:#1a3b65;color:#d5e8ff}
+.fi-chip.alert{background:#5a1f2b;color:#ffd6dc}
+.fi-chip.good{background:#1f4d3c;color:#d2f7e4}
+.fi-links{display:grid;gap:0.35rem}
+.fi-link{background:#0f2f56;border:1px solid #204e7d;border-radius:6px;padding:0.35rem 0.45rem}
+.fi-link-top{font-size:0.8rem;color:#e6f0ff;margin-bottom:0.08rem}
+.fi-link-meta{font-size:0.72rem;color:#aac0dd;line-height:1.3}
+.fi-link-sum{font-size:0.78rem;color:#d2e1f7;margin-top:0.2rem;line-height:1.4;cursor:pointer}
+.fi-link-sum summary{list-style:none;cursor:pointer;font-size:0.78rem;color:#b8d0f0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-overflow:ellipsis}
+.fi-link-sum summary::-webkit-details-marker{display:none}
+.fi-link-sum-full{margin-top:0.25rem;font-size:0.78rem;color:#c3d7f4;max-height:7rem;overflow-y:auto;line-height:1.45}
+.top-connectors{display:flex;flex-wrap:wrap;gap:0.45rem;margin-bottom:0.8rem}
+.graph-settings{display:flex;flex-wrap:wrap;gap:0.7rem;align-items:end;margin-bottom:1rem;background:#112544;padding:0.75rem;border-radius:10px}
+.graph-settings label{font-size:0.8rem;color:#9bb0cf;display:flex;flex-direction:column;gap:0.25rem}
+.graph-settings .check{flex-direction:row;align-items:center;gap:0.4rem}
+.graph-settings input{background:#0f3460;border:1px solid #1a3b65;color:#e6eefb;padding:0.35rem 0.5rem;border-radius:7px}
+.hint-wrap{position:relative;display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:50%;background:#1a3b65;color:#dce9ff;font-size:0.72rem;font-weight:700;cursor:help}
+.hint-pop{position:absolute;left:0;top:22px;z-index:10;min-width:220px;max-width:320px;padding:0.5rem 0.6rem;border-radius:8px;background:#0b2a4f;border:1px solid #275789;color:#dbe7ff;font-size:0.78rem;line-height:1.35;opacity:0;visibility:hidden;transform:translateY(-4px);transition:opacity .16s ease,transform .16s ease}
+.hint-wrap:hover .hint-pop,.hint-wrap:focus-within .hint-pop{opacity:1;visibility:visible;transform:translateY(0)}
+.metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:0.6rem;margin-bottom:0.75rem}
+.metric-box{background:#0f3460;border:1px solid #1e446f;border-radius:8px;padding:0.55rem 0.65rem}
+.metric-box .k{font-size:0.76rem;color:#9db4d3}
+.metric-box .v{font-size:1.1rem;color:#e6f0ff;font-weight:700}
+.tone-bars{display:grid;gap:0.45rem;margin-bottom:0.75rem}
+.tone-row{display:grid;grid-template-columns:120px 1fr 46px;gap:0.45rem;align-items:center;font-size:0.82rem;color:#b9cbe3}
+.tone-track{height:9px;background:#0c2b50;border-radius:999px;overflow:hidden}
+.tone-fill{height:100%;background:#4ade80}
+.topic-list{display:flex;flex-wrap:wrap;gap:0.45rem}
+.topic-chip{padding:0.28rem 0.55rem;border-radius:999px;background:#143760;border:1px solid #2a568a;color:#d6e7ff;font-size:0.8rem}
+.topic-chip-link{text-decoration:none}
+.topic-chip.active{background:#2d5b91;border-color:#7eb4ff;color:#fff;font-weight:700}
+.mini-list{display:grid;gap:0.45rem}
+.mini-item{padding:0.5rem 0.6rem;background:#0f3460;border:1px solid #234b78;border-radius:8px;font-size:0.84rem;color:#d6e6fb}
+.layout-shell{display:block}
+.side-toggle{position:fixed;right:14px;top:14px;z-index:40}
+.side-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.35);z-index:34;display:none}
+.side-backdrop.open{display:block}
+.side-panel{position:fixed;right:-380px;top:0;height:100%;width:360px;max-width:92vw;background:#0f1f3a;border-left:1px solid #1f446e;z-index:35;padding:1rem;overflow:auto;transition:right .22s ease}
+.side-panel.open{right:0}
+.side-close{float:right;background:#17345b;border:1px solid #2d5b91;color:#dbe8ff;border-radius:6px;padding:0.2rem 0.45rem;cursor:pointer}
+@media (max-width: 920px){
+  .connection{grid-template-columns:1fr}
+  .list-controls input,.list-controls select{min-width:140px}
+}
+</style>
+{% endblock %}
+{% block body %}
+<button class="btn btn-sm side-toggle" type="button" id="btn-side-open" onclick="toggleSidePanel()" style="background:var(--bg-secondary);">⚙ Панель</button>
+<div class="side-backdrop" id="side-backdrop" onclick="closeSidePanel()"></div>
+<aside class="side-panel" id="side-panel">
+  <button class="side-close" type="button" id="btn-side-close" onclick="closeSidePanel()">✕</button>
+  <h2 style="margin-top:0;">Настройки и фильтры</h2>
+  <p style="font-size:0.82rem;color:#9fb6d5;">Панель не мешает обзору графа.</p>
+  <div class="graph-settings">
+  <label class="check"><input type="checkbox" id="sg-advanced" {% if advanced_enabled %}checked{% endif %}> продвинутые инсайты
+    <span class="hint-wrap" tabindex="0">?<span class="hint-pop">Включает расширенные метрики и UI: тон, темы, confidence, алерты, фильтры и историю связи.</span></span>
+  </label>
+  <label>Layout графа
+    <select id="sg-layout">
+      <option value="circular" {% if not ranked_layout_enabled %}selected{% endif %} data-desc="Участники расположены по окружности. Простой и предсказуемый вид, удобен для небольших графов.">круговой</option>
+      <option value="ranked" {% if ranked_layout_enabled %}selected{% endif %} data-desc="Участники сгруппированы по числу связей: самые «связные» — в верхних рядах. Хорошо показывает иерархию активности.">ранжированный</option>
+      <option value="force" data-desc="Физическая симуляция: узлы отталкиваются, связанные — притягиваются. Связанные участники оказываются ближе, кластеры видны наглядно.">силовой (force-directed)</option>
+    </select>
+    <span class="hint-wrap" tabindex="0">?<span class="hint-pop" id="layout-hint-text">Выберите тип раскладки узлов.</span></span>
+  </label>
+  <p class="layout-desc" id="layout-desc" style="font-size:0.78rem;color:#8ea5c4;margin-top:0.25rem;line-height:1.35;"></p>
+  <label class="check"><input type="checkbox" id="sg-live" {% if realtime_enabled %}checked{% endif %}> live-обновление в фоне
+    <span class="hint-wrap" tabindex="0">?<span class="hint-pop">Фоновая задача периодически пересчитывает связи без нажатия кнопки обработки.</span></span>
+  </label>
+  <label class="check"><input type="checkbox" id="sg-forecast" {% if forecast_enabled %}checked{% endif %}> прогноз эскалации
+    <span class="hint-wrap" tabindex="0">?<span class="hint-pop">Показывает список рисковых пар только в админке, без влияния на ответы бота.</span></span>
+  </label>
+  <label class="check"><input type="checkbox" id="sg-roles" {% if roles_enabled %}checked{% endif %}> роли участников
+    <span class="hint-wrap" tabindex="0">?<span class="hint-pop">Добавляет карточку ролей (связующий/эксперт/медиатор/провокатор).</span></span>
+  </label>
+  <label class="check"><input type="checkbox" id="sg-recommender" {% if recommender_enabled %}checked{% endif %}> рекомендатор тем
+    <span class="hint-wrap" tabindex="0">?<span class="hint-pop">Включает ручную генерацию идеи поста/формата и отправку в чат из админки.</span></span>
+  </label>
+  <label>интервал live (сек)
+    <input type="number" id="sg-live-interval" min="15" max="1800" value="{{ realtime_interval_sec }}">
+    <span class="hint-wrap" tabindex="0">?<span class="hint-pop">Пауза между фоновыми обновлениями дерева связей.</span></span>
+  </label>
+  <label>мин. новых реплик
+    <input type="number" id="sg-live-min-new" min="1" max="20" value="{{ realtime_min_new }}">
+    <span class="hint-wrap" tabindex="0">?<span class="hint-pop">Сколько новых сообщений между парой нужно для live-обновления связи.</span></span>
+  </label>
+  <button type="button" class="btn btn-sm" id="btn-save-graph-settings">Сохранить настройки графа</button>
+  <span id="graph-settings-result" style="font-size:0.82rem;color:#9bb0cf;"></span>
+  </div>
+  {% if advanced_enabled %}
+  <form method="get" action="{{ url_for('social_graph') }}" class="filters">
+  {% if current_chat %}<input type="hidden" name="chat" value="{{ current_chat }}">{% endif %}
+  {% if topic_filter %}<input type="hidden" name="topic" value="{{ topic_filter }}">{% endif %}
+  <label>Период
+  <select name="period">
+    <option value="24h" {% if period=='24h' %}selected{% endif %}>24ч</option>
+    <option value="7d" {% if period=='7d' %}selected{% endif %}>7д</option>
+    <option value="30d" {% if period=='30d' %}selected{% endif %}>30д</option>
+    <option value="all" {% if period=='all' %}selected{% endif %}>Всё</option>
+  </select>
+  </label>
+  <label>Мин. вес связи
+  <input type="number" name="min_weight" min="0" max="9999" value="{{ min_weight }}">
+  </label>
+  <label class="check"><input type="checkbox" name="only_new" value="1" {% if only_new %}checked{% endif %}> только новые</label>
+  <label class="check"><input type="checkbox" name="only_rising" value="1" {% if only_rising %}checked{% endif %}> только растущие</label>
+  <label class="check"><input type="checkbox" name="only_alerts" value="1" {% if only_alerts %}checked{% endif %}> только с алертами</label>
+  <button type="submit" class="btn btn-sm">Применить фильтры</button>
+  </form>
+  {% endif %}
+</aside>
+<div class="header">
+<h1>Дерево связей</h1>
+<div style="display:flex;gap:0.5rem;align-items:center;">
+<a href="{{ url_for('admin') }}" class="btn btn-secondary">← Назад</a>
+<button type="button" class="btn btn-sm" id="btn-process" style="background:#0f3460;">Обработать накопленные диалоги</button>
+<span id="process-result" style="font-size:0.85rem;margin-left:0.5rem;"></span>
+</div>
+</div>
+<p style="color:#888;font-size:0.9rem;margin-bottom:1rem;">
+Связи строятся по reply-to: кто кому отвечает. Раз в день (или по кнопке) диалоги суммируются через ИИ.</p>
+<div class="tabs">
+<a href="{{ url_for('social_graph') }}" class="tab {% if not current_chat %}active{% endif %}">Все чаты</a>
+{% for c in chats %}
+<a href="{{ url_for('social_graph', chat=c['chat_id']) }}" class="tab {% if current_chat == c['chat_id']|string %}active{% endif %}">{{ (c['title'] or c['chat_id'])[:25] }}{% if (c['title'] or c['chat_id'])|length > 25 %}…{% endif %}</a>
+{% endfor %}
+</div>
+{% if active_filters %}
+<div class="card" style="padding:0.6rem 0.8rem;">
+  <span style="font-size:0.84rem;color:#9bb0cf;">Активные фильтры:</span>
+  {% for flt in active_filters %}<span class="badge">{{ flt }}</span>{% endfor %}
+  <a class="btn btn-sm" style="margin-left:0.5rem;background:#0f3460;" href="{{ reset_filters_href }}">Сбросить фильтры</a>
+</div>
+{% endif %}
+{% if recommender_enabled %}
+<details class="card">
+<summary style="cursor:pointer;font-weight:700;">Рекомендатор темы/формата (ручной)</summary>
+<h2>Рекомендатор темы/формата (ручной)</h2>
+<div style="display:flex;gap:0.6rem;flex-wrap:wrap;align-items:end;">
+  <label style="font-size:0.82rem;color:#9bb0cf;">chat_id
+    <input type="number" id="topic-chat-id" value="{{ current_chat if current_chat else '' }}" placeholder="-100..." style="margin-left:0.4rem;">
+  </label>
+  <button class="btn btn-sm" type="button" id="btn-topic-generate">Сгенерировать</button>
+  <button class="btn btn-sm" type="button" id="btn-topic-send" style="background:#0f3460;">Отправить в чат</button>
+  <span id="topic-status" style="font-size:0.82rem;color:#9bb0cf;"></span>
+</div>
+<div id="topic-recommendation" style="margin-top:0.6rem;padding:0.65rem;background:#0f3460;border:1px solid #224978;border-radius:8px;white-space:pre-wrap;"></div>
+</details>
+{% endif %}
+{% if forecast_enabled %}
+<details class="card">
+<summary style="cursor:pointer;font-weight:700;">Прогноз эскалации конфликтов</summary>
+<h2>Прогноз эскалации конфликтов</h2>
+{% if conflict_forecast %}
+<div class="mini-list">
+{% for f in conflict_forecast %}
+<div class="mini-item">
+  <a href="{{ f.href_a }}">{{ f.name_a }}</a> ↔ <a href="{{ f.href_b }}">{{ f.name_b }}</a> · риск {{ f.risk }} · тон {{ f.tone_label }} · динамика {{ f.trend_delta }} · 24ч {{ f.message_count_24h }} · <a href="{{ f.href_pair }}">фокус на пару</a>
+</div>
+{% endfor %}
+</div>
+{% else %}
+<p style="color:#8fa8c9;font-size:0.85rem;">Сейчас явных рисков эскалации не найдено.</p>
+{% endif %}
+</details>
+{% endif %}
+{% if roles_enabled %}
+<details class="card">
+<summary style="cursor:pointer;font-weight:700;">Роли участников</summary>
+<h2>Роли участников</h2>
+{% if user_roles %}
+<div class="mini-list">
+{% for r in user_roles %}
+<div class="mini-item"><a href="{{ r.href_user }}">{{ r.name }}</a> · {{ r.role_label }} · степень {{ r.degree }}{% if r.top_topics_labels %} · темы: {{ r.top_topics_labels|join(', ') }}{% endif %} · <a href="{{ r.href_focus }}">показать связи</a></div>
+{% endfor %}
+</div>
+{% else %}
+<p style="color:#8fa8c9;font-size:0.85rem;">Недостаточно данных для ролей.</p>
+{% endif %}
+</details>
+{% endif %}
+<details class="card" open>
+<summary style="cursor:pointer;font-weight:700;">Метрики и темы</summary>
+<h2>Метрики и темы</h2>
+<div class="metric-grid">
+  <div class="metric-box"><div class="k">Связей</div><div class="v">{{ graph_metrics.connections }}</div></div>
+  <div class="metric-box"><div class="k">Участников</div><div class="v">{{ graph_metrics.users }}</div></div>
+  <div class="metric-box"><div class="k">Сообщений в периоде</div><div class="v">{{ graph_metrics.period_messages }}</div></div>
+  <div class="metric-box"><div class="k">Активных 24ч</div><div class="v">{{ graph_metrics.active_24h }}</div></div>
+  <div class="metric-box"><div class="k">Алертов</div><div class="v">{{ graph_metrics.alerts }}</div></div>
+  <div class="metric-box"><div class="k">Средний confidence</div><div class="v">{{ graph_metrics.avg_confidence }}</div></div>
+</div>
+{% if tone_bars %}
+<div class="tone-bars">
+  {% for t in tone_bars %}
+  <div class="tone-row">
+    <div>{{ t.tone }} · {{ t.count }}</div>
+    <div class="tone-track"><div class="tone-fill" style="width:{{ t.pct }}%"></div></div>
+    <div>{{ t.pct }}%</div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+<div class="topic-list">
+  {% if top_topics %}
+    {% for item in top_topics %}
+    <a class="topic-chip-link" href="{{ item.href }}">
+      <span class="topic-chip {% if topic_filter == item.topic %}active{% endif %}">{{ item.topic_label }} · {{ item.count }}</span>
+    </a>
+    {% endfor %}
+    {% if topic_filter %}
+    <a class="topic-chip-link" href="{{ topic_clear_href }}">
+      <span class="topic-chip">сбросить тему</span>
+    </a>
+    {% endif %}
+  {% else %}
+    <span style="font-size:0.84rem;color:#8fa8c9;">Пока недостаточно данных по темам.</span>
+  {% endif %}
+</div>
+</div>
+</details>
+<div class="view-switch">
+<button type="button" class="view-btn active" data-view="graph">Граф (аватарки + линии)</button>
+<button type="button" class="view-btn" data-view="list">Список связей</button>
+</div>
+{% if connections %}
+<div class="card view-panel active" id="panel-graph">
+<h2>Граф связей</h2>
+<div class="graph-meta">Участники: {{ graph_nodes|length }} · связи: {{ graph_edges|length }}</div>
+<div class="graph-focus-bar">
+  <span class="graph-focus-note" id="graph-focus-note">Общий вид. Нажми на аватарку для фокуса по участнику.</span>
+  <button type="button" class="btn btn-sm" id="btn-graph-focus-reset" style="background:#0f3460;" disabled>Сбросить фокус</button>
+</div>
+<div class="graph-focus-insight" id="graph-focus-insight"></div>
+{% if advanced_enabled and top_connectors %}
+<div class="top-connectors">
+  {% for p in top_connectors %}
+  <span class="badge good">{{ p.label }} · {{ p.degree }}</span>
+  {% endfor %}
+</div>
+{% endif %}
+<div class="graph-wrap" id="graph-wrap">
+<div class="graph-panzoom" id="graph-panzoom">
+<svg class="graph-svg" id="graph-svg"></svg>
+</div>
+</div>
+<div class="tone-legend" id="tone-legend">
+  <span class="tone-legend-title">Тон связей:</span>
+  <span class="tone-legend-item" title="Дружелюбный, поддерживающий диалог"><span class="tone-legend-swatch" style="background:#4ade80"></span> дружелюбный</span>
+  <span class="tone-legend-item" title="Нейтральный обмен"><span class="tone-legend-swatch" style="background:#6b7280"></span> нейтральный</span>
+  <span class="tone-legend-item" title="Споры, конфликты, напряжённость"><span class="tone-legend-swatch" style="background:#f97316"></span> конфликтный</span>
+  <span class="tone-legend-item" title="Грубости, оскорбления"><span class="tone-legend-swatch" style="background:#ef4444"></span> токсичный</span>
+</div>
+</div>
+<div class="card view-panel" id="panel-list">
+<h2>Связи ({{ connections|length }})</h2>
+<div class="list-toolbar">
+  <div class="list-controls">
+    <label>Поиск по участнику/ID
+      <input type="text" id="conn-search" placeholder="имя или ID">
+    </label>
+    <label>Сортировка
+      <select id="conn-sort">
+        <option value="activity">по активности</option>
+        <option value="trend">по тренду</option>
+        <option value="freshness">по свежести</option>
+        <option value="confidence">по уверенности</option>
+        <option value="risk">по риску</option>
+        <option value="alpha">по алфавиту</option>
+      </select>
+    </label>
+    <div class="list-mode-switch">
+      <button type="button" class="list-mode-btn active" data-card-mode="detailed">Подробно</button>
+      <button type="button" class="list-mode-btn" data-card-mode="compact">Компактно</button>
+    </div>
+  </div>
+  <div class="list-note">Показано: <strong id="connections-visible-count">{{ connections|length }}</strong></div>
+</div>
+<div id="connections-list">
+{% for conn in connections %}
+<div class="connection"
+  data-search="{{ conn.search_blob }}"
+  data-sort-activity="{{ conn.sort_activity }}"
+  data-sort-trend="{{ conn.sort_trend }}"
+  data-sort-freshness="{{ conn.sort_freshness }}"
+  data-sort-confidence="{{ conn.sort_confidence }}"
+  data-sort-risk="{{ conn.sort_risk }}"
+  data-sort-alpha="{{ conn.sort_alpha }}">
+
+<div class="conn-tile">
+<div class="conn-card">
+  <div class="conn-card-head">
+    <div class="connection-users">{{ conn.name_a }} ↔ {{ conn.name_b }}</div>
+  <div class="conn-card-metrics">
+      <span>{{ period }}: <b>{{ conn.weight_in_period }}</b></span>
+      <span>7д: <b>{{ conn.message_count_7d }}</b></span>
+      <span>{{ conn.tone_label }}</span>
+      {% if conn.pair_context_label %}<span class="context-chip">{{ conn.pair_context_label }}</span>{% endif %}
+      {% if conn.connection_cooling %}<span class="cooling-chip" title="охлаждение связи">↓</span>{% endif %}
+      {% if conn.tone_trend_label and conn.tone_trend != 'stable' %}<span class="tone-trend-chip {{ conn.tone_trend }}">{{ conn.tone_trend_label }}</span>{% endif %}
+      {% if conn.alert_flags_label %}<span style="color:#ffd6dc;">{{ conn.alert_flags_label[0] }}</span>{% endif %}
+  </div>
+  </div>
+  <div class="conn-card-sum">{{ conn.summary_preview or '—' }}</div>
+  {% if advanced_enabled %}
+  <div class="conn-card-badges">
+    {% for t in conn.topics_label %}<span class="badge good">{{ t }}</span>{% endfor %}
+    {% if conn.confidence_pct %}<span class="badge dim">{{ conn.confidence_pct }}%</span>{% endif %}
+  </div>
+  {% endif %}
+  <div class="conn-card-detail">
+    <div class="connection-meta">ID: {{ conn.user_a }} / {{ conn.user_b }} · всего: {{ conn.message_count_total }} · тренд: {{ conn.trend_delta }}</div>
+    <div class="activity-strip">
+      <div class="mini-stat"><span class="k">24ч</span><span class="v">{{ conn.message_count_24h }}</span></div>
+      <div class="mini-stat"><span class="k">7д</span><span class="v">{{ conn.message_count_7d }}</span></div>
+      <div class="mini-stat"><span class="k">30д</span><span class="v">{{ conn.message_count_30d }}</span></div>
+    </div>
+    <div class="freshness">Первая: {{ conn.first_seen_label }} · Последняя: {{ conn.last_seen_label }}{% if conn.days_since_last is not none %} · {{ conn.days_since_last }} дн. назад{% endif %}</div>
+    {% if advanced_enabled %}
+    <div class="badges" style="margin-top:0.35rem;">
+      <span class="badge">{{ conn.tone_label }}</span>
+      {% if conn.pair_context_label %}<span class="badge dim">{{ conn.pair_context_label }}</span>{% endif %}
+      {% if conn.connection_cooling %}<span class="badge dim">охлаждение</span>{% endif %}
+      {% if conn.tone_trend_label and conn.tone_trend != 'stable' %}<span class="badge {% if conn.tone_trend == 'improving' %}good{% else %}alert{% endif %}">{{ conn.tone_trend_label }}</span>{% endif %}
+      <span class="badge dim">confidence {{ conn.confidence_pct }}% · {{ conn.confidence_label }}</span>
+      {% for fl in conn.alert_flags_label %}<span class="badge alert">{{ fl }}</span>{% endfor %}
+    </div>
+    {% endif %}
+    <div class="connection-summary" style="margin-top:0.4rem;">{{ conn.summary_latest_full or conn.summary or '—' }}</div>
+  </div>
+</div>
+</div>
+
+<div class="conn-full">
+  <div>
+    <div class="connection-users">{{ conn.name_a }} ↔ {{ conn.name_b }}</div>
+    <div class="connection-meta">ID: {{ conn.user_a }} / {{ conn.user_b }} · вес({{ period }}): {{ conn.weight_in_period }} · всего: {{ conn.message_count_total }} · тренд: {{ conn.trend_delta }} · обновлено: {{ conn.last_updated }}</div>
+    <div class="activity-strip">
+      <div class="mini-stat"><span class="k">24ч</span><span class="v">{{ conn.message_count_24h }}</span></div>
+      <div class="mini-stat"><span class="k">7д</span><span class="v">{{ conn.message_count_7d }}</span></div>
+      <div class="mini-stat"><span class="k">30д</span><span class="v">{{ conn.message_count_30d }}</span></div>
+    </div>
+    <div class="freshness">Первая: {{ conn.first_seen_label }} · Последняя: {{ conn.last_seen_label }}{% if conn.days_since_last is not none %} · {{ conn.days_since_last }} дн. назад{% endif %}</div>
+    {% if advanced_enabled %}
+    <div class="badges">
+      <span class="badge">{{ conn.tone_label }}</span>
+      {% if conn.pair_context_label %}<span class="badge dim">{{ conn.pair_context_label }}</span>{% endif %}
+      <span class="badge dim">confidence {{ conn.confidence_pct }}% · {{ conn.confidence_label }}</span>
+      {% for t in conn.topics_label %}<span class="badge good">{{ t }}</span>{% endfor %}
+      {% for fl in conn.alert_flags_label %}<span class="badge alert">{{ fl }}</span>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  <div>
+    <div class="connection-summary">{{ conn.summary_preview or conn.summary_latest_full or conn.summary or '—' }}</div>
+    {% if conn.summary_has_more or conn.summary_latest_full %}
+    <details class="summary-more"><summary>Показать полностью</summary>
+    <div class="connection-summary connection-summary-full">{{ conn.summary_latest_full or conn.summary }}</div></details>
+    {% endif %}
+    {% if advanced_enabled and conn.history_preview %}
+    <details class="summary-more"><summary>История по датам</summary>
+    <div class="history">
+    {% for h in conn.history_preview %}
+    <div class="history-item"><strong>{{ h.date }}{% if h.source == 'live' %} live{% endif %}</strong>{% if h.message_count %} · {{ h.message_count }} сообщ.{% endif %}: {{ h.summary }}</div>
+    {% endfor %}
+    </div></details>
+    {% endif %}
+  </div>
+</div>
+
+</div>
+{% endfor %}
+</div>
+<div id="list-empty-client" class="empty-state" style="display:none;">Ничего не найдено. Попробуй очистить поиск или изменить сортировку.</div>
+</div>
+{% else %}
+<div class="card view-panel active" id="panel-graph">
+{% if empty_state_kind == 'filtered_out' %}
+<p style="color:#9db4d3;">По текущим фильтрам ничего не найдено. Связи есть, но скрыты условиями отбора.</p>
+<a class="btn btn-sm" href="{{ reset_filters_href }}" style="background:#0f3460;">Сбросить фильтры</a>
+{% else %}
+<p style="color:#888;">Граф пуст: пока нет связей. Когда пользователи отвечают друг другу (reply-to), появятся узлы и линии.</p>
+{% endif %}
+</div>
+<div class="card view-panel" id="panel-list">
+{% if empty_state_kind == 'filtered_out' %}
+<div class="empty-state">По текущим фильтрам список пуст (всего связей в чате: {{ total_connections_before_filter }}). <a href="{{ reset_filters_href }}">Сбросить фильтры</a>.</div>
+{% else %}
+<p style="color:#888;">Связей пока нет. Диалоги накапливаются по мере общения в чате (reply-to). Обработка — раз в 4 часа или по кнопке.</p>
+{% endif %}
+</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+function openSidePanel(){
+  var p=document.getElementById('side-panel');
+  var b=document.getElementById('side-backdrop');
+  if(p){p.classList.add('open');}
+  if(b){b.classList.add('open');}
+}
+function closeSidePanel(){
+  var p=document.getElementById('side-panel');
+  var b=document.getElementById('side-backdrop');
+  if(p){p.classList.remove('open');}
+  if(b){b.classList.remove('open');}
+}
+function toggleSidePanel(){
+  var p=document.getElementById('side-panel');
+  if(!p){return;}
+  if(p.classList.contains('open')){closeSidePanel();}else{openSidePanel();}
+}
+var graphNodes = {{ graph_nodes|tojson }};
+var graphEdges = {{ graph_edges|tojson }};
+var graphFocusRows = {{ graph_focus_rows|tojson }};
+var rankedLayoutEnabled = {{ ranked_layout_enabled|tojson }};
+var graphLayout = (function(){ try{ var s=localStorage.getItem('sg_layout'); if(s==='force'||s==='ranked'||s==='circular')return s; }catch(_e){} return rankedLayoutEnabled?'ranked':'circular'; })();
+var graphFocusUserId = null;
+var graphNodeNameById = {};
+graphNodes.forEach(function(n){graphNodeNameById[n.id]=n.label;});
+
+function _buildFocusInsightText(uid){
+  var rows = graphFocusRows.filter(function(r){return r.user_a === uid || r.user_b === uid;});
+  if(!rows.length){return null;}
+  rows.sort(function(a,b){return (b.weight_in_period||0) - (a.weight_in_period||0);});
+  var sumPeriod = 0, sum24=0, sum7=0, sum30=0, sumConf=0, alerts=0;
+  var tones = {}, topics = {}, rising=0, stale=0;
+  rows.forEach(function(r){
+    sumPeriod += Number(r.weight_in_period || 0);
+    sum24 += Number(r.message_count_24h || 0);
+    sum7 += Number(r.message_count_7d || 0);
+    sum30 += Number(r.message_count_30d || 0);
+    sumConf += Number(r.confidence_pct || 0);
+    var t = String(r.tone_label || 'нейтральный');
+    tones[t] = (tones[t] || 0) + 1;
+    (r.topics_label || []).forEach(function(tp){topics[tp] = (topics[tp] || 0) + 1;});
+    if((r.alert_flags_label || []).length){alerts += 1;}
+    if(Number(r.trend_delta || 0) > 0.4){rising += 1;}
+    if(Number(r.days_since_last || 0) >= 7){stale += 1;}
+  });
+  var dominantTone = Object.keys(tones).sort(function(a,b){return tones[b]-tones[a];})[0] || 'нейтральный';
+  var topTopics = Object.keys(topics).sort(function(a,b){return topics[b]-topics[a];}).slice(0, 4);
+  var avgConf = Math.round(sumConf / Math.max(1, rows.length));
+  var risk = alerts >= 2 ? 'высокий' : (alerts === 1 || rising >= 2 ? 'средний' : 'низкий');
+  return {
+    rows: rows,
+    sumPeriod: sumPeriod,
+    sum24: sum24,
+    sum7: sum7,
+    sum30: sum30,
+    avgConf: avgConf,
+    risk: risk,
+    dominantTone: dominantTone,
+    topTopics: topTopics,
+    stale: stale
+  };
+}
+
+function _escapeHtml(s){
+  return String(s || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('\"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function _renderFocusInsight(uid){
+  var insight = document.getElementById('graph-focus-insight');
+  if(!insight){return;}
+  var data = _buildFocusInsightText(uid);
+  if(!data){
+    insight.style.display = 'block';
+    insight.innerHTML = '<details class=\"fi-collapsible\"><summary><span class=\"fi-title\">Недостаточно данных</span></summary><div class=\"fi-body\"><p style=\"font-size:0.82rem;color:#9bb0cf;margin:0;\">Нет связей для анализа этого участника.</p></div></details>';
+    return;
+  }
+  var userName = _escapeHtml(graphNodeNameById[uid] || uid);
+  var topRows = data.rows.slice(0, 3).map(function(r){
+    var otherName = (r.user_a === uid) ? r.name_b : r.name_a;
+    var topics = (r.topics_label || []).slice(0, 2).join(', ');
+    var alerts = (r.alert_flags_label || []).map(function(a){return '<span class=\"fi-chip alert\">'+_escapeHtml(a)+'</span>';}).join(' ');
+    var fullSum = String(r.summary_full || r.summary_preview || '').trim();
+    var shortSum = fullSum.length > 180 ? (fullSum.slice(0, 180).trim() + '…') : fullSum;
+    return [
+      '<div class=\"fi-link\">',
+      '<div class=\"fi-link-top\"><strong>'+_escapeHtml(otherName)+'</strong></div>',
+      '<div class=\"fi-link-meta\">вес('+_escapeHtml('{{ period }}')+')='+Number(r.weight_in_period||0)+' · 24ч='+Number(r.message_count_24h||0)+' · 7д='+Number(r.message_count_7d||0)+' · 30д='+Number(r.message_count_30d||0)+' · '+_escapeHtml(r.tone_label||'нейтральный')+(topics ? ' · '+_escapeHtml(topics) : '')+'</div>',
+      alerts ? '<div class=\"fi-row\" style=\"margin-top:0.15rem;\">'+alerts+'</div>' : '',
+      (fullSum ? '<details class=\"fi-link-sum\"><summary>'+_escapeHtml(shortSum || 'Показать подробности диалога')+'</summary><div class=\"fi-link-sum-full\">'+_escapeHtml(fullSum)+'</div></details>' : ''),
+      '</div>'
+    ].join('');
+  }).join('');
+
+  var topicChips = data.topTopics.length
+    ? data.topTopics.map(function(t){return '<span class=\"fi-chip good\">'+_escapeHtml(t)+'</span>';}).join(' ')
+    : '<span class=\"fi-chip\">тем пока мало</span>';
+
+  var body = [
+    '<div class=\"fi-grid\">',
+    '<div class=\"fi-box\"><div class=\"fi-k\">Связей</div><div class=\"fi-v\">'+data.rows.length+'</div></div>',
+    '<div class=\"fi-box\"><div class=\"fi-k\">Активность</div><div class=\"fi-v\">'+data.sumPeriod+'</div></div>',
+    '<div class=\"fi-box\"><div class=\"fi-k\">24ч / 7д / 30д</div><div class=\"fi-v\">'+data.sum24+' / '+data.sum7+' / '+data.sum30+'</div></div>',
+    '<div class=\"fi-box\"><div class=\"fi-k\">Confidence</div><div class=\"fi-v\">'+data.avgConf+'%</div></div>',
+    '<div class=\"fi-box\"><div class=\"fi-k\">Тон</div><div class=\"fi-v\">'+_escapeHtml(data.dominantTone)+'</div></div>',
+    '<div class=\"fi-box\"><div class=\"fi-k\">Риск</div><div class=\"fi-v\">'+_escapeHtml(data.risk)+'</div></div>',
+    '</div>',
+    '<div class=\"fi-row\"><span class=\"fi-chip\">неактив. ≥7д: '+data.stale+'</span>'+topicChips+'</div>',
+    '<div class=\"fi-links\">'+topRows+'</div>'
+  ].join('');
+
+  insight.innerHTML = '<details class=\"fi-collapsible\"><summary><span class=\"fi-title\">Анализ связей: '+userName+'</span></summary><div class=\"fi-body\">'+body+'</div></details>';
+  insight.style.display = 'block';
+}
+
+function updateGraphFocusOnly(){
+  var panzoom = document.getElementById('graph-panzoom');
+  if(!panzoom){return;}
+  var focusNeighbors = {};
+  if(graphFocusUserId !== null){
+    graphEdges.forEach(function(e){
+      if(e.source === graphFocusUserId){focusNeighbors[e.target]=true;}
+      if(e.target === graphFocusUserId){focusNeighbors[e.source]=true;}
+    });
+  }
+  panzoom.querySelectorAll('.graph-node').forEach(function(d){
+    var nid = parseInt(d.getAttribute('data-node-id'), 10);
+    if(isNaN(nid)){return;}
+    var isFocused = graphFocusUserId !== null && nid === graphFocusUserId;
+    var isRelated = graphFocusUserId === null || nid === graphFocusUserId || !!focusNeighbors[nid];
+    d.classList.toggle('is-focused', isFocused);
+    d.classList.toggle('is-muted', graphFocusUserId !== null && !isRelated);
+  });
+  if(window.redrawGraphLines){ window.redrawGraphLines(graphCurrentPos); }
+}
+
+function updateGraphFocusUi(){
+  var btn = document.getElementById('btn-graph-focus-reset');
+  var note = document.getElementById('graph-focus-note');
+  var insight = document.getElementById('graph-focus-insight');
+  if(btn){btn.disabled = (graphFocusUserId === null);}
+  if(note){
+    if(graphFocusUserId === null){
+      note.textContent = 'Общий вид. Нажми на аватарку для фокуса по участнику.';
+    }else{
+      note.textContent = 'Фокус: ' + (graphNodeNameById[graphFocusUserId] || graphFocusUserId) + '. Нажми повторно на ту же аватарку или "Сбросить фокус".';
+    }
+  }
+  if(insight){
+    if(graphFocusUserId === null){
+      insight.style.display = 'none';
+      insight.innerHTML = '';
+    }else{
+      _renderFocusInsight(graphFocusUserId);
+    }
+  }
+}
+
+function runForceLayout(nodes, edges, width, height){
+  var n = nodes.length;
+  if(!n){return {};}
+  var cx = width/2, cy = height/2;
+  var pos = {};
+  var vx = {}, vy = {};
+  var radius = Math.min(width, height)/2 - 80;
+  nodes.forEach(function(node, i){
+    var a = (2*Math.PI*i)/n;
+    pos[node.id] = {x: cx + radius*Math.cos(a), y: cy + radius*Math.sin(a)};
+    vx[node.id] = 0; vy[node.id] = 0;
+  });
+  var repulsion = 1200, stiffness = 0.08, damping = 0.85, iterations = 120;
+  var nodeById = {};
+  nodes.forEach(function(node){ nodeById[node.id] = node; });
+  for(var iter = 0; iter < iterations; iter++){
+    var fx = {}, fy = {};
+    nodes.forEach(function(node){ fx[node.id]=0; fy[node.id]=0; });
+    for(var i = 0; i < nodes.length; i++){
+      for(var j = i+1; j < nodes.length; j++){
+        var a = nodes[i], b = nodes[j];
+        var pa = pos[a.id], pb = pos[b.id];
+        var dx = pb.x - pa.x, dy = pb.y - pa.y;
+        var d = Math.sqrt(dx*dx + dy*dy) || 0.1;
+        var f = repulsion / (d*d);
+        var fxVal = (dx/d)*f, fyVal = (dy/d)*f;
+        fx[a.id] = (fx[a.id]||0) - fxVal; fy[a.id] = (fy[a.id]||0) - fyVal;
+        fx[b.id] = (fx[b.id]||0) + fxVal; fy[b.id] = (fy[b.id]||0) + fyVal;
+      }
+    }
+    edges.forEach(function(e){
+      var pa = pos[e.source], pb = pos[e.target];
+      if(!pa || !pb){return;}
+      var dx = pb.x - pa.x, dy = pb.y - pa.y;
+      var d = Math.sqrt(dx*dx + dy*dy) || 0.1;
+      var idealLen = 80;
+      var f = (d - idealLen) * stiffness;
+      var fxVal = (dx/d)*f, fyVal = (dy/d)*f;
+      fx[e.source] = (fx[e.source]||0) + fxVal; fy[e.source] = (fy[e.source]||0) + fyVal;
+      fx[e.target] = (fx[e.target]||0) - fxVal; fy[e.target] = (fy[e.target]||0) - fyVal;
+    });
+    nodes.forEach(function(node){
+      vx[node.id] = (vx[node.id]||0)*damping + (fx[node.id]||0)*0.3;
+      vy[node.id] = (vy[node.id]||0)*damping + (fy[node.id]||0)*0.3;
+      pos[node.id].x += vx[node.id];
+      pos[node.id].y += vy[node.id];
+    });
+  }
+  var minX=1e9, maxX=-1e9, minY=1e9, maxY=-1e9;
+  nodes.forEach(function(node){
+    var p = pos[node.id];
+    if(p.x < minX) minX=p.x; if(p.x > maxX) maxX=p.x;
+    if(p.y < minY) minY=p.y; if(p.y > maxY) maxY=p.y;
+  });
+  var pad = 60;
+  var rangeX = Math.max(1, maxX - minX), rangeY = Math.max(1, maxY - minY);
+  var scale = Math.min((width - 2*pad)/rangeX, (height - 2*pad)/rangeY);
+  var out = {};
+  nodes.forEach(function(node){
+    var p = pos[node.id];
+    out[node.id] = {
+      x: pad + (p.x - minX) * scale,
+      y: pad + (p.y - minY) * scale
+    };
+  });
+  return out;
+}
+var graphCustomPositions = {};
+var graphCurrentPos = {};
+function renderGraph(){
+  var wrap=document.getElementById('graph-wrap');
+  var svg=document.getElementById('graph-svg');
+  if(!wrap || !svg){return;}
+  graphLayout = (layoutSelect && layoutSelect.value) || graphLayout;
+  if(graphLayout === 'force'){ graphCustomPositions = {}; }
+  svg.innerHTML='';
+  var panzoom = document.getElementById('graph-panzoom');
+  if(panzoom){ panzoom.querySelectorAll('.graph-node').forEach(function(n){n.remove();}); }
+  var w=wrap.clientWidth||900, h=wrap.clientHeight||560;
+  var cx=w/2, cy=h/2;
+  var n=graphNodes.length;
+  if(!n){return;}
+  var pos={};
+  var focusNeighbors = {};
+  if(graphFocusUserId !== null){
+    graphEdges.forEach(function(e){
+      if(e.source === graphFocusUserId){focusNeighbors[e.target]=true;}
+      if(e.target === graphFocusUserId){focusNeighbors[e.source]=true;}
+    });
+  }
+  if(graphLayout === 'force'){
+    var forcePos = runForceLayout(graphNodes, graphEdges, w, h);
+    graphNodes.forEach(function(node){ pos[node.id] = forcePos[node.id] || {x:cx,y:cy}; });
+  }else if(graphLayout === 'ranked' || rankedLayoutEnabled){
+    var sorted=[].concat(graphNodes).sort(function(a,b){return (b.degree||0)-(a.degree||0);});
+    var degreeGroups={};
+    sorted.forEach(function(node){var d=(node.degree||0); if(!degreeGroups[d])degreeGroups[d]=[]; degreeGroups[d].push(node);});
+    var degrees=Object.keys(degreeGroups).map(Number).sort(function(a,b){return b-a;});
+    var rows=Math.max(1,degrees.length);
+    var topPad=58, bottomPad=52;
+    var usableH=Math.max(120, h-topPad-bottomPad);
+    degrees.forEach(function(deg, rowIdx){
+      var row=degreeGroups[deg];
+      var y=topPad + (rows===1 ? usableH/2 : (usableH*rowIdx/(rows-1)));
+      var count=row.length;
+      row.forEach(function(node, colIdx){
+        var x = (count===1) ? cx : (45 + (w-90) * (colIdx/(count-1)));
+        pos[node.id]={x:x,y:y};
+      });
+    });
+  }else{
+    var radius=Math.max(110, Math.min(w,h)/2-90);
+    graphNodes.forEach(function(node, i){
+      var angle=(2*Math.PI*i)/Math.max(n,1);
+      var x = n===1 ? cx : (cx + radius*Math.cos(angle));
+      var y = n===1 ? cy : (cy + radius*Math.sin(angle));
+      pos[node.id]={x:x,y:y};
+    });
+  }
+  if(graphLayout !== 'force'){
+    graphNodes.forEach(function(node){
+      var cp = graphCustomPositions[node.id];
+      if(cp){ pos[node.id] = {x:cp.x, y:cp.y}; }
+    });
+  }
+  graphCurrentPos = pos;
+  var canDrag = (graphLayout === 'circular' || graphLayout === 'ranked');
+  if(svg){ svg.classList.toggle('force-quality', graphLayout === 'force'); }
+  var pz = document.getElementById('graph-panzoom');
+  if(pz){ pz.classList.toggle('force-quality', graphLayout === 'force'); }
+  var toneColor = { friendly: '#4ade80', neutral: '#6b7280', conflict: '#f97316', toxic: '#ef4444' };
+  var defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
+  Object.keys(toneColor).forEach(function(t){
+    var m=document.createElementNS('http://www.w3.org/2000/svg','marker');
+    m.setAttribute('id','arrow-'+t);
+    m.setAttribute('markerWidth','10'); m.setAttribute('markerHeight','10');
+    m.setAttribute('refX','9'); m.setAttribute('refY','5');
+    m.setAttribute('orient','auto');
+    m.setAttribute('markerUnits','userSpaceOnUse');
+    var p=document.createElementNS('http://www.w3.org/2000/svg','polygon');
+    p.setAttribute('points','0 0, 10 5, 0 10');
+    p.setAttribute('fill',toneColor[t]);
+    m.appendChild(p);
+    defs.appendChild(m);
+  });
+  svg.appendChild(defs);
+  var linesGroup = document.createElementNS('http://www.w3.org/2000/svg','g');
+  linesGroup.setAttribute('id','graph-lines');
+  svg.appendChild(linesGroup);
+  function drawLines(positions){
+    linesGroup.innerHTML='';
+    graphEdges.forEach(function(e){
+    if(!positions[e.source] || !positions[e.target]){return;}
+    var x1=positions[e.source].x, y1=positions[e.source].y, x2=positions[e.target].x, y2=positions[e.target].y;
+    if(e.arrow_to === 'source'){ var t=x1;x1=x2;x2=t; t=y1;y1=y2;y2=t; }
+    var line=document.createElementNS('http://www.w3.org/2000/svg','line');
+    line.setAttribute('x1',x1); line.setAttribute('y1',y1);
+    line.setAttribute('x2',x2); line.setAttribute('y2',y2);
+    var connectedToFocus = graphFocusUserId === null || e.source === graphFocusUserId || e.target === graphFocusUserId;
+    var tone = String(e.tone || 'neutral').toLowerCase();
+    var strokeColor = toneColor[tone] || toneColor.neutral;
+    line.setAttribute('stroke', strokeColor);
+    line.setAttribute('stroke-opacity', connectedToFocus ? 0.7 : 0.25);
+    var ew = Number(e.weight_period || e.weight || 0);
+    line.setAttribute('stroke-width', String(Math.max(0.7, Math.min(2.2, 0.7 + ew/40))));
+    line.setAttribute('vector-effect','non-scaling-stroke');
+    if(e.arrow_to){ var mid='arrow-'+(toneColor[tone]?tone:'neutral'); line.setAttribute('marker-end','url(#'+mid+')'); }
+    var tip = [e.pair_context_label, e.tone_trend_label, e.connection_cooling ? 'охлаждение' : null].filter(Boolean).join(' · ');
+    if(tip){ var t=document.createElementNS('http://www.w3.org/2000/svg','title'); t.textContent=tip; line.appendChild(t); }
+    linesGroup.appendChild(line);
+  });
+  }
+  drawLines(pos);
+  window.redrawGraphLines = function(pos){
+    var g = document.getElementById('graph-lines');
+    if(g){ drawLines(pos || graphCurrentPos); }
+  };
+  var rankColor = { loyal: '#3b82f6', neutral: '#6b7280', opposition: '#ef4444', unknown: '#6b7280' };
+  graphNodes.forEach(function(node){
+    var p=pos[node.id];
+    if(!p){return;}
+    var d=document.createElement('div');
+    d.className='graph-node clickable';
+    d.setAttribute('data-node-id', String(node.id));
+    var isFocused = graphFocusUserId !== null && node.id === graphFocusUserId;
+    var isRelated = graphFocusUserId !== null && (node.id === graphFocusUserId || !!focusNeighbors[node.id]);
+    if(isFocused){d.classList.add('is-focused');}
+    if(graphFocusUserId !== null && !isRelated){d.classList.add('is-muted');}
+    d.style.left=p.x+'px';
+    d.style.top=p.y+'px';
+
+    var rank = String(node.rank || 'unknown').toLowerCase();
+    var borderColor = rankColor[rank] || rankColor.unknown;
+    var deg = Number(node.degree || 0);
+    var size = Math.max(38, Math.min(54, 40 + Math.min(14, deg * 2)));
+
+    var avatarWrap=document.createElement('div');
+    avatarWrap.className='graph-avatar-shell';
+    avatarWrap.style.width=size+'px';
+    avatarWrap.style.height=size+'px';
+
+    var img=document.createElement('img');
+    img.className='graph-avatar';
+    img.src=node.avatar;
+    img.alt='';
+    if(!isFocused){img.style.borderColor=borderColor;}
+
+    var fb=document.createElement('div');
+    fb.className='graph-avatar-fallback';
+    fb.style.display='none';
+    fb.textContent=getInitials(node.label);
+    if(!isFocused){fb.style.borderColor=borderColor;}
+
+    img.onerror=function(){
+      img.style.display='none';
+      fb.style.display='flex';
+    };
+    img.onload=function(){
+      img.style.display='block';
+      fb.style.display='none';
+    };
+
+    avatarWrap.appendChild(img);
+    avatarWrap.appendChild(fb);
+
+    var label=document.createElement('div');
+    label.className='graph-label';
+    label.textContent=node.label;
+
+    d.appendChild(avatarWrap);
+    d.appendChild(label);
+    if(canDrag){ d.classList.add('draggable'); }
+    d.addEventListener('click', function(e){
+      if(d.getAttribute('data-dragged') === '1'){ return; }
+      graphFocusUserId = (graphFocusUserId === node.id) ? null : node.id;
+      updateGraphFocusUi();
+      if(canDrag){
+        updateGraphFocusOnly();
+      }else{
+        renderGraph();
+      }
+    });
+    if(canDrag){
+      var dragStartX, dragStartY, nodeStartX, nodeStartY, didDrag = false;
+      d.addEventListener('mousedown', function(e){
+        if(e.button !== 0){ return; }
+        e.preventDefault();
+        e.stopPropagation();
+        didDrag = false;
+        dragStartX = e.clientX; dragStartY = e.clientY;
+        nodeStartX = p.x; nodeStartY = p.y;
+        function onMove(ev){
+          didDrag = true;
+          var scale = graphZoomState.scale || 1;
+          var dx = (ev.clientX - dragStartX) / scale, dy = (ev.clientY - dragStartY) / scale;
+          var nx = nodeStartX + dx, ny = nodeStartY + dy;
+          graphCustomPositions[node.id] = {x:nx, y:ny};
+          graphCurrentPos[node.id] = {x:nx, y:ny};
+          d.style.left = nx + 'px';
+          d.style.top = ny + 'px';
+          if(window.redrawGraphLines){ window.redrawGraphLines(graphCurrentPos); }
+        }
+        function onUp(){
+          window.removeEventListener('mousemove', onMove);
+          window.removeEventListener('mouseup', onUp);
+          if(didDrag){ d.setAttribute('data-dragged','1'); }
+        }
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+      });
+      d.addEventListener('click', function(e){
+        if(d.getAttribute('data-dragged') === '1'){
+          d.removeAttribute('data-dragged');
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+      }, true);
+    }
+    (document.getElementById('graph-panzoom')||wrap).appendChild(d);
+  });
+}
+
+var graphZoomState = { scale: 1, tx: 0, ty: 0 };
+function setupGraphZoomPan(){
+  var wrap = document.getElementById('graph-wrap');
+  var panzoom = document.getElementById('graph-panzoom');
+  if(!wrap || !panzoom){return;}
+  function applyTransform(){
+    panzoom.style.transform = 'translate('+graphZoomState.tx+'px,'+graphZoomState.ty+'px) scale('+graphZoomState.scale+')';
+  }
+  window.applyGraphTransform = applyTransform;
+  wrap.addEventListener('wheel', function(e){
+    e.preventDefault();
+    var rect = wrap.getBoundingClientRect();
+    var factor = e.deltaY > 0 ? 0.9 : 1.1;
+    var newScale = Math.max(0.3, Math.min(3, graphZoomState.scale * factor));
+    var x = e.clientX - rect.left, y = e.clientY - rect.top;
+    graphZoomState.tx = x - (x - graphZoomState.tx) * (newScale / graphZoomState.scale);
+    graphZoomState.ty = y - (y - graphZoomState.ty) * (newScale / graphZoomState.scale);
+    graphZoomState.scale = newScale;
+    applyTransform();
+  }, { passive: false });
+  var dragging = false, startX, startY, startTx, startTy;
+  wrap.addEventListener('mousedown', function(e){
+    if(e.target.closest('.graph-node')){return;}
+    dragging = true;
+    startX = e.clientX; startY = e.clientY;
+    startTx = graphZoomState.tx; startTy = graphZoomState.ty;
+  });
+  window.addEventListener('mousemove', function(e){
+    if(!dragging){return;}
+    graphZoomState.tx = startTx + (e.clientX - startX);
+    graphZoomState.ty = startTy + (e.clientY - startY);
+    applyTransform();
+  });
+  window.addEventListener('mouseup', function(){ dragging = false; });
+  applyTransform();
+}
+function getInitials(label){
+  var s=(label||'').trim();
+  if(!s){return '?';}
+  var parts=s.split(/\s+/).filter(Boolean);
+  if(parts.length===1){
+    return parts[0].slice(0,1).toUpperCase();
+  }
+  return (parts[0].slice(0,1)+parts[1].slice(0,1)).toUpperCase();
+}
+
+function activateView(view){
+  document.querySelectorAll('.view-btn').forEach(function(b){
+    b.classList.toggle('active', b.getAttribute('data-view') === view);
+  });
+  document.querySelectorAll('.view-panel').forEach(function(p){p.classList.remove('active')});
+  var panel=document.getElementById('panel-'+view);
+  if(panel){panel.classList.add('active');}
+  if(view==='graph'){renderGraph();}
+  try{localStorage.setItem('social_graph_view', view);}catch(_e){}
+}
+
+document.querySelectorAll('.view-btn').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    activateView(btn.getAttribute('data-view') || 'graph');
+  });
+});
+
+var savedView = '';
+try{savedView = localStorage.getItem('social_graph_view') || '';}catch(_e){}
+if(savedView === 'list' || savedView === 'graph'){
+  activateView(savedView);
+}else{
+  renderGraph();
+}
+setupGraphZoomPan();
+updateGraphFocusUi();
+window.addEventListener('resize', function(){
+  var graphPanel = document.getElementById('panel-graph');
+  if(graphPanel && graphPanel.classList.contains('active')){renderGraph();}
+});
+var _btnGraphFocusReset = document.getElementById('btn-graph-focus-reset');
+if(_btnGraphFocusReset){
+  _btnGraphFocusReset.addEventListener('click', function(){
+    graphFocusUserId = null;
+    updateGraphFocusUi();
+    renderGraph();
+  });
+}
+
+function _numAttr(el, key){
+  var n = Number(el.getAttribute(key) || 0);
+  return Number.isFinite(n) ? n : 0;
+}
+function applyListControls(){
+  var root = document.getElementById('connections-list');
+  if(!root){return;}
+  var cards = Array.prototype.slice.call(root.querySelectorAll('.connection'));
+  var sort = document.getElementById('conn-sort');
+  var queryInput = document.getElementById('conn-search');
+  var mode = (sort && sort.value) ? sort.value : 'activity';
+  var query = ((queryInput && queryInput.value) || '').trim().toLowerCase();
+
+  var keyMap = {
+    activity: 'data-sort-activity',
+    trend: 'data-sort-trend',
+    freshness: 'data-sort-freshness',
+    confidence: 'data-sort-confidence',
+    risk: 'data-sort-risk',
+    alpha: 'data-sort-alpha'
+  };
+  var key = keyMap[mode] || keyMap.activity;
+  if(mode === 'alpha'){
+    cards.sort(function(a, b){
+      var sa = (a.getAttribute(key) || '').toLowerCase();
+      var sb = (b.getAttribute(key) || '').toLowerCase();
+      return sa.localeCompare(sb);
+    });
+  }else{
+    cards.sort(function(a, b){return _numAttr(b, key) - _numAttr(a, key);});
+  }
+  cards.forEach(function(c){root.appendChild(c);});
+
+  var visible = 0;
+  cards.forEach(function(card){
+    var blob = (card.getAttribute('data-search') || '').toLowerCase();
+    var ok = !query || blob.indexOf(query) >= 0;
+    card.style.display = ok ? 'grid' : 'none';
+    if(ok){visible += 1;}
+  });
+  var cnt = document.getElementById('connections-visible-count');
+  if(cnt){cnt.textContent = String(visible);}
+  var empty = document.getElementById('list-empty-client');
+  if(empty){empty.style.display = visible ? 'none' : 'block';}
+}
+
+var _connSearch = document.getElementById('conn-search');
+var _connSort = document.getElementById('conn-sort');
+if(_connSearch){_connSearch.addEventListener('input', applyListControls);}
+if(_connSort){_connSort.addEventListener('change', applyListControls);}
+applyListControls();
+
+function activateCardMode(mode){
+  var panel = document.getElementById('panel-list');
+  if(!panel){return;}
+  var compact = (mode === 'compact');
+  panel.classList.toggle('list-compact', compact);
+  document.querySelectorAll('.list-mode-btn').forEach(function(btn){
+    btn.classList.toggle('active', btn.getAttribute('data-card-mode') === (compact ? 'compact' : 'detailed'));
+  });
+  panel.querySelectorAll('.conn-card.open').forEach(function(c){c.classList.remove('open');});
+  try{localStorage.setItem('social_graph_card_mode', compact ? 'compact' : 'detailed');}catch(_e){}
+}
+
+document.querySelectorAll('.list-mode-btn').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    activateCardMode(btn.getAttribute('data-card-mode') || 'detailed');
+  });
+});
+var savedCardMode = '';
+try{savedCardMode = localStorage.getItem('social_graph_card_mode') || '';}catch(_e){}
+if(savedCardMode === 'compact' || savedCardMode === 'detailed'){
+  activateCardMode(savedCardMode);
+}
+
+document.getElementById('connections-list').addEventListener('click', function(e){
+  var panel = document.getElementById('panel-list');
+  if(!panel || !panel.classList.contains('list-compact')){return;}
+  var card = e.target.closest('.conn-card');
+  if(!card){return;}
+  if(e.target.closest('details') || e.target.closest('a') || e.target.closest('button')){return;}
+  card.classList.toggle('open');
+});
+
+document.getElementById('btn-process').onclick=function(){
+var btn=this, span=document.getElementById('process-result');
+btn.disabled=true; span.textContent='…'; span.style.color='#aaa';
+fetch('{{ url_for("api_process_social_graph") }}',{method:'POST',headers:{'Content-Type':'application/json'}})
+.then(function(r){return r.json();})
+.then(function(d){
+if(d.ok){
+var days=d.processed_days||0;
+var live=d.live_updated||0;
+span.textContent='Дней: '+days+' · live-связей: '+live;
+span.style.color='#4ade80';
+if(days>0||live>0)setTimeout(function(){location.reload()},1200);
+}
+else{span.textContent=d.error||'Ошибка';span.style.color='#e94560';}
+btn.disabled=false;
+}).catch(function(){span.textContent='Ошибка сети';span.style.color='#e94560';btn.disabled=false;});
+};
+
+var layoutSelect = document.getElementById('sg-layout');
+var layoutDesc = document.getElementById('layout-desc');
+var layoutHint = document.getElementById('layout-hint-text');
+function updateLayoutDesc(){
+  if(!layoutSelect || !layoutDesc){return;}
+  var opt = layoutSelect.options[layoutSelect.selectedIndex];
+  var desc = opt ? (opt.getAttribute('data-desc') || '') : '';
+  layoutDesc.textContent = desc;
+  if(layoutHint){ layoutHint.textContent = desc || 'Выберите тип раскладки узлов.'; }
+}
+if(layoutSelect){
+  layoutSelect.value = graphLayout;
+  layoutSelect.onchange = function(){
+    graphLayout = this.value;
+    try{ localStorage.setItem('sg_layout', graphLayout); }catch(_e){}
+    updateLayoutDesc();
+    renderGraph();
+  };
+  updateLayoutDesc();
+}
+document.getElementById('btn-save-graph-settings').onclick=function(){
+var btn=this, out=document.getElementById('graph-settings-result');
+btn.disabled=true; out.textContent='сохраняю…'; out.style.color='#9bb0cf';
+var layoutSel = document.getElementById('sg-layout');
+var payload={
+  social_graph_advanced_insights_enabled: document.getElementById('sg-advanced').checked,
+  social_graph_ranked_layout_enabled: (layoutSel && layoutSel.value === 'ranked'),
+  social_graph_realtime_enabled: document.getElementById('sg-live').checked,
+  social_graph_conflict_forecast_enabled: document.getElementById('sg-forecast').checked,
+  social_graph_roles_enabled: document.getElementById('sg-roles').checked,
+  chat_topic_recommender_enabled: document.getElementById('sg-recommender').checked,
+  social_graph_realtime_interval_sec: Number(document.getElementById('sg-live-interval').value||90),
+  social_graph_realtime_min_new_messages: Number(document.getElementById('sg-live-min-new').value||1)
+};
+fetch('{{ url_for("api_settings") }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+.then(function(r){return r.json();})
+.then(function(d){
+  if(d.ok){out.textContent='сохранено'; out.style.color='#4ade80'; setTimeout(function(){location.reload();}, 500);}
+  else{out.textContent=d.error||'ошибка'; out.style.color='#e94560';}
+  btn.disabled=false;
+}).catch(function(){out.textContent='ошибка сети'; out.style.color='#e94560'; btn.disabled=false;});
+};
+var _btnOpen=document.getElementById('btn-side-open');
+var _btnClose=document.getElementById('btn-side-close');
+if(_btnOpen){_btnOpen.onclick=toggleSidePanel;}
+if(_btnClose){_btnClose.onclick=closeSidePanel;}
+document.addEventListener('keydown', function(e){
+  if(e.key === 'Escape'){closeSidePanel();}
+});
+{% if recommender_enabled %}
+document.getElementById('btn-topic-generate').onclick=function(){
+  var cid=(document.getElementById('topic-chat-id').value||'').trim();
+  var out=document.getElementById('topic-recommendation');
+  var st=document.getElementById('topic-status');
+  if(!cid){st.textContent='укажи chat_id'; st.style.color='#e94560'; return;}
+  st.textContent='генерирую…'; st.style.color='#9bb0cf';
+  fetch('{{ url_for("api_chat_topic_recommendation") }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:parseInt(cid,10)})})
+  .then(r=>r.json()).then(function(d){
+    if(d.ok){out.textContent=d.recommendation||''; st.textContent='готово'; st.style.color='#4ade80';}
+    else{st.textContent=d.error||'ошибка'; st.style.color='#e94560';}
+  }).catch(function(){st.textContent='ошибка сети'; st.style.color='#e94560';});
+};
+document.getElementById('btn-topic-send').onclick=function(){
+  var cid=(document.getElementById('topic-chat-id').value||'').trim();
+  var out=document.getElementById('topic-recommendation');
+  var st=document.getElementById('topic-status');
+  if(!cid){st.textContent='укажи chat_id'; st.style.color='#e94560'; return;}
+  st.textContent='отправляю…'; st.style.color='#9bb0cf';
+  fetch('{{ url_for("api_chat_topic_recommendation") }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:parseInt(cid,10),send_now:true})})
+  .then(r=>r.json()).then(function(d){
+    if(d.ok){out.textContent=d.recommendation||''; st.textContent=d.sent?'отправлено':'сгенерировано (не отправлено)'; st.style.color=d.sent?'#4ade80':'#e6c36a';}
+    else{st.textContent=d.error||'ошибка'; st.style.color='#e94560';}
+  }).catch(function(){st.textContent='ошибка сети'; st.style.color='#e94560';});
+};
+{% endif %}
+</script>
+{% endblock %}

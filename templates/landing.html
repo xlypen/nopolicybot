@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Политмонитор — бот для чатов</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+<style>
+.landing { max-width: 520px; margin: 4rem auto; padding: 2rem; text-align: center; }
+.landing h1 { font-size: 1.75rem; margin-bottom: 0.5rem; }
+.landing p { color: var(--text-muted); line-height: 1.5; margin-bottom: 1.5rem; }
+.landing .btn { display: inline-block; padding: 0.75rem 1.5rem; font-size: 1rem; text-decoration: none; border-radius: 8px; background: var(--accent, #4a7c59); color: #fff; }
+.landing .btn:hover { opacity: 0.9; }
+</style>
+</head>
+<body>
+<div class="landing">
+  <h1>Политмонитор</h1>
+  <p>Бот для Telegram: модерация политики и токсичности в чатах, дерево связей, портреты участников.</p>
+  <p><a href="{{ url_for('login') }}" class="btn">Вход для администратора</a></p>
+  <p class="text-muted" style="font-size: 0.85rem;">Участники чата получают ссылку на свой профиль через команду бота /me.</p>
+</div>
+</body>
+</html>

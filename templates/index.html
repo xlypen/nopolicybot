@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block title %}Админ-панель — Политмонитор{% endblock %}
+{% block head_extra %}
+<style>
+.rank{font-size:1.1rem}
+.portrait{font-size:0.85rem;color:#aaa;max-width:400px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.user-cell{display:flex;align-items:center;gap:0.5rem}
+.digest-box{margin-top:0.6rem;padding:0.7rem;background:var(--bg-input);border:1px solid var(--border-card);border-radius:8px;font-size:0.86rem;color:#d4e5ff}
+</style>
+{% endblock %}
+{% block body %}
+<div class="header">
+<h1>Админ-панель — Политмонитор</h1>
+<div class="flex gap-sm align-center">
+<a href="{{ url_for('social_graph') }}" class="btn btn-secondary">Дерево связей</a>
+<a href="{{ url_for('settings') }}" class="btn btn-secondary">Настройки</a>
+<form method="post" action="{{ url_for('restart_bot') }}" style="display:inline;">
+<button type="submit" class="btn btn-secondary">Перезапустить бота</button>
+</form>
+{% if session.get('admin_logged_in') %}<a href="{{ url_for('logout') }}" class="logout">Выйти</a>{% endif %}
+</div>
+</div>
+<p id="restart-msg" class="mb-1"></p>
+{% if request.args.get('restart') == 'requested' %}
+<script>
+(function(){
+var el=document.getElementById('restart-msg');
+el.className='text-success';
+el.textContent='Запрос на перезапуск отправлен. Бот перезапустится в течение ~30 сек.';
+var att=0;
+var poll=setInterval(function(){
+att++;
+if(att>45){clearInterval(poll);return}
+fetch('{{ url_for("api_restart_status") }}').then(function(r){return r.json()}).then(function(d){
+if(d.restarted){clearInterval(poll);el.textContent='Бот успешно перезапущен';setTimeout(function(){el.style.display='none'},3000)}
+});
+},2000);
+})();
+</script>
+{% elif request.args.get('restart') == 'err' %}
+<script>
+document.getElementById('restart-msg').className='text-danger';
+document.getElementById('restart-msg').textContent='Ошибка при создании флага перезапуска.';
+setTimeout(function(){document.getElementById('restart-msg').style.display='none'},5000);
+</script>
+{% endif %}
+<div class="tabs">
+<a href="{{ url_for('admin', chat='all') }}" class="tab {% if current_chat == 'all' %}active{% endif %}">Все</a>
+{% for c in chats %}
+<a href="{{ url_for('admin', chat=c['chat_id']) }}" class="tab {% if current_chat == c['chat_id'] %}active{% endif %}">{{ (c['title'] or c['chat_id'])[:30] }}{% if (c['title'] or c['chat_id'])|length > 30 %}…{% endif %}</a>
+{% endfor %}
+</div>
+{% if current_chat and current_chat != 'all' %}
+<div class="flex gap-sm align-center mb-2 flex-wrap">
+<button type="button" class="btn btn-sm btn-secondary" id="btn-reset-political">Сбросить счётчик полит. сообщений</button>
+<span id="reset-result" class="text-sm"></span>
+<div class="flex gap-sm align-center" style="margin-left:auto;">
+<label class="text-sm" style="color:var(--text-secondary);">Режим чата:</label>
+<select id="chat-mode-select" class="btn btn-sm" style="min-width:140px;">
+<option value="default" {% if chat_mode=='default' %}selected{% endif %}>По умолчанию</option>
+<option value="soft" {% if chat_mode=='soft' %}selected{% endif %}>Мягкий</option>
+<option value="active" {% if chat_mode=='active' %}selected{% endif %}>Активный</option>
+<option value="beast" {% if chat_mode=='beast' %}selected{% endif %}>Зверь</option>
+<option value="custom" {% if chat_mode=='custom' %}selected{% endif %}>Свои настройки</option>
+</select>
+<span id="chat-mode-desc" class="text-sm" style="color:var(--text-secondary);margin-left:0.5rem;max-width:320px;">{{ chat_mode_descriptions.get(chat_mode or 'default', '') }}</span>
+<span id="chat-mode-feedback" class="text-sm" style="margin-left:0.5rem;"></span>
+</div>
+</div>
+<details class="card">
+<summary style="cursor:pointer;list-style:none;font-weight:700;">Дайджест чата (превью)</summary>
+<div class="flex justify-between align-center flex-wrap mt-1">
+<span class="text-sm text-muted">Можно свернуть, чтобы не мешал обзору.</span>
+<button type="button" class="btn btn-sm btn-secondary" id="btn-refresh-digest">Обновить дайджест</button>
+</div>
+<div id="chat-digest-preview" class="digest-box">{{ digest_preview|safe if digest_preview else 'Данных пока недостаточно для дайджеста.' }}</div>
+</details>
+<details class="card">
+<summary style="cursor:pointer;list-style:none;font-weight:700;">Общий анализ чата</summary>
+<div class="flex justify-between align-center flex-wrap mt-1">
+<span class="text-sm text-muted">Состав, активность, полит. контур, риски.</span>
+<div class="flex gap-sm align-center">
+<button type="button" class="btn btn-sm btn-secondary" id="btn-refresh-analysis">Обновить</button>
+<button type="button" class="btn btn-sm btn-secondary" id="btn-portrait-chat">Портрет чата</button>
+<a href="{{ url_for('chat_analysis_page', chat_id=current_chat) }}" class="btn btn-sm btn-secondary">Полный отчёт →</a>
+</div>
+</div>
+<div id="chat-analysis-brief" class="digest-box">{{ analysis_brief|safe if analysis_brief else 'Данных пока недостаточно для анализа.' }}</div>
+</details>
+{% endif %}
+<div class="cards">
+<div class="card"><h3>Пользователей</h3><span class="val">{{ total }}</span></div>
+<div class="card"><h3>Полит. сообщений</h3><span class="val">{{ total_pol }}</span></div>
+<div class="card"><h3>Замечаний выдано</h3><span class="val">{{ total_warn }}</span></div>
+{% for r,cnt in ranks.items() %}<div class="card"><h3>{{ rank_labels.get(r,r) }}</h3><span class="val">{{ cnt }}</span></div>{% endfor %}
+</div>
+<div class="table-wrap">
+<table>
+<thead>
+<tr><th>ID</th><th>Имя</th><th>Ранг</th><th>Сообщ.</th><th>Полит.</th><th>+ / − / 0</th><th>Замечаний</th><th>Портрет</th><th>Действия</th></tr>
+</thead>
+<tbody>
+{% for uid,u in users %}
+<tr class="clickable-row" onclick="location.href='{{ url_for('user_detail', user_id=uid, chat=current_chat) }}'">
+<td>{{ uid }}</td>
+<td>
+<div class="user-cell">
+<div class="avatar-wrap" style="width:32px;height:32px;">
+<img src="{{ url_for('avatar', user_id=uid) }}" alt="" data-avatar-name="{{ u.get('display_name', uid) }}">
+<span class="avatar-fallback"></span>
+</div>
+<span>{{ u.get('display_name', uid) }}</span>
+</div>
+</td>
+<td class="rank">{{ rank_labels.get(u.get('rank'), u.get('rank')) }}</td>
+<td>{{ u.get('stats', {}).get('total_messages', 0) }}</td>
+<td>{{ u.get('stats', {}).get('political_messages', 0) }}</td>
+<td>{{ u.get('stats', {}).get('positive_sentiment', 0) }} / {{ u.get('stats', {}).get('negative_sentiment', 0) }} / {{ u.get('stats', {}).get('neutral_sentiment', 0) }}</td>
+<td>{{ u.get('stats', {}).get('warnings_received', 0) }}</td>
+<td class="portrait" title="{{ u.get('portrait', '') }}">{{ (u.get('portrait') or '')[:80] }}{% if (u.get('portrait') or '')|length > 80 %}…{% endif %}</td>
+<td onclick="event.stopPropagation()">
+<button type="button" class="btn btn-sm" id="btn-portrait-{{ uid }}" onclick="buildPortrait('{{ uid }}', '{{ current_chat }}', this)" {% if uid in portrait_building_user_ids %}disabled{% endif %}>Составить портрет</button>
+<span id="result-{{ uid }}" class="text-sm">{% if uid in portrait_building_user_ids %}Анализирую…{% endif %}</span>
+</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+document.querySelectorAll('.avatar-wrap').forEach(function(wrap){
+  var img=wrap.querySelector('img');
+  var fb=wrap.querySelector('.avatar-fallback');
+  if(!img||!fb)return;
+  fb.textContent=getInitials(img.getAttribute('data-avatar-name')||'');
+});
+
+function buildPortrait(uid, chatId, btn){
+var result=document.getElementById('result-'+uid);
+result.textContent='Анализирую…';result.style.color='';
+btn.disabled=true;
+apiFetch('{{ url_for("api_portrait_from_storage") }}',{method:'POST',body:{user_id:uid,chat_id:chatId||'all'}})
+.then(function(d){result.textContent='Готово!';result.className='text-sm text-success';setTimeout(function(){location.reload()},1500)})
+.catch(function(e){result.textContent=e.message||'Ошибка';result.className='text-sm text-danger';btn.disabled=false});
+}
+{% if portrait_building_user_ids %}
+(function poll(){
+fetch('{{ url_for("api_portrait_building_status") }}').then(function(r){return r.json()}).then(function(d){
+var building=d.building_user_ids||[];
+{% for uid,u in users %}
+if(!building.includes('{{ uid }}') && document.getElementById('result-{{ uid }}') && document.getElementById('result-{{ uid }}').textContent.indexOf('Анализирую')>=0){
+document.getElementById('btn-portrait-{{ uid }}').disabled=false;
+document.getElementById('result-{{ uid }}').textContent='';
+}
+{% endfor %}
+if(building.length>0)setTimeout(poll,2000);
+else location.reload();
+});
+})();
+{% endif %}
+{% if current_chat and current_chat != 'all' %}
+var chatModeDescs = {{ chat_mode_descriptions|tojson }};
+var modeSelect = document.getElementById('chat-mode-select');
+if(modeSelect){
+  var descEl = document.getElementById('chat-mode-desc');
+  var feedbackEl = document.getElementById('chat-mode-feedback');
+  function updateDesc(){if(descEl)descEl.textContent=chatModeDescs[modeSelect.value]||'';}
+  function showFeedback(msg,ok){if(feedbackEl){feedbackEl.textContent=msg;feedbackEl.style.color=ok?'var(--color-success)' : 'var(--color-danger)';setTimeout(function(){feedbackEl.textContent='';},2500);}}
+  updateDesc();
+  var lastApplied=modeSelect.value;
+  modeSelect.addEventListener('change', function(){
+    var val=modeSelect.value;
+    updateDesc();
+    if(val==='custom')return;
+    apiFetch('{{ url_for("api_chat_mode") }}',{method:'POST',body:{chat_id:{{ current_chat|tojson }},mode:val}})
+    .then(function(){lastApplied=val;showFeedback('✓ Применено',true);})
+    .catch(function(e){modeSelect.value=lastApplied;updateDesc();showFeedback(e.message||'Ошибка',false);});
+  });
+}
+document.getElementById('btn-reset-political').onclick=function(){
+var btn=this, span=document.getElementById('reset-result');
+btn.disabled=true; span.textContent='…';
+apiFetch('{{ url_for("api_reset_political_count") }}',{method:'POST',body:{chat_id:'{{ current_chat }}'}})
+.then(function(){span.textContent='Готово.';span.className='text-sm text-success';btn.disabled=false})
+.catch(function(e){span.textContent=e.message||'Ошибка';span.className='text-sm text-danger';btn.disabled=false});
+};
+document.getElementById('btn-refresh-digest').onclick=function(){
+var btn=this, out=document.getElementById('chat-digest-preview');
+btn.disabled=true;
+out.innerHTML='<span style="color:var(--text-muted);">Обновляю дайджест…</span>';
+apiFetch('{{ url_for("api_chat_digest_preview", chat_id=current_chat) }}')
+.then(function(d){out.innerHTML=d.digest||'Данных пока недостаточно для дайджеста.';btn.disabled=false})
+.catch(function(e){out.innerHTML='<span style="color:var(--color-danger);">'+(e.message||'Ошибка')+'</span>';btn.disabled=false});
+};
+var btnAnalysis=document.getElementById('btn-refresh-analysis');
+if(btnAnalysis){
+  btnAnalysis.onclick=function(){
+    var btn=this, out=document.getElementById('chat-analysis-brief');
+    btn.disabled=true;
+    out.innerHTML='<span style="color:var(--text-muted);">Обновляю анализ…</span>';
+    apiFetch('{{ url_for("api_chat_analysis", chat_id=current_chat) }}?period=7&ai=0')
+    .then(function(d){out.innerHTML=d.brief||'Данных пока недостаточно для анализа.';btn.disabled=false})
+    .catch(function(e){out.innerHTML='<span style="color:var(--color-danger);">'+(e.message||'Ошибка')+'</span>';btn.disabled=false});
+  };
+}
+var btnPortrait=document.getElementById('btn-portrait-chat');
+if(btnPortrait){
+  btnPortrait.onclick=function(){
+    var btn=this, out=document.getElementById('chat-analysis-brief');
+    if(!out)return;
+    btn.disabled=true;
+    out.innerHTML='<span style="color:var(--text-muted);">Создаю портрет с AI…</span>';
+    apiFetch('{{ url_for("api_chat_analysis", chat_id=current_chat) }}?period=7&ai=1')
+    .then(function(d){out.innerHTML=d.brief||'Данных недостаточно.';btn.disabled=false})
+    .catch(function(e){out.innerHTML='<span style="color:var(--color-danger);">'+(e.message||'Ошибка')+'</span>';btn.disabled=false});
+  };
+}
+{% endif %}
+</script>
+{% endblock %}

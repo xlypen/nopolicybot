@@ -86,6 +86,15 @@ DEFAULTS = {
     "content_digest_send_enabled": False,
     "content_digest_interval_hours": 24,
     "content_digest_chat_id": 0,
+    # Retention / growth automation
+    "retention_auto_dm_enabled": False,
+    "retention_auto_dm_interval_sec": 3600,
+    "retention_auto_dm_limit_per_run": 3,
+    "retention_auto_dm_min_churn_risk": 0.72,
+    "retention_auto_dm_cooldown_hours": 24,
+    "retention_auto_dm_text": "Мы давно тебя не видели. Заходи в чат, нам важна твоя точка зрения.",
+    "churn_detection_enabled": True,
+    "churn_check_interval_sec": 3600,
     # Факт-чек
     "factcheck_enabled": True,
     "factcheck_min_interval_sec": 300,

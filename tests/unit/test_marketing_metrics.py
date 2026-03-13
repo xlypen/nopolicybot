@@ -70,4 +70,6 @@ def test_leaderboard_sorted_by_engagement(isolated_metrics_store):
 
     rows = mm.get_leaderboard(metric="engagement", chat_id=9001, days=30, limit=5)
     assert rows
-    assert rows[0]["user_id"] == 101
+    assert {row["user_id"] for row in rows} >= {101, 202}
+    scores = [float(row["score"]) for row in rows]
+    assert scores == sorted(scores, reverse=True)

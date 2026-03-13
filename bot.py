@@ -56,7 +56,7 @@ import voice_transcribe
 from handlers.direct_reply import build_reply_context_with_images
 from services.reactions import pick_allowed_emoji, set_photo_reaction
 from services.schedulers import restart_checker, social_graph_daily_task
-from services.schedulers import social_graph_realtime_task, portrait_image_daily_task, marketing_metrics_rollup_task
+from services.schedulers import social_graph_realtime_task, portrait_image_daily_task, marketing_metrics_rollup_task, churn_detection_task
 from services.marketing_metrics import record_message_event, record_signal_event
 from services.decision_engine import DecisionEngine, append_decision_event
 from utils.text_formatting import capitalize_sentences, reply_text_to_html, strip_leading_name
@@ -1696,6 +1696,7 @@ async def main() -> None:
     asyncio.create_task(social_graph_realtime_task(social_graph.process_realtime_updates, logger))
     asyncio.create_task(portrait_image_daily_task(logger))
     asyncio.create_task(marketing_metrics_rollup_task(logger))
+    asyncio.create_task(churn_detection_task(bot, logger))
     await dp.start_polling(bot)
 
 

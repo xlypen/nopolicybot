@@ -107,3 +107,87 @@ def test_api_decisions_recent_contract(monkeypatch):
         body = resp.get_json()
         assert body["ok"] is True
         assert isinstance(body["decisions"], list)
+
+
+def test_api_recommendations_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import recommendations
+
+    monkeypatch.setattr(
+        recommendations,
+        "build_recommendations",
+        lambda chat_id=None, days=30, limit=20: {"chat_id": "all", "items": [{"type": "retention_standard"}]},
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/recommendations?chat_id=all&days=30&limit=10")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "recommendations" in body
+
+
+def test_api_retention_dashboard_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import recommendations
+
+    monkeypatch.setattr(
+        recommendations,
+        "build_retention_dashboard",
+        lambda chat_id=None, days=30, limit=50: {"summary": {"users_total": 2}, "at_risk": []},
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/retention-dashboard?chat_id=all&days=30&limit=50")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "dashboard" in body
+
+
+def test_api_churn_snapshots_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import recommendations
+
+    monkeypatch.setattr(
+        recommendations,
+        "get_recent_churn_snapshots",
+        lambda limit=10, chat_id=None: [{"chat_id": "all", "summary": {"at_risk_count": 1}}],
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/churn/snapshots?limit=5")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert isinstance(body["snapshots"], list)
+
+
+def test_api_churn_run_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import recommendations
+
+    monkeypatch.setattr(
+        recommendations,
+        "run_churn_detection",
+        lambda chat_id=None, days=30, limit=300: {"chat_id": "all", "summary": {"users_considered": 3}},
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.post("/api/churn/run", json={"chat_id": "all", "days": 30})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "snapshot" in body
+
+
+def test_admin_recommendations_alias_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import recommendations
+
+    monkeypatch.setattr(
+        recommendations,
+        "build_recommendations",
+        lambda chat_id=None, days=30, limit=20: {"chat_id": "all", "items": []},
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.get("/admin/recommendations")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True

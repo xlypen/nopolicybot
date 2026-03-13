@@ -75,6 +75,96 @@ async def marketing_metrics_rollup_task(logger) -> None:
         await asyncio.sleep(3600)
 
 
+async def churn_detection_task(bot, logger) -> None:
+    """
+    Hourly retention/churn snapshots and optional outreach DMs.
+    """
+    await asyncio.sleep(210)
+    while True:
+        try:
+            import bot_settings
+            import user_stats
+            from services.recommendations import (
+                mark_retention_dm_sent,
+                pick_at_risk_for_outreach,
+                run_churn_detection,
+                should_send_retention_dm,
+            )
+
+            enabled = bool(bot_settings.get("churn_detection_enabled"))
+            interval = bot_settings.get_int("churn_check_interval_sec", lo=300, hi=86400)
+            auto_dm_enabled = bool(bot_settings.get("retention_auto_dm_enabled"))
+            dm_limit_per_run = bot_settings.get_int("retention_auto_dm_limit_per_run", lo=1, hi=20)
+            min_churn_risk = bot_settings.get_float("retention_auto_dm_min_churn_risk", lo=0.5, hi=0.99)
+            cooldown_hours = bot_settings.get_int("retention_auto_dm_cooldown_hours", lo=1, hi=168)
+            dm_text = str(bot_settings.get("retention_auto_dm_text") or "").strip()
+            if not dm_text:
+                dm_text = "Мы давно тебя не видели. Заходи в чат, нам важна твоя точка зрения."
+
+            if enabled:
+                chats = user_stats.get_chats() if hasattr(user_stats, "get_chats") else []
+                if not chats:
+                    snapshot = run_churn_detection(None)
+                    summary = snapshot.get("summary") or {}
+                    logger.info(
+                        "Churn job: users=%s at_risk=%s high_value=%s",
+                        summary.get("users_considered", 0),
+                        summary.get("at_risk_count", 0),
+                        summary.get("high_value_at_risk_count", 0),
+                    )
+                sent_total = 0
+                for row in chats:
+                    cid_raw = row.get("chat_id")
+                    if not str(cid_raw).lstrip("-").isdigit():
+                        continue
+                    chat_id = int(cid_raw)
+                    loop = asyncio.get_event_loop()
+                    snapshot = await loop.run_in_executor(None, lambda cid=chat_id: run_churn_detection(cid))
+                    summary = snapshot.get("summary") or {}
+                    logger.info(
+                        "Churn job chat=%s: users=%s at_risk=%s high_value=%s",
+                        chat_id,
+                        summary.get("users_considered", 0),
+                        summary.get("at_risk_count", 0),
+                        summary.get("high_value_at_risk_count", 0),
+                    )
+                    if not auto_dm_enabled:
+                        continue
+                    candidates = pick_at_risk_for_outreach(
+                        chat_id,
+                        days=30,
+                        min_churn_risk=min_churn_risk,
+                        limit=dm_limit_per_run,
+                    )
+                    for candidate in candidates:
+                        if sent_total >= dm_limit_per_run:
+                            break
+                        user_id = int(candidate.get("user_id", 0) or 0)
+                        if not user_id:
+                            continue
+                        if not should_send_retention_dm(user_id, chat_id, cooldown_hours=cooldown_hours):
+                            continue
+                        try:
+                            await bot.send_message(chat_id=user_id, text=dm_text)
+                            mark_retention_dm_sent(user_id, chat_id)
+                            sent_total += 1
+                            logger.info(
+                                "Retention DM sent: chat=%s user=%s churn=%.2f influence=%.2f",
+                                chat_id,
+                                user_id,
+                                float(candidate.get("churn_risk", 0.0) or 0.0),
+                                float(candidate.get("influence_score", 0.0) or 0.0),
+                            )
+                        except Exception as e:
+                            logger.debug("Retention DM skipped for user %s: %s", user_id, e)
+                    if sent_total >= dm_limit_per_run:
+                        break
+            await asyncio.sleep(interval if enabled else 60)
+        except Exception as e:
+            logger.warning("Churn detection job error: %s", e)
+            await asyncio.sleep(60)
+
+
 def process_portrait_images_due() -> int:
     """
     Обновляет картинки портретов пользователей, у которых прошло больше 7 дней с последней генерации.

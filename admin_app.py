@@ -1415,6 +1415,91 @@ def api_leaderboard():
     return jsonify({"ok": True, "metric": metric, "rows": rows})
 
 
+@app.route("/api/recommendations")
+@login_required
+def api_recommendations():
+    from services.recommendations import build_recommendations
+
+    chat_raw = (request.args.get("chat_id") or "all").strip().lower()
+    chat_id = None if chat_raw == "all" else (int(chat_raw) if chat_raw.lstrip("-").isdigit() else None)
+    if chat_raw != "all" and chat_id is None:
+        return jsonify({"ok": False, "error": "invalid chat_id"}), 400
+    try:
+        days = max(1, min(90, int(request.args.get("days", "30"))))
+        limit = max(1, min(100, int(request.args.get("limit", "20"))))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid params"}), 400
+    payload = build_recommendations(chat_id, days=days, limit=limit)
+    return jsonify({"ok": True, "recommendations": payload})
+
+
+@app.route("/admin/recommendations")
+@login_required
+def admin_recommendations():
+    """Alias endpoint for recommendations in admin namespace."""
+    return api_recommendations()
+
+
+@app.route("/api/retention-dashboard")
+@login_required
+def api_retention_dashboard():
+    from services.recommendations import build_retention_dashboard
+
+    chat_raw = (request.args.get("chat_id") or "all").strip().lower()
+    chat_id = None if chat_raw == "all" else (int(chat_raw) if chat_raw.lstrip("-").isdigit() else None)
+    if chat_raw != "all" and chat_id is None:
+        return jsonify({"ok": False, "error": "invalid chat_id"}), 400
+    try:
+        days = max(1, min(90, int(request.args.get("days", "30"))))
+        limit = max(1, min(500, int(request.args.get("limit", "50"))))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid params"}), 400
+    payload = build_retention_dashboard(chat_id, days=days, limit=limit)
+    return jsonify({"ok": True, "dashboard": payload})
+
+
+@app.route("/admin/retention-dashboard")
+@login_required
+def admin_retention_dashboard():
+    """Alias endpoint for retention dashboard in admin namespace."""
+    return api_retention_dashboard()
+
+
+@app.route("/api/churn/snapshots")
+@login_required
+def api_churn_snapshots():
+    from services.recommendations import get_recent_churn_snapshots
+
+    chat_raw = (request.args.get("chat_id") or "all").strip().lower()
+    chat_id = None if chat_raw == "all" else (int(chat_raw) if chat_raw.lstrip("-").isdigit() else None)
+    if chat_raw != "all" and chat_id is None:
+        return jsonify({"ok": False, "error": "invalid chat_id"}), 400
+    try:
+        limit = max(1, min(100, int(request.args.get("limit", "10"))))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid limit"}), 400
+    rows = get_recent_churn_snapshots(limit=limit, chat_id=chat_id)
+    return jsonify({"ok": True, "snapshots": rows})
+
+
+@app.route("/api/churn/run", methods=["POST"])
+@login_required
+def api_churn_run():
+    from services.recommendations import run_churn_detection
+
+    payload = request.get_json(silent=True) or {}
+    chat_raw = str(payload.get("chat_id", "all")).strip().lower()
+    chat_id = None if chat_raw == "all" else (int(chat_raw) if chat_raw.lstrip("-").isdigit() else None)
+    if chat_raw != "all" and chat_id is None:
+        return jsonify({"ok": False, "error": "invalid chat_id"}), 400
+    try:
+        days = max(1, min(90, int(payload.get("days", 30))))
+    except (ValueError, TypeError):
+        return jsonify({"ok": False, "error": "invalid days"}), 400
+    snapshot = run_churn_detection(chat_id, days=days, limit=300)
+    return jsonify({"ok": True, "snapshot": snapshot})
+
+
 @app.route("/api/me/graph")
 def api_me_graph_compat():
     from services.graph_api import build_graph_payload

@@ -56,7 +56,8 @@ import voice_transcribe
 from handlers.direct_reply import build_reply_context_with_images
 from services.reactions import pick_allowed_emoji, set_photo_reaction
 from services.schedulers import restart_checker, social_graph_daily_task
-from services.schedulers import social_graph_realtime_task, portrait_image_daily_task
+from services.schedulers import social_graph_realtime_task, portrait_image_daily_task, marketing_metrics_rollup_task
+from services.marketing_metrics import record_message_event, record_signal_event
 from utils.text_formatting import capitalize_sentences, reply_text_to_html, strip_leading_name
 
 
@@ -443,6 +444,21 @@ def _safe_name(name: str) -> str:
     return name.replace("{", "").replace("}", "").replace("<", "").replace(">", "").strip() or "Участник"
 
 
+def _extract_mentioned_user_ids(message: Message) -> list[int]:
+    """Извлекает id пользователей из text_mention entities."""
+    result: set[int] = set()
+    entities = list(message.entities or []) + list(message.caption_entities or [])
+    for entity in entities:
+        try:
+            if str(getattr(entity, "type", "")) == "text_mention":
+                user = getattr(entity, "user", None)
+                if user and getattr(user, "id", None):
+                    result.add(int(user.id))
+        except Exception:
+            continue
+    return sorted(result)
+
+
 async def _update_portrait_background(user_id: int, display_name: str) -> None:
     """Обновляет портрет и тон пользователя в фоне (после отправки ответа)."""
     try:
@@ -644,6 +660,15 @@ async def _run_batch_analysis(
         return
 
     if initiator_user_id is not None:
+        try:
+            record_signal_event(
+                chat_id=chat_id,
+                user_id=int(initiator_user_id),
+                sentiment=sentiment,
+                is_political=bool(is_political),
+            )
+        except Exception as e:
+            logger.debug("marketing_metrics record_signal_event failed: %s", e)
         user_stats.record_message(
             initiator_user_id,
             initiator_message_text[:500],
@@ -896,6 +921,23 @@ async def check_and_reply(message: Message) -> None:
     img_is_political = image_result is not None and image_result[0]
     # Считаем «политическое событие»: текст с полит. темой, или изображение с полит. контентом, или ответ в полит. тред
     is_political_event = msg_has_keyword or img_is_political or (reply_to and reply_has_keyword and not (reply_to.from_user and reply_to.from_user.is_bot))
+    reply_to_user_id = (
+        int(reply_to.from_user.id)
+        if reply_to and reply_to.from_user and not reply_to.from_user.is_bot
+        else None
+    )
+    try:
+        record_message_event(
+            chat_id=chat_id,
+            user_id=int(message.from_user.id),
+            display_name=first_name,
+            reply_to_user_id=reply_to_user_id,
+            mentioned_user_ids=_extract_mentioned_user_ids(message),
+            is_political=is_political_event,
+        )
+    except Exception as e:
+        logger.debug("marketing_metrics record_message_event failed: %s", e)
+
     if is_political_event:
         _chat_political_count[chat_id] = _chat_political_count.get(chat_id, 0) + 1
         _persist_state()
@@ -1528,6 +1570,7 @@ async def main() -> None:
     asyncio.create_task(social_graph_daily_task(social_graph.process_pending_days, logger))
     asyncio.create_task(social_graph_realtime_task(social_graph.process_realtime_updates, logger))
     asyncio.create_task(portrait_image_daily_task(logger))
+    asyncio.create_task(marketing_metrics_rollup_task(logger))
     await dp.start_polling(bot)
 
 

@@ -1340,6 +1340,59 @@ def api_chat_moderation_risk_compat(chat_id: str):
     return jsonify({"ok": True, "risk": build_moderation_risk(cid)})
 
 
+@app.route("/api/metrics/user/<path:user_id>")
+@login_required
+def api_metrics_user(user_id: str):
+    from services.marketing_metrics import get_user_metrics
+
+    if not str(user_id).lstrip("-").isdigit():
+        return jsonify({"ok": False, "error": "invalid user_id"}), 400
+    chat_raw = (request.args.get("chat_id") or "all").strip().lower()
+    chat_id = None if chat_raw == "all" else (int(chat_raw) if chat_raw.lstrip("-").isdigit() else None)
+    try:
+        days = max(1, min(90, int(request.args.get("days", "30"))))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid days"}), 400
+    if chat_raw != "all" and chat_id is None:
+        return jsonify({"ok": False, "error": "invalid chat_id"}), 400
+    payload = get_user_metrics(int(user_id), chat_id=chat_id, days=days)
+    return jsonify({"ok": True, "metrics": payload})
+
+
+@app.route("/api/metrics/chat/<path:chat_id>/health")
+@login_required
+def api_metrics_chat_health(chat_id: str):
+    from services.marketing_metrics import get_chat_health
+
+    if not str(chat_id).lstrip("-").isdigit():
+        return jsonify({"ok": False, "error": "invalid chat_id"}), 400
+    try:
+        days = max(1, min(90, int(request.args.get("days", "30"))))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid days"}), 400
+    payload = get_chat_health(int(chat_id), days=days)
+    return jsonify({"ok": True, "health": payload})
+
+
+@app.route("/api/leaderboard")
+@login_required
+def api_leaderboard():
+    from services.marketing_metrics import get_leaderboard
+
+    metric = (request.args.get("metric") or "engagement").strip().lower()
+    chat_raw = (request.args.get("chat_id") or "all").strip().lower()
+    chat_id = None if chat_raw == "all" else (int(chat_raw) if chat_raw.lstrip("-").isdigit() else None)
+    if chat_raw != "all" and chat_id is None:
+        return jsonify({"ok": False, "error": "invalid chat_id"}), 400
+    try:
+        days = max(1, min(90, int(request.args.get("days", "30"))))
+        limit = max(1, min(100, int(request.args.get("limit", "10"))))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid pagination params"}), 400
+    rows = get_leaderboard(metric=metric, chat_id=chat_id, days=days, limit=limit)
+    return jsonify({"ok": True, "metric": metric, "rows": rows})
+
+
 @app.route("/api/me/graph")
 def api_me_graph_compat():
     from services.graph_api import build_graph_payload

@@ -57,6 +57,24 @@ async def restart_checker(restart_flag_path: Path, logger) -> None:
             os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve().parent.parent / "bot.py")] + sys.argv[1:])
 
 
+async def marketing_metrics_rollup_task(logger) -> None:
+    """
+    Periodically computes marketing metric rollups used by admin API.
+    """
+    await asyncio.sleep(180)
+    while True:
+        try:
+            from services.marketing_metrics import run_daily_rollups
+
+            loop = asyncio.get_event_loop()
+            chats = await loop.run_in_executor(None, run_daily_rollups)
+            if chats > 0:
+                logger.info("Marketing metrics: rollups refreshed for %s chats", chats)
+        except Exception as e:
+            logger.warning("Marketing metrics rollup error: %s", e)
+        await asyncio.sleep(3600)
+
+
 def process_portrait_images_due() -> int:
     """
     Обновляет картинки портретов пользователей, у которых прошло больше 7 дней с последней генерации.

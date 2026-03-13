@@ -10,6 +10,11 @@ from db.repositories.edge_repo import EdgeRepository
 from db.repositories.user_repo import UserRepository
 from services.storage_cutover import get_storage_mode
 
+try:
+    import networkx as nx
+except Exception:  # pragma: no cover - optional runtime dependency fallback
+    nx = None
+
 
 def _downsample_large_graph(nodes: list[dict], edges: list[dict], max_nodes: int = 320, max_edges: int = 900):
     if len(nodes) <= max_nodes and len(edges) <= max_edges:
@@ -27,12 +32,96 @@ def _downsample_large_graph(nodes: list[dict], edges: list[dict], max_nodes: int
     }
 
 
-def _detect_communities_louvain(node_ids: list[int], edges: list[dict], **kwargs):
-    # Deterministic lightweight fallback community assignment.
+def _fallback_graph_analytics(node_ids: list[int], edges: list[dict]) -> dict:
+    node_sorted = sorted({int(x) for x in (node_ids or []) if int(x) != 0})
+    degree = defaultdict(int)
+    for e in edges or []:
+        a = int(e.get("source", 0) or 0)
+        b = int(e.get("target", 0) or 0)
+        if not a or not b or a == b:
+            continue
+        degree[a] += 1
+        degree[b] += 1
     comm = {}
-    for idx, uid in enumerate(sorted(node_ids)):
+    for idx, uid in enumerate(node_sorted):
         comm[int(uid)] = int(idx % 3)
-    return comm, {"modularity": 0.0, "levels": 1}
+    n = max(1, len(node_sorted) - 1)
+    centrality = {uid: round(float(degree.get(uid, 0)) / float(n), 6) for uid in node_sorted}
+    influence = {uid: round(float(centrality.get(uid, 0.0)), 6) for uid in node_sorted}
+    return {
+        "communities": comm,
+        "centrality": centrality,
+        "influence": influence,
+        "edge_bridge": {},
+        "stats": {"algo": "builtin_fallback_round_robin", "modularity": 0.0, "levels": 1},
+    }
+
+
+def _compute_graph_analytics(node_ids: list[int], edges: list[dict]) -> dict:
+    if nx is None:
+        return _fallback_graph_analytics(node_ids, edges)
+    try:
+        g = nx.Graph()
+        node_sorted = sorted({int(x) for x in (node_ids or []) if int(x) != 0})
+        g.add_nodes_from(node_sorted)
+        for e in edges or []:
+            a = int(e.get("source", 0) or 0)
+            b = int(e.get("target", 0) or 0)
+            if not a or not b or a == b:
+                continue
+            w = float(e.get("weight_period", e.get("weight", 0.0)) or 0.0)
+            if w <= 0:
+                w = 1e-6
+            if g.has_edge(a, b):
+                g[a][b]["weight"] = float(g[a][b].get("weight", 0.0)) + w
+            else:
+                g.add_edge(a, b, weight=w)
+
+        if g.number_of_nodes() <= 1:
+            return _fallback_graph_analytics(node_sorted, edges)
+
+        degree_centrality = nx.degree_centrality(g)
+        if g.number_of_edges() > 0:
+            pagerank = nx.pagerank(g, weight="weight")
+            comm_raw = list(nx.algorithms.community.greedy_modularity_communities(g, weight="weight"))
+            edge_betweenness = nx.edge_betweenness_centrality(g, normalized=True, weight="weight")
+        else:
+            pagerank = {uid: 0.0 for uid in g.nodes}
+            comm_raw = [{uid} for uid in g.nodes]
+            edge_betweenness = {}
+
+        if not comm_raw:
+            comm_raw = [{uid} for uid in g.nodes]
+
+        comm_sorted = sorted(
+            [sorted(int(uid) for uid in members) for members in comm_raw],
+            key=lambda members: (-len(members), members[0] if members else 0),
+        )
+        communities: dict[int, int] = {}
+        for idx, members in enumerate(comm_sorted):
+            for uid in members:
+                communities[int(uid)] = int(idx)
+
+        modularity = 0.0
+        try:
+            modularity = float(nx.algorithms.community.quality.modularity(g, [set(x) for x in comm_sorted], weight="weight"))
+        except Exception:
+            modularity = 0.0
+
+        edge_bridge = {}
+        for pair, score in (edge_betweenness or {}).items():
+            a, b = int(pair[0]), int(pair[1])
+            edge_bridge[(min(a, b), max(a, b))] = float(score or 0.0)
+
+        return {
+            "communities": communities,
+            "centrality": {int(uid): float(degree_centrality.get(uid, 0.0)) for uid in g.nodes},
+            "influence": {int(uid): float(pagerank.get(uid, 0.0)) for uid in g.nodes},
+            "edge_bridge": edge_bridge,
+            "stats": {"algo": "networkx_greedy_modularity", "modularity": float(modularity), "levels": 1},
+        }
+    except Exception:
+        return _fallback_graph_analytics(node_ids, edges)
 
 
 def _build_payload_from_rows(chat_id, rows, names, period: str = "all", ego_user=None, limit=None, rank_by_user=None):
@@ -40,6 +129,8 @@ def _build_payload_from_rows(chat_id, rows, names, period: str = "all", ego_user
     period_key = str(period or "all").lower()
     node_ids = set()
     degree = defaultdict(int)
+    messages_7d = defaultdict(float)
+    messages_30d = defaultdict(float)
     edges = []
     for r in rows or []:
         a = int(r.get("user_a", 0) or 0)
@@ -60,6 +151,12 @@ def _build_payload_from_rows(chat_id, rows, names, period: str = "all", ego_user
         node_ids.add(b)
         degree[a] += 1
         degree[b] += 1
+        m7 = float(r.get("message_count_7d", w_all) or 0.0)
+        m30 = float(r.get("message_count_30d", w_all) or 0.0)
+        messages_7d[a] += m7
+        messages_7d[b] += m7
+        messages_30d[a] += m30
+        messages_30d[b] += m30
         edges.append(
             {
                 "source": a,
@@ -76,32 +173,45 @@ def _build_payload_from_rows(chat_id, rows, names, period: str = "all", ego_user
     if limit:
         edges.sort(key=lambda e: float(e.get("weight_period", 0.0)), reverse=True)
         edges = edges[: max(1, int(limit))]
-    comm, comm_stats = _detect_communities_louvain(list(node_ids), edges)
+    analytics = _compute_graph_analytics(list(node_ids), edges)
+    comm = analytics.get("communities") or {}
+    comm_stats = analytics.get("stats") or {}
+    node_centrality = analytics.get("centrality") or {}
+    node_influence = analytics.get("influence") or {}
+    edge_bridge = analytics.get("edge_bridge") or {}
     nodes = []
     for uid in sorted(node_ids):
         d = int(degree.get(uid, 0))
+        centrality = float(node_centrality.get(uid, 0.0) or 0.0)
+        influence = float(node_influence.get(uid, centrality) or centrality)
+        tier = "core" if centrality >= 0.35 or d >= 5 else ("secondary" if centrality >= 0.15 or d >= 2 else "periphery")
         nodes.append(
             {
                 "id": uid,
                 "label": names.get(str(uid), str(uid)),
                 "rank": str(rank_by_user.get(uid, "unknown")),
                 "degree": d,
-                "messages_7d": d,
-                "messages_30d": d,
-                "influence_score": round(float(d), 3),
-                "centrality": round(float(d) / max(1, len(node_ids) - 1), 6),
+                "messages_7d": int(round(float(messages_7d.get(uid, 0.0) or 0.0))),
+                "messages_30d": int(round(float(messages_30d.get(uid, 0.0) or 0.0))),
+                "influence_score": round(influence, 6),
+                "centrality": round(centrality, 6),
                 "community_id": int(comm.get(uid, 0)),
                 "community_label": f"Комьюнити {int(comm.get(uid, 0))}",
-                "tier": "core" if d >= 5 else ("secondary" if d >= 2 else "periphery"),
+                "tier": tier,
             }
         )
     node_comm = {int(n["id"]): int(n.get("community_id", 0)) for n in nodes}
     for e in edges:
         ca = node_comm.get(int(e["source"]), -1)
         cb = node_comm.get(int(e["target"]), -1)
+        key = (min(int(e["source"]), int(e["target"])), max(int(e["source"]), int(e["target"])))
+        bridge_score = float(edge_bridge.get(key, 0.0) or 0.0)
+        if ca != cb:
+            bridge_score = max(bridge_score, 0.75)
         e["community_id"] = ca if ca == cb else -1
-        e["bridge_score"] = 1.0 if ca != cb else 0.0
+        e["bridge_score"] = round(bridge_score, 6)
     nodes, edges, ds_meta = _downsample_large_graph(nodes, edges)
+    comm_algo = str(comm_stats.get("algo", "builtin_fallback_round_robin") or "builtin_fallback_round_robin")
     return {
         "nodes": nodes,
         "edges": edges,
@@ -111,10 +221,11 @@ def _build_payload_from_rows(chat_id, rows, names, period: str = "all", ego_user
             "nodes_count": len(nodes),
             "edges_count": len(edges),
             "communities_count": len({int(n.get("community_id", 0)) for n in nodes}) if nodes else 0,
-            "communities_algo": "louvain_multi_level_seeded",
+            "communities_algo": comm_algo,
             "communities_modularity": float(comm_stats.get("modularity", 0.0)),
             "communities_levels": int(comm_stats.get("levels", 1)),
             "community_labels": {str(int(n.get("community_id", 0))): str(n.get("community_label", "")) for n in nodes},
+            "graph_engine": "networkx" if comm_algo.startswith("networkx") else "builtin",
             "downsampled": bool(ds_meta.get("applied", False)),
             "downsample_meta": ds_meta,
         },

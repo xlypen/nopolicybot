@@ -28,3 +28,19 @@ def test_downsampling_applies_for_large_graph():
     assert meta["applied"] is True
     assert len(out_nodes) <= 100
     assert len(out_edges) <= 100
+
+
+def test_build_payload_contains_graph_engine_analytics_fields():
+    rows = [
+        {"user_a": 1, "user_b": 2, "message_count_total": 10, "message_count_7d": 8, "message_count_30d": 10},
+        {"user_a": 2, "user_b": 3, "message_count_total": 7, "message_count_7d": 5, "message_count_30d": 7},
+    ]
+    payload = graph_api._build_payload_from_rows(chat_id=1, rows=rows, names={}, period="7d", ego_user=None, limit=None, rank_by_user={})
+    assert payload["nodes"]
+    assert payload["edges"]
+    node = payload["nodes"][0]
+    assert "centrality" in node
+    assert "influence_score" in node
+    meta = payload["meta"]
+    assert meta["graph_engine"] in {"networkx", "builtin"}
+    assert isinstance(meta["communities_algo"], str) and meta["communities_algo"]

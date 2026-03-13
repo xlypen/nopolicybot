@@ -54,7 +54,7 @@
       </select>
       <label style="display:flex;gap:6px;align-items:center;">
         <input type="checkbox" id="autoRefreshChk" checked>
-        автообновление
+        live delta
       </label>
       <button class="btn" id="loadGraphBtn">Загрузить</button>
       <span id="graphLiveStatus" style="font-size:12px;color:var(--text-secondary);">Live: init</span>
@@ -114,13 +114,12 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ url_for('static', filename='js/realtime_graph_client.js') }}"></script>
 <script type="module" src="{{ url_for('static', filename='js/graph_visualizations.jsx') }}"></script>
 <script type="module" src="{{ url_for('static', filename='js/advanced_graph_viz.jsx') }}"></script>
 <script>
 let _loadPromise = null;
-let _versionPollTimer = null;
-let _autoRefreshTimer = null;
-let _lastGraphVersion = null;
+let _dashboardRealtimeClient = null;
 
 function fmt(num, digits = 2) {
   const n = Number(num || 0);
@@ -134,6 +133,15 @@ function esc(text) {
     .replaceAll('>', '&gt;');
 }
 
+function setLiveStatus(text, color) {
+  const live = document.getElementById('graphLiveStatus');
+  if (!live) {
+    return;
+  }
+  live.textContent = `Live: ${String(text || '')}`;
+  live.style.color = color || 'var(--text-secondary)';
+}
+
 async function loadAndRender() {
   if (_loadPromise) {
     return _loadPromise;
@@ -143,12 +151,7 @@ async function loadAndRender() {
   const mode = document.getElementById('modeSel').value;
   const root = document.getElementById('modernGraphRoot');
   const metaLine = document.getElementById('graphMetaLine');
-  const live = document.getElementById('graphLiveStatus');
   root.textContent = 'Загрузка данных...';
-  if (live) {
-    live.textContent = 'Live: loading...';
-    live.style.color = 'var(--text-secondary)';
-  }
   const resp = await fetch(`/api/chat/${encodeURIComponent(chat)}/graph?period=7d`);
   const body = await resp.json();
   const graph = (body && body.graph) || {nodes: [], edges: [], meta: {}};
@@ -172,10 +175,6 @@ async function loadAndRender() {
     }
   } finally {
     await loadInsights(chat);
-    if (live) {
-      live.textContent = 'Live: synced';
-      live.style.color = '#4ade80';
-    }
   }
   })();
   try {
@@ -278,61 +277,76 @@ document.getElementById('loadGraphBtn').addEventListener('click', () => {
   });
 });
 
-function setupAutoRefresh() {
-  if (_autoRefreshTimer) {
-    clearInterval(_autoRefreshTimer);
-    _autoRefreshTimer = null;
+function collectChatIdsForSelection() {
+  const chatSel = document.getElementById('chatSel');
+  if (!chatSel) {
+    return [];
   }
+  const selected = String(chatSel.value || 'all');
+  if (selected !== 'all') {
+    const n = Number(selected);
+    return Number.isFinite(n) ? [String(Math.trunc(n))] : [];
+  }
+  const out = [];
+  for (const opt of Array.from(chatSel.options || [])) {
+    const raw = String(opt.value || '');
+    const n = Number(raw);
+    if (raw !== 'all' && Number.isFinite(n)) {
+      out.push(String(Math.trunc(n)));
+    }
+  }
+  return out.slice(0, 12);
+}
+
+function stopRealtime() {
+  if (_dashboardRealtimeClient && _dashboardRealtimeClient.stop) {
+    _dashboardRealtimeClient.stop();
+  }
+  _dashboardRealtimeClient = null;
+}
+
+function restartRealtime() {
   const chk = document.getElementById('autoRefreshChk');
   if (!chk || !chk.checked) {
+    stopRealtime();
+    setLiveStatus('disabled', '#9ca3af');
     return;
   }
-  _autoRefreshTimer = setInterval(() => {
-    loadAndRender().catch(() => {});
-  }, 30000);
+  if (!window.createGraphRealtimeClient) {
+    setLiveStatus('unavailable', '#f59e0b');
+    return;
+  }
+  const chatIds = collectChatIdsForSelection();
+  stopRealtime();
+  _dashboardRealtimeClient = window.createGraphRealtimeClient({
+    chatIds,
+    pollUrl: '/api/social-graph-version',
+    pollIntervalMs: 5000,
+    throttleMs: 800,
+    onStatus: function(statusText){
+      const status = String(statusText || '');
+      const isErr = status.includes('error');
+      const isWarn = status.includes('poll');
+      setLiveStatus(status, isErr ? '#ef4444' : (isWarn ? '#f59e0b' : '#4ade80'));
+    },
+    onDelta: function(evt){
+      const src = String((evt || {}).source || 'ws');
+      const chatId = (evt && evt.chat_id != null) ? ` chat:${evt.chat_id}` : '';
+      setLiveStatus(`delta (${src}${chatId})`, '#4ade80');
+      loadAndRender().catch(() => {});
+    }
+  });
+  _dashboardRealtimeClient.start();
 }
 
-async function pollGraphVersion() {
-  const live = document.getElementById('graphLiveStatus');
-  try {
-    const r = await fetch('/api/social-graph-version', { cache: 'no-store' });
-    const b = await r.json();
-    const ver = String((b || {}).version || '');
-    if (!ver) {
-      return;
-    }
-    if (_lastGraphVersion === null) {
-      _lastGraphVersion = ver;
-      if (live) {
-        live.textContent = 'Live: ready';
-        live.style.color = '#4ade80';
-      }
-      return;
-    }
-    if (ver !== _lastGraphVersion) {
-      _lastGraphVersion = ver;
-      if (live) {
-        live.textContent = 'Live: delta detected';
-        live.style.color = '#4ade80';
-      }
-      await loadAndRender();
-    }
-  } catch (_e) {
-    if (live) {
-      live.textContent = 'Live: polling error';
-      live.style.color = '#fbbf24';
-    }
+function handleAutoToggle() {
+  const chk = document.getElementById('autoRefreshChk');
+  if (!chk || chk.checked) {
+    restartRealtime();
+    return;
   }
-}
-
-function setupVersionPolling() {
-  if (_versionPollTimer) {
-    clearInterval(_versionPollTimer);
-    _versionPollTimer = null;
-  }
-  _versionPollTimer = setInterval(() => {
-    pollGraphVersion().catch(() => {});
-  }, 5000);
+  stopRealtime();
+  setLiveStatus('disabled', '#9ca3af');
 }
 
 document.getElementById('runChurnBtn').addEventListener('click', async () => {
@@ -361,17 +375,18 @@ document.getElementById('reloadStorageBtn').addEventListener('click', () => {
 });
 
 document.getElementById('chatSel').addEventListener('change', () => {
-  _lastGraphVersion = null;
   loadAndRender().catch(() => {});
+  restartRealtime();
 });
 document.getElementById('modeSel').addEventListener('change', () => {
   loadAndRender().catch(() => {});
 });
-document.getElementById('autoRefreshChk').addEventListener('change', setupAutoRefresh);
+document.getElementById('autoRefreshChk').addEventListener('change', handleAutoToggle);
 
 loadAndRender().catch(() => {});
-setupAutoRefresh();
-setupVersionPolling();
-pollGraphVersion().catch(() => {});
+restartRealtime();
+window.addEventListener('beforeunload', () => {
+  stopRealtime();
+});
 </script>
 {% endblock %}

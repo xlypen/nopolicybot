@@ -25,3 +25,36 @@ def test_retention_dm_cooldown_state(tmp_path, monkeypatch):
     assert recommendations.should_send_retention_dm(100, 200, cooldown_hours=24) is True
     recommendations.mark_retention_dm_sent(100, 200)
     assert recommendations.should_send_retention_dm(100, 200, cooldown_hours=24) is False
+
+
+def test_build_recommendations_includes_optimization(monkeypatch):
+    monkeypatch.setattr(
+        recommendations,
+        "build_retention_dashboard",
+        lambda chat_id=None, days=30, limit=50: {
+            "health": {"health_score": 0.55},
+            "at_risk": [],
+            "high_value_at_risk": [],
+            "viral_contributors": [],
+        },
+    )
+    monkeypatch.setattr(
+        "services.predictive_models.predict_overview",
+        lambda chat_id, horizon_days=7, lookback_days=30: {
+            "signals": {
+                "churn_risk": {"direction": "up", "predicted": 0.6},
+                "toxicity": {"direction": "up", "predicted": 0.4},
+                "virality": {"direction": "flat", "predicted": 0.4},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "services.decision_engine.get_decision_quality",
+        lambda chat_id=None, days=30: {"feedback_count": 10, "approval_rate": 0.45},
+    )
+    payload = recommendations.build_recommendations(chat_id=1, days=30, limit=20)
+    assert "optimization" in payload
+    kinds = {x.get("type") for x in payload.get("items") or []}
+    assert "predictive_churn_risk" in kinds
+    assert "predictive_toxicity_risk" in kinds
+    assert "decision_quality_drop" in kinds

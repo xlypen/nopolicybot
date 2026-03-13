@@ -195,6 +195,43 @@ def test_api_recommendations_contract(monkeypatch):
         assert "recommendations" in body
 
 
+def test_api_predictive_overview_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import predictive_models
+
+    monkeypatch.setattr(
+        predictive_models,
+        "predict_overview",
+        lambda chat_id=None, horizon_days=7, lookback_days=30: {
+            "chat_id": "all" if chat_id is None else int(chat_id),
+            "signals": {"churn_risk": {"predicted": 0.4}},
+        },
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/predictive/overview?chat_id=all&horizon_days=7")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "overview" in body
+
+
+def test_api_learning_summary_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import learning_loop
+
+    monkeypatch.setattr(
+        learning_loop,
+        "feedback_summary",
+        lambda chat_id=None, days=30: {"chat_id": "all", "days": int(days), "total_events": 3},
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/learning/summary?chat_id=all&days=30")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "summary" in body
+
+
 def test_api_retention_dashboard_contract(monkeypatch):
     _disable_auth(monkeypatch)
     from services import recommendations

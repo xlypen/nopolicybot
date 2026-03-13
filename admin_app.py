@@ -1801,6 +1801,54 @@ def admin_recommendations():
     return api_recommendations()
 
 
+@app.route("/api/predictive/overview")
+@login_required
+def api_predictive_overview():
+    from services.predictive_models import predict_overview
+
+    chat_raw = (request.args.get("chat_id") or "all").strip().lower()
+    chat_id = None if chat_raw == "all" else (int(chat_raw) if chat_raw.lstrip("-").isdigit() else None)
+    if chat_raw != "all" and chat_id is None:
+        return jsonify({"ok": False, "error": "invalid chat_id"}), 400
+    try:
+        horizon_days = max(1, min(30, int(request.args.get("horizon_days", "7"))))
+        lookback_days = max(7, min(180, int(request.args.get("lookback_days", "30"))))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid params"}), 400
+    payload = _cached_json(
+        "predictive_overview",
+        20,
+        lambda: predict_overview(chat_id, horizon_days=horizon_days, lookback_days=lookback_days),
+        chat_id=chat_id,
+        horizon_days=horizon_days,
+        lookback_days=lookback_days,
+    )
+    return jsonify({"ok": True, "overview": payload})
+
+
+@app.route("/api/learning/summary")
+@login_required
+def api_learning_summary():
+    from services.learning_loop import feedback_summary
+
+    chat_raw = (request.args.get("chat_id") or "all").strip().lower()
+    chat_id = None if chat_raw == "all" else (int(chat_raw) if chat_raw.lstrip("-").isdigit() else None)
+    if chat_raw != "all" and chat_id is None:
+        return jsonify({"ok": False, "error": "invalid chat_id"}), 400
+    try:
+        days = max(1, min(180, int(request.args.get("days", "30"))))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid days"}), 400
+    payload = _cached_json(
+        "learning_summary",
+        20,
+        lambda: feedback_summary(chat_id=chat_id, days=days),
+        chat_id=chat_id,
+        days=days,
+    )
+    return jsonify({"ok": True, "summary": payload})
+
+
 @app.route("/api/retention-dashboard")
 @login_required
 def api_retention_dashboard():

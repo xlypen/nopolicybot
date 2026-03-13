@@ -121,6 +121,7 @@ def build_retention_dashboard(chat_id: int | None = None, *, days: int = 30, lim
 def build_recommendations(chat_id: int | None = None, *, days: int = 30, limit: int = 20) -> dict:
     dashboard = build_retention_dashboard(chat_id, days=days, limit=max(limit, 50))
     items: list[dict] = []
+    optimization: dict = {}
 
     health_score = float((dashboard.get("health") or {}).get("health_score", 0.0) or 0.0) if dashboard.get("health") else None
     if health_score is not None and health_score < 0.5:
@@ -174,12 +175,66 @@ def build_recommendations(chat_id: int | None = None, *, days: int = 30, limit: 
             }
         )
 
+    # Phase 5: predictive and learning-aware optimization hints.
+    try:
+        from services.decision_engine import get_decision_quality
+        from services.predictive_models import predict_overview
+
+        pred = predict_overview(chat_id, horizon_days=7, lookback_days=max(14, int(days)))
+        quality = get_decision_quality(chat_id=chat_id, days=30)
+        optimization = {"predictive": pred, "decision_quality": quality}
+
+        churn_sig = ((pred.get("signals") or {}).get("churn_risk") or {})
+        tox_sig = ((pred.get("signals") or {}).get("toxicity") or {})
+        vir_sig = ((pred.get("signals") or {}).get("virality") or {})
+        if str(churn_sig.get("direction") or "") == "up" and float(churn_sig.get("predicted", 0.0) or 0.0) >= 0.45:
+            items.append(
+                {
+                    "type": "predictive_churn_risk",
+                    "priority": "high",
+                    "reason": f"churn forecast up to {float(churn_sig.get('predicted', 0.0) or 0.0):.2f}",
+                    "action": "Запустить retention-campaign: targeted DM и мягкие входные вопросы в активные треды.",
+                }
+            )
+        if str(tox_sig.get("direction") or "") == "up" and float(tox_sig.get("predicted", 0.0) or 0.0) >= 0.35:
+            items.append(
+                {
+                    "type": "predictive_toxicity_risk",
+                    "priority": "high",
+                    "reason": f"toxicity forecast up to {float(tox_sig.get('predicted', 0.0) or 0.0):.2f}",
+                    "action": "Снизить строгость авто-реакций, добавить de-escalation шаблоны и ручной контроль конфликтных пар.",
+                }
+            )
+        if str(vir_sig.get("direction") or "") == "up" and float(vir_sig.get("predicted", 0.0) or 0.0) >= 0.55:
+            items.append(
+                {
+                    "type": "predictive_virality_window",
+                    "priority": "medium",
+                    "reason": f"virality forecast up to {float(vir_sig.get('predicted', 0.0) or 0.0):.2f}",
+                    "action": "Поддержать рост: закрепить лидеров, pin лучших реплик и организовать follow-up обсуждение.",
+                }
+            )
+        feedback_count = int((quality or {}).get("feedback_count", 0) or 0)
+        approval_rate = float((quality or {}).get("approval_rate", 0.0) or 0.0)
+        if feedback_count >= 8 and approval_rate < 0.6:
+            items.append(
+                {
+                    "type": "decision_quality_drop",
+                    "priority": "high",
+                    "reason": f"decision approval rate={approval_rate:.2f} across {feedback_count} feedback events",
+                    "action": "Включить A/B review: повысить долю gentle/motivating стратегий и пересмотреть strict-policy thresholds.",
+                }
+            )
+    except Exception:
+        optimization = {"predictive": {}, "decision_quality": {}}
+
     items.sort(key=lambda x: {"high": 0, "medium": 1, "low": 2}.get(x.get("priority", "low"), 2))
     items = items[: max(1, min(int(limit or 20), 100))]
     return {
         "chat_id": "all" if chat_id is None else int(chat_id),
         "days": int(days),
         "items": items,
+        "optimization": optimization,
     }
 
 

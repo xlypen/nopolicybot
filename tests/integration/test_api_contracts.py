@@ -131,6 +131,53 @@ def test_api_decisions_recent_contract(monkeypatch):
         assert isinstance(body["decisions"], list)
 
 
+def test_api_decisions_feedback_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import decision_engine
+
+    monkeypatch.setattr(
+        decision_engine,
+        "apply_decision_feedback",
+        lambda event_id, feedback, score=None, reviewer="admin", note="": {
+            "event_id": event_id,
+            "feedback_label": feedback,
+            "feedback_score": 1.0 if feedback == "approve" else 0.0,
+        },
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.post(
+            "/api/decisions/feedback",
+            json={"event_id": "evt-1", "feedback": "approve", "reviewer": "qa"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "decision" in body
+
+
+def test_api_decisions_quality_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import decision_engine
+
+    monkeypatch.setattr(
+        decision_engine,
+        "get_decision_quality",
+        lambda chat_id=None, days=30: {
+            "chat_id": "all",
+            "days": days,
+            "total_decisions": 10,
+            "feedback_count": 4,
+            "approval_rate": 0.75,
+        },
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/decisions/quality?days=30")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "quality" in body
+
+
 def test_api_recommendations_contract(monkeypatch):
     _disable_auth(monkeypatch)
     from services import recommendations

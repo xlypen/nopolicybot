@@ -1516,6 +1516,68 @@ def api_decisions_recent():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/api/decisions/feedback", methods=["POST"])
+@login_required
+def api_decisions_feedback():
+    """Store admin feedback for a DecisionEngine event."""
+    try:
+        from services.decision_engine import apply_decision_feedback
+
+        payload = request.get_json(silent=True) or {}
+        event_id = str(payload.get("event_id") or "").strip()
+        feedback = str(payload.get("feedback") or "neutral").strip().lower()
+        score_raw = payload.get("score")
+        score = float(score_raw) if score_raw is not None else None
+        note = str(payload.get("note") or "")
+        reviewer = str(payload.get("reviewer") or "admin")
+        if not event_id:
+            return jsonify({"ok": False, "error": "event_id is required"}), 400
+        if feedback not in {"approve", "reject", "neutral", "accepted", "rejected", "positive", "negative"}:
+            return jsonify({"ok": False, "error": "invalid feedback"}), 400
+        row = apply_decision_feedback(
+            event_id=event_id,
+            feedback=feedback,
+            score=score,
+            reviewer=reviewer,
+            note=note,
+        )
+        if row is None:
+            return jsonify({"ok": False, "error": "event not found"}), 404
+        _API_CACHE.clear_prefix("decisions_recent")
+        _API_CACHE.clear_prefix("decisions_quality")
+        return jsonify({"ok": True, "decision": row})
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid score"}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/decisions/quality")
+@login_required
+def api_decisions_quality():
+    """Aggregated quality/approval dashboard for moderation decisions."""
+    try:
+        from services.decision_engine import get_decision_quality
+
+        chat_id = request.args.get("chat_id")
+        days_raw = request.args.get("days", "30")
+        try:
+            days = max(1, min(180, int(days_raw)))
+        except ValueError:
+            return jsonify({"ok": False, "error": "invalid days"}), 400
+        cid = int(chat_id) if chat_id and str(chat_id).lstrip("-").isdigit() else None
+        payload = _cached_json(
+            "decisions_quality",
+            20,
+            lambda: get_decision_quality(chat_id=cid, days=days),
+            chat_id=cid,
+            days=days,
+        )
+        return jsonify({"ok": True, "quality": payload})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/clear-images-archive", methods=["POST"])
 @login_required
 def api_clear_images_archive():

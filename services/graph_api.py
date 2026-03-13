@@ -15,6 +15,9 @@ try:
 except Exception:  # pragma: no cover - optional runtime dependency fallback
     nx = None
 
+WEBGL_HINT_NODE_THRESHOLD = 260
+WEBGL_HINT_EDGE_THRESHOLD = 1100
+
 
 def _downsample_large_graph(nodes: list[dict], edges: list[dict], max_nodes: int = 320, max_edges: int = 900):
     if len(nodes) <= max_nodes and len(edges) <= max_edges:
@@ -252,6 +255,14 @@ def _build_payload_from_rows(chat_id, rows, names, period: str = "all", ego_user
         e["bridge_score"] = round(bridge_score, 6)
     nodes, edges, ds_meta = _downsample_large_graph(nodes, edges)
     comm_algo = str(comm_stats.get("algo", "builtin_fallback_round_robin") or "builtin_fallback_round_robin")
+    original_nodes = int(ds_meta.get("original_nodes", len(nodes)) or len(nodes))
+    original_edges = int(ds_meta.get("original_edges", len(edges)) or len(edges))
+    prefer_webgl = bool(
+        bool(ds_meta.get("applied", False))
+        or original_nodes >= WEBGL_HINT_NODE_THRESHOLD
+        or original_edges >= WEBGL_HINT_EDGE_THRESHOLD
+    )
+    render_profile = "very_large" if prefer_webgl else ("medium" if (len(nodes) >= 120 or len(edges) >= 320) else "small")
     return {
         "nodes": nodes,
         "edges": edges,
@@ -268,6 +279,12 @@ def _build_payload_from_rows(chat_id, rows, names, period: str = "all", ego_user
             "graph_engine": "networkx" if comm_algo.startswith("networkx") else "builtin",
             "downsampled": bool(ds_meta.get("applied", False)),
             "downsample_meta": ds_meta,
+            "preferred_renderer": "webgl" if prefer_webgl else "standard",
+            "render_profile": render_profile,
+            "render_thresholds": {
+                "webgl_nodes": WEBGL_HINT_NODE_THRESHOLD,
+                "webgl_edges": WEBGL_HINT_EDGE_THRESHOLD,
+            },
         },
     }
 

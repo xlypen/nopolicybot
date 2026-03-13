@@ -60,3 +60,27 @@ def test_build_payload_contains_graph_engine_analytics_fields():
     meta = payload["meta"]
     assert meta["graph_engine"] in {"networkx", "builtin"}
     assert isinstance(meta["communities_algo"], str) and meta["communities_algo"]
+    assert meta["preferred_renderer"] in {"standard", "webgl"}
+    assert meta["render_profile"] in {"small", "medium", "very_large"}
+    assert isinstance(meta["render_thresholds"], dict)
+    assert int(meta["render_thresholds"]["webgl_nodes"]) > 0
+    assert int(meta["render_thresholds"]["webgl_edges"]) > 0
+
+
+def test_build_payload_marks_very_large_graph_for_webgl():
+    rows = []
+    for i in range(1, 900):
+        rows.append(
+            {
+                "user_a": i,
+                "user_b": i + 1,
+                "message_count_total": 1,
+                "message_count_7d": 1,
+                "message_count_30d": 1,
+            }
+        )
+    payload = graph_api._build_payload_from_rows(chat_id=1, rows=rows, names={}, period="7d", ego_user=None, limit=None, rank_by_user={})
+    meta = payload["meta"]
+    assert meta["preferred_renderer"] == "webgl"
+    assert meta["render_profile"] == "very_large"
+    assert bool(meta["downsampled"]) is True

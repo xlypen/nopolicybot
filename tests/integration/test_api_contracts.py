@@ -339,3 +339,23 @@ def test_api_me_graph_delta_contract(monkeypatch):
         assert second["ok"] is True
         assert second["changed"] is False
         assert "delta" in second
+
+
+def test_api_monitoring_metrics_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/monitoring/metrics")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "metrics" in body
+
+
+def test_api_monitoring_alerts_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/monitoring/alerts?limit=20")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "alerts" in body

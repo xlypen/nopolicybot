@@ -38,3 +38,24 @@ def test_fastapi_graph_delta_contract_authorized():
         second_body = second.json()
         assert second_body["changed"] is False
         assert "delta" in second_body
+
+
+def test_fastapi_metrics_contract_authorized():
+    headers = {"Authorization": "Bearer change-me-in-production"}
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/metrics", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert "metrics" in body
+
+
+def test_fastapi_alerts_contract_authorized():
+    headers = {"Authorization": "Bearer change-me-in-production"}
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/alerts?limit=20", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert "alerts" in body
+        assert "metrics" in body

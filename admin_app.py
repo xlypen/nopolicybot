@@ -24,16 +24,19 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 MODE_CHANGES_LOG = Path(__file__).resolve().parent / "mode_changes.log"
 
-from flask import Flask, jsonify, redirect, render_template, Response, request, session, url_for
+from flask import Flask, Response, g, jsonify, redirect, render_template, request, session, url_for
 from dotenv import load_dotenv
 from routes.social_graph_routes import register_social_graph_routes
 import bot_settings
 from ai.prompts import get_all_prompts, reset_prompts, set_prompt
+from services.audit_log import read_recent, write_event
 from services.cache_backend import CacheBackend
+from services.monitoring import build_alerts, record_request, snapshot, to_prometheus_text
+from services.structured_logging import configure_logging
 
 load_dotenv(Path(__file__).resolve().parent / ".env", encoding="utf-8-sig")
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+configure_logging("flask-admin")
 
 app = Flask(__name__)
 app.secret_key = os.getenv("ADMIN_SECRET_KEY", "change-me-in-production")
@@ -72,6 +75,31 @@ _API_CACHE = CacheBackend(namespace="admin_api", default_ttl=45)
 
 # Токен для участников: просмотр своего профиля и графа связей (без входа в админку)
 PARTICIPANT_TOKEN_TTL_SEC = 7 * 24 * 3600  # 7 дней
+
+
+@app.before_request
+def _monitoring_before_request():
+    g._request_started_at = time.perf_counter()
+
+
+@app.after_request
+def _monitoring_after_request(response):
+    started = getattr(g, "_request_started_at", None)
+    if started is None:
+        return response
+    elapsed = (time.perf_counter() - float(started)) * 1000.0
+    try:
+        record_request("flask_admin", request.method, request.path, int(response.status_code), elapsed)
+        if int(response.status_code) >= 500:
+            write_event(
+                "flask_5xx_response",
+                severity="error",
+                source="flask_admin",
+                payload={"path": request.path, "method": request.method, "status_code": int(response.status_code)},
+            )
+    except Exception:
+        pass
+    return response
 
 
 def _participant_secret() -> bytes:
@@ -326,6 +354,28 @@ register_social_graph_routes(app, login_required)
 @app.route("/health")
 def health():
     return jsonify({"status": "ok", "service": "flask-admin"})
+
+
+@app.route("/api/monitoring/metrics")
+@login_required
+def api_monitoring_metrics():
+    fmt = (request.args.get("format") or "json").strip().lower()
+    snap = snapshot("flask_admin")
+    if fmt in {"prom", "prometheus", "text"}:
+        return Response(to_prometheus_text(snap, prefix="nopolicybot_flask_admin"), mimetype="text/plain")
+    return jsonify({"ok": True, "metrics": snap})
+
+
+@app.route("/api/monitoring/alerts")
+@login_required
+def api_monitoring_alerts():
+    try:
+        limit = max(1, min(500, int(request.args.get("limit", "120"))))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid limit"}), 400
+    snap = snapshot("flask_admin")
+    rows = read_recent(limit=limit)
+    return jsonify({"ok": True, "alerts": build_alerts(snap, rows), "metrics": snap, "audit_events": rows[-20:]})
 
 
 @app.route("/login", methods=["GET", "POST"])

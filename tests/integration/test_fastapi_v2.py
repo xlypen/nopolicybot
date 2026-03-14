@@ -32,6 +32,13 @@ def test_fastapi_cors_allows_known_origin(monkeypatch):
         assert resp.status_code == 200
 
 
+def test_fastapi_cors_allows_same_origin_when_allowed_origins_empty(monkeypatch):
+    monkeypatch.delenv("ALLOWED_ORIGINS", raising=False)
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/health", headers={"Origin": "http://testserver"})
+        assert resp.status_code == 200
+
+
 def test_fastapi_graph_unauthorized():
     with TestClient(app) as client:
         resp = client.get("/api/v2/graph/1")

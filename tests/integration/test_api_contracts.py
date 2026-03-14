@@ -673,6 +673,20 @@ def test_flask_cors_allows_known_origin(monkeypatch):
         assert resp.status_code == 200
 
 
+def test_flask_cors_allows_same_origin_when_allowed_origins_empty(monkeypatch):
+    _disable_auth(monkeypatch)
+    monkeypatch.delenv("ALLOWED_ORIGINS", raising=False)
+    with admin_app.app.test_client() as client:
+        resp = client.post(
+            "/api/portrait-from-storage",
+            headers={"Origin": "http://localhost"},
+            json={"user_id": 123, "chat_id": "all"},
+        )
+        assert resp.status_code != 403
+        body = resp.get_json() or {}
+        assert body.get("error") != "origin not allowed"
+
+
 def test_api_topic_policies_contract(monkeypatch):
     _disable_auth(monkeypatch)
     from services import topic_policies as tp

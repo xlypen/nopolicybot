@@ -56,14 +56,48 @@ def _allowed_origins() -> list[str]:
     return out
 
 
-def _origin_allowed(origin: str) -> bool:
-    allowed = _allowed_origins()
+def _normalize_origin(origin: str) -> str:
     src = str(origin or "").strip().rstrip("/")
     if not src:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(src)
+    except Exception:
+        return src.lower()
+    scheme = str(parsed.scheme or "").strip().lower()
+    host = str(parsed.hostname or "").strip().lower()
+    port = parsed.port
+    if not scheme or not host:
+        return src.lower()
+    if (scheme == "http" and (port is None or int(port) == 80)) or (scheme == "https" and (port is None or int(port) == 443)):
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{int(port)}"
+
+
+def _request_origin() -> str:
+    scheme = str(request.headers.get("x-forwarded-proto", "") or "").split(",")[0].strip().lower()
+    host = str(request.headers.get("x-forwarded-host", "") or "").split(",")[0].strip()
+    if not host:
+        host = str(request.host or "").strip()
+    if not scheme:
+        scheme = str(request.scheme or "").strip().lower() or "http"
+    if not host:
+        return ""
+    return _normalize_origin(f"{scheme}://{host}")
+
+
+def _origin_allowed(origin: str) -> bool:
+    src = _normalize_origin(origin)
+    if not src:
         return True
+    req_origin = _request_origin()
+    if req_origin and src == req_origin:
+        return True
+    allowed = {_normalize_origin(item) for item in _allowed_origins()}
+    allowed.discard("")
     if not allowed:
         return False
-    return src in set(allowed)
+    return src in allowed
 
 
 app = Flask(__name__)

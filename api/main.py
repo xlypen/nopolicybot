@@ -1,16 +1,19 @@
 import time
 import os
+from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Query, Request
+from fastapi import Depends, FastAPI, Path, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from config.validate_secrets import validate_secrets
 from api.dependencies import require_auth
 from api.routers.graph import router as graph_router
 from api.routers.health import router as health_router
 from api.routers.realtime import router as realtime_router
-from api.routers.realtime import start_realtime_worker, stop_realtime_worker
+from api.routers.realtime import get_realtime_stats_snapshot, start_realtime_worker, stop_realtime_worker
 from db.engine import init_db
 from services.audit_log import read_recent, write_event
 from services.monitoring import build_alerts, record_request, snapshot, to_prometheus_text
@@ -20,8 +23,82 @@ from services.structured_logging import configure_logging
 load_dotenv()
 configure_logging("api-v2")
 
-app = FastAPI(title="Political Monitor API v2", version="2.0.0", docs_url="/api/v2/docs", redoc_url="/api/v2/redoc")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+def _allowed_origins() -> list[str]:
+    raw = str(os.getenv("ALLOWED_ORIGINS", "") or "").strip()
+    if not raw:
+        return []
+    out: list[str] = []
+    for item in raw.split(","):
+        origin = str(item or "").strip().rstrip("/")
+        if origin and origin not in out:
+            out.append(origin)
+    return out
+
+
+def _normalize_origin(origin: str) -> str:
+    src = str(origin or "").strip().rstrip("/")
+    if not src:
+        return ""
+    try:
+        parsed = urlsplit(src)
+    except Exception:
+        return src.lower()
+    scheme = str(parsed.scheme or "").strip().lower()
+    host = str(parsed.hostname or "").strip().lower()
+    port = parsed.port
+    if not scheme or not host:
+        return src.lower()
+    if (scheme == "http" and (port is None or int(port) == 80)) or (scheme == "https" and (port is None or int(port) == 443)):
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{int(port)}"
+
+
+def _request_origin(request: Request) -> str:
+    scheme = str(request.headers.get("x-forwarded-proto", "") or "").split(",")[0].strip().lower()
+    host = str(request.headers.get("x-forwarded-host", "") or "").split(",")[0].strip()
+    if not host:
+        host = str(request.headers.get("host", "") or "").strip()
+    if not scheme:
+        scheme = str(request.url.scheme or "").strip().lower() or "http"
+    if not host:
+        return ""
+    return _normalize_origin(f"{scheme}://{host}")
+
+
+def _origin_allowed(origin: str, request: Request) -> bool:
+    src = _normalize_origin(origin)
+    if not src:
+        return True
+    req_origin = _request_origin(request)
+    if req_origin and src == req_origin:
+        return True
+    allowed = {_normalize_origin(item) for item in _allowed_origins()}
+    allowed.discard("")
+    if not allowed:
+        return False
+    return src in allowed
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    validate_secrets("api")
+    await init_db()
+    await start_realtime_worker()
+    try:
+        yield
+    finally:
+        await stop_realtime_worker()
+
+
+app = FastAPI(
+    title="Political Monitor API v2",
+    version="2.0.0",
+    docs_url="/api/v2/docs",
+    redoc_url="/api/v2/redoc",
+    lifespan=lifespan,
+)
+app.add_middleware(CORSMiddleware, allow_origins=_allowed_origins(), allow_methods=["*"], allow_headers=["*"])
 _API_RATE_LIMITER = RateLimiter(namespace="api_v2_ratelimit")
 
 
@@ -47,6 +124,16 @@ async def monitoring_middleware(request: Request, call_next):
     started = time.perf_counter()
     path = str(request.url.path or "/")
     cfg = _hardening_config()
+    if path.startswith("/api/v2"):
+        origin = str(request.headers.get("origin", "") or "").strip()
+        if origin and not _origin_allowed(origin, request):
+            write_event(
+                "request_blocked_origin_not_allowed",
+                severity="warning",
+                source="api_v2",
+                payload={"path": path, "method": request.method, "origin": origin[:240]},
+            )
+            return JSONResponse({"ok": False, "error": "origin not allowed"}, status_code=403)
     if path.startswith("/api/v2") and path not in {"/api/v2/health"}:
         full_url = str(request.url)
         if len(full_url) > int(cfg["max_url_length"]):
@@ -107,17 +194,6 @@ async def monitoring_middleware(request: Request, call_next):
     return response
 
 
-@app.on_event("startup")
-async def startup():
-    await init_db()
-    await start_realtime_worker()
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    await stop_realtime_worker()
-
-
 @app.get("/api/v2/health")
 async def health():
     return {"status": "ok", "version": "2.0.0"}
@@ -126,10 +202,22 @@ async def health():
 @app.get("/api/v2/metrics")
 async def metrics(format: str = Query(default="json"), _auth=Depends(require_auth)):
     snap = snapshot("api_v2")
+    realtime_stats = await get_realtime_stats_snapshot()
     fmt = str(format or "json").strip().lower()
     if fmt in {"prom", "prometheus", "text"}:
-        return PlainTextResponse(to_prometheus_text(snap, prefix="nopolicybot_api_v2"), media_type="text/plain; version=0.0.4")
-    return {"ok": True, "metrics": snap}
+        base = to_prometheus_text(snap, prefix="nopolicybot_api_v2")
+        lines = [base.rstrip("\n")]
+        util = (realtime_stats or {}).get("ws_queue_utilization") or {}
+        lines.append("# HELP nopolicybot_api_v2_ws_queue_utilization WebSocket queue utilization by chat")
+        lines.append("# TYPE nopolicybot_api_v2_ws_queue_utilization gauge")
+        for chat_id, row in util.items():
+            try:
+                val = float((row or {}).get("max", 0.0) or 0.0)
+            except Exception:
+                val = 0.0
+            lines.append(f'nopolicybot_api_v2_ws_queue_utilization{{chat_id="{chat_id}"}} {val}')
+        return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
+    return {"ok": True, "metrics": snap, "realtime": realtime_stats}
 
 
 @app.get("/api/v2/alerts")
@@ -137,6 +225,20 @@ async def alerts(limit: int = Query(default=120, ge=1, le=500), _auth=Depends(re
     snap = snapshot("api_v2")
     audit_rows = read_recent(limit=limit)
     return {"ok": True, "alerts": build_alerts(snap, audit_rows), "metrics": snap, "audit_events": audit_rows[-20:]}
+
+
+@app.delete("/api/v2/users/{user_id}/data")
+async def erase_user_data(user_id: int = Path(..., ge=1), _auth=Depends(require_auth)):
+    from services.data_privacy import erase_user_data as erase_user_data_impl
+
+    result = await erase_user_data_impl(int(user_id))
+    write_event(
+        "user_data_erased",
+        severity="warning",
+        source="api_v2",
+        payload={"user_id": int(user_id), "result": result},
+    )
+    return {"ok": True, "result": result}
 
 
 app.include_router(health_router, prefix="/api/v2", tags=["health"])

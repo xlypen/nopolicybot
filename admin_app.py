@@ -13,6 +13,7 @@ import json
 import logging
 import mimetypes
 import os
+import secrets
 import subprocess
 import time
 import urllib.request
@@ -25,7 +26,9 @@ logger = logging.getLogger(__name__)
 MODE_CHANGES_LOG = Path(__file__).resolve().parent / "mode_changes.log"
 
 from flask import Flask, Response, g, jsonify, redirect, render_template, request, session, url_for
+from flask_cors import CORS
 from dotenv import load_dotenv
+from config.validate_secrets import validate_secrets
 from routes.social_graph_routes import register_social_graph_routes
 import bot_settings
 from ai.prompts import get_all_prompts, reset_prompts, set_prompt
@@ -38,9 +41,34 @@ from services.structured_logging import configure_logging
 load_dotenv(Path(__file__).resolve().parent / ".env", encoding="utf-8-sig")
 
 configure_logging("flask-admin")
+validate_secrets("admin")
+
+
+def _allowed_origins() -> list[str]:
+    raw = str(os.getenv("ALLOWED_ORIGINS", "") or "").strip()
+    if not raw:
+        return []
+    out: list[str] = []
+    for item in raw.split(","):
+        origin = str(item or "").strip().rstrip("/")
+        if origin and origin not in out:
+            out.append(origin)
+    return out
+
+
+def _origin_allowed(origin: str) -> bool:
+    allowed = _allowed_origins()
+    src = str(origin or "").strip().rstrip("/")
+    if not src:
+        return True
+    if not allowed:
+        return False
+    return src in set(allowed)
+
 
 app = Flask(__name__)
-app.secret_key = os.getenv("ADMIN_SECRET_KEY", "change-me-in-production")
+app.secret_key = os.getenv("ADMIN_SECRET_KEY", "")
+CORS(app, resources={r"/api/*": {"origins": _allowed_origins()}}, allow_headers=["*"], methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 mimetypes.add_type("text/javascript", ".jsx")
 USERS_JSON = Path(__file__).resolve().parent / "user_stats.json"
 # Пароль админа: из переменной окружения или из файла (задаётся один раз через страницу /login)
@@ -58,6 +86,14 @@ def _get_admin_password() -> str:
         except Exception:
             pass
     return ""
+
+
+def _login_csrf_token() -> str:
+    token = str(session.get("login_csrf_token") or "").strip()
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["login_csrf_token"] = token
+    return token
 RESTART_FLAG_PATH = Path(__file__).resolve().parent / "restart_bot.flag"
 BOT_LAST_START_PATH = Path(__file__).resolve().parent / "bot_last_start.json"
 RESET_POLITICAL_COUNT_PATH = Path(__file__).resolve().parent / "reset_political_count.json"
@@ -97,9 +133,19 @@ def _client_ip_from_request() -> str:
 @app.before_request
 def _monitoring_before_request():
     g._request_started_at = time.perf_counter()
+    path = str(request.path or "/")
+    if path.startswith("/api/"):
+        origin = str(request.headers.get("origin", "") or "").strip()
+        if origin and not _origin_allowed(origin):
+            write_event(
+                "flask_request_blocked_origin_not_allowed",
+                severity="warning",
+                source="flask_admin",
+                payload={"path": path, "method": request.method, "origin": origin[:240]},
+            )
+            return jsonify({"ok": False, "error": "origin not allowed"}), 403
     if app.testing or os.getenv("PYTEST_CURRENT_TEST"):
         return None
-    path = str(request.path or "/")
     if not path.startswith("/api/"):
         return None
     cfg = _flask_hardening_config()
@@ -154,11 +200,16 @@ def _monitoring_after_request(response):
             )
     except Exception:
         pass
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    if bool(request.is_secure):
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response
 
 
 def _participant_secret() -> bytes:
-    raw = (os.getenv("PARTICIPANT_SECRET") or os.getenv("ADMIN_SECRET_KEY") or "change-me-in-production").strip()
+    raw = (os.getenv("PARTICIPANT_SECRET") or os.getenv("ADMIN_SECRET_KEY") or "").strip()
     return raw.encode("utf-8")
 
 
@@ -445,6 +496,21 @@ def api_monitoring_alerts():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     pw = _get_admin_password()
+    error = ""
+    status = 200
+    csrf_token = _login_csrf_token()
+
+    if request.method == "POST":
+        form_token = str(request.form.get("csrf_token") or "").strip()
+        if not form_token or not hmac.compare_digest(form_token, csrf_token):
+            session["login_csrf_token"] = secrets.token_urlsafe(32)
+            return render_template(
+                "login.html",
+                set_password=(not bool(pw)),
+                error="Сессия формы истекла. Обновите страницу и попробуйте снова.",
+                csrf_token=session["login_csrf_token"],
+            ), 400
+
     # Первый запуск: пароль не задан — показываем форму «Задайте пароль»
     if not pw:
         if request.method == "POST":
@@ -454,15 +520,25 @@ def login():
                     ADMIN_PASSWORD_FILE.parent.mkdir(parents=True, exist_ok=True)
                     ADMIN_PASSWORD_FILE.write_text(new_pw, encoding="utf-8")
                     session["admin_logged_in"] = True
+                    session.pop("login_csrf_token", None)
                     return redirect(url_for("admin"))
                 except Exception as e:
                     logger.warning("Не удалось сохранить пароль: %s", e)
-        return render_template("login.html", set_password=True)
+                    error = "Не удалось сохранить пароль. Повторите попытку."
+                    status = 500
+            else:
+                error = "Пароль должен содержать минимум 6 символов."
+                status = 400
+        return render_template("login.html", set_password=True, error=error, csrf_token=csrf_token), status
+
     if request.method == "POST":
         if request.form.get("password") == pw:
             session["admin_logged_in"] = True
+            session.pop("login_csrf_token", None)
             return redirect(url_for("admin"))
-    return render_template("login.html", set_password=False)
+        error = "Неверный пароль."
+        status = 401
+    return render_template("login.html", set_password=False, error=error, csrf_token=csrf_token), status
 
 
 @app.route("/logout")
@@ -490,26 +566,7 @@ def participant_me():
         return render_template("participant_me.html", error="Профиль не найден", user_id=None), 404
     from user_stats import get_user
     u = get_user(int(user_id), u.get("display_name", ""))
-    import social_graph
-    connections_all = social_graph.get_connections(None)
-    my_connections = [
-        r for r in connections_all
-        if int(r.get("user_a", 0) or 0) == user_id or int(r.get("user_b", 0) or 0) == user_id
-    ]
-    my_connections = sorted(my_connections, key=lambda r: int(r.get("message_count_7d", 0) or 0), reverse=True)[:50]
-    me_chat_ids = sorted(
-        {
-            int(r.get("chat_id", 0) or 0)
-            for r in my_connections
-            if int(r.get("chat_id", 0) or 0) != 0
-        }
-    )
-    from user_stats import get_user_display_names
-    names = get_user_display_names()
-    for r in my_connections:
-        ua, ub = int(r.get("user_a", 0) or 0), int(r.get("user_b", 0) or 0)
-        peer_id = ub if ua == user_id else ua
-        r["peer_name"] = names.get(str(peer_id), str(peer_id))
+    my_connections, me_chat_ids = _collect_user_connections(user_id=user_id, chat_id=None, limit=50)
     from utils.labels import TONE_RU, TOPIC_RU
     from services.portrait_image import PORTRAIT_IMAGES_DIR
     portrait_path = PORTRAIT_IMAGES_DIR / f"{user_id}.png"
@@ -532,6 +589,68 @@ def participant_me():
     )
 
 
+def _collect_user_connections(user_id: int, chat_id: int | None, limit: int = 50) -> tuple[list[dict], list[int]]:
+    import social_graph
+    from user_stats import get_user_display_names
+
+    connections_all = social_graph.get_connections(chat_id)
+    my_connections = [
+        r for r in connections_all
+        if int(r.get("user_a", 0) or 0) == int(user_id) or int(r.get("user_b", 0) or 0) == int(user_id)
+    ]
+    my_connections = sorted(my_connections, key=lambda r: int(r.get("message_count_7d", 0) or 0), reverse=True)[:max(1, int(limit))]
+    my_chat_ids = sorted(
+        {
+            int(r.get("chat_id", 0) or 0)
+            for r in my_connections
+            if int(r.get("chat_id", 0) or 0) != 0
+        }
+    )
+    names = get_user_display_names()
+    for r in my_connections:
+        ua, ub = int(r.get("user_a", 0) or 0), int(r.get("user_b", 0) or 0)
+        peer_id = ub if ua == int(user_id) else ua
+        r["peer_name"] = names.get(str(peer_id), str(peer_id))
+    return my_connections, my_chat_ids
+
+
+@app.route("/admin/user/<path:user_id>")
+@login_required
+def admin_user_profile(user_id):
+    if not str(user_id).lstrip("-").isdigit():
+        return "Некорректный user_id", 400
+    uid = int(user_id)
+    chat_id_raw = (request.args.get("chat") or "all").strip()
+    chat_id = chat_id_raw if chat_id_raw else "all"
+    chat_int = int(chat_id) if chat_id != "all" and str(chat_id).lstrip("-").isdigit() else None
+
+    data = _load_users()
+    users = (data or {}).get("users", {}) or {}
+    current = users.get(str(uid), {})
+
+    from user_stats import get_user
+    u = get_user(uid, current.get("display_name", ""))
+    if not u:
+        return "Пользователь не найден", 404
+
+    from services.portrait_image import PORTRAIT_IMAGES_DIR
+    portrait_path = PORTRAIT_IMAGES_DIR / f"{uid}.png"
+    portrait_exists = portrait_path.exists()
+    my_connections, _my_chat_ids = _collect_user_connections(user_id=uid, chat_id=chat_int, limit=25)
+
+    return render_template(
+        "admin/user_profile.html",
+        user_id=str(uid),
+        u=u,
+        chat_id=chat_id,
+        rank_labels=RANK_LABELS,
+        effective_tone=_get_effective_tone(u),
+        my_connections=my_connections,
+        portrait_exists=portrait_exists,
+        me_url=_participant_me_url(uid, request.host_url.rstrip("/")),
+    )
+
+
 @app.route("/admin")
 @login_required
 def admin():
@@ -539,6 +658,21 @@ def admin():
     if not legacy:
         return admin_modern()
     return admin_legacy()
+
+
+def _chat_mode_descriptions() -> dict[str, str]:
+    try:
+        from bot_settings import CHAT_MODE_PRESETS
+
+        return {k: v.get("_desc", v.get("_label", k)) for k, v in CHAT_MODE_PRESETS.items()} | {"custom": "Ручные переопределения в настройках чата"}
+    except Exception:
+        return {
+            "default": "Глобальные настройки",
+            "soft": "Реакции 1–5, замечания с 5-го",
+            "active": "Реакции с 1-го, замечания с 3-го",
+            "beast": "Максимум с 1-го",
+            "custom": "Ручные переопределения",
+        }
 
 
 @app.route("/admin-legacy")
@@ -558,11 +692,7 @@ def admin_legacy():
         users = all_users
 
     chat_mode = None
-    try:
-        from bot_settings import CHAT_MODE_PRESETS
-        chat_mode_descriptions = {k: v.get("_desc", v.get("_label", k)) for k, v in CHAT_MODE_PRESETS.items()} | {"custom": "Ручные переопределения в настройках чата"}
-    except Exception:
-        chat_mode_descriptions = {"default": "Глобальные настройки", "soft": "Реакции 1–5, замечания с 5-го", "active": "Реакции с 1-го, замечания с 3-го", "beast": "Максимум с 1-го", "custom": "Ручные переопределения"}
+    chat_mode_descriptions = _chat_mode_descriptions()
     if chat_id and chat_id != "all" and str(chat_id).lstrip("-").isdigit():
         try:
             from bot_settings import get_chat_mode
@@ -636,6 +766,8 @@ def admin_modern():
     return render_template(
         "admin/dashboard.html",
         chats=get_chats(),
+        chat_mode_presets={"default": "По умолчанию", "soft": "Мягкий", "active": "Активный", "beast": "Зверь"},
+        chat_mode_descriptions=_chat_mode_descriptions(),
         metrics={
             "users": total_users,
             "messages": total_messages,
@@ -807,11 +939,34 @@ def api_settings():
     return jsonify({"ok": True, "settings": get_all()})
 
 
-@app.route("/api/chat-mode", methods=["POST"])
+@app.route("/api/chat-mode", methods=["GET", "POST"])
 @login_required
 def api_chat_mode():
-    """Установить режим чата. POST: {chat_id: 123, mode: "default"|"soft"|"active"|"beast"}."""
+    """Чтение/установка режима чата.
+    GET: ?chat_id=123
+    POST: {chat_id: 123, mode: "default"|"soft"|"active"|"beast"}
+    """
     try:
+        if request.method == "GET":
+            chat_id = request.args.get("chat_id")
+            if chat_id is None:
+                return jsonify({"ok": False, "error": "Нужен chat_id"}), 400
+            try:
+                cid = int(chat_id)
+            except (ValueError, TypeError):
+                return jsonify({"ok": False, "error": "chat_id должен быть числом"}), 400
+            from bot_settings import get_chat_mode
+
+            mode = get_chat_mode(cid)
+            descriptions = _chat_mode_descriptions()
+            return jsonify({
+                "ok": True,
+                "chat_id": cid,
+                "mode": mode,
+                "label": descriptions.get(mode, mode),
+                "descriptions": descriptions,
+            })
+
         data = request.get_json() or {}
         chat_id = data.get("chat_id")
         mode = data.get("mode")
@@ -834,7 +989,7 @@ def api_chat_mode():
                     f.write(msg + "\n")
             except Exception:
                 pass
-            return jsonify({"ok": True, "mode": mode, "label": label})
+            return jsonify({"ok": True, "mode": mode, "label": label, "descriptions": _chat_mode_descriptions()})
         return jsonify({"ok": False, "error": "Не удалось применить режим"}), 500
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -1657,6 +1812,252 @@ def api_chat_graph_compat(chat_id: str):
     return jsonify({"ok": True, "graph": payload, "graph_version": version})
 
 
+def _parse_graph_chat_id(chat_id: str) -> int | None:
+    return None if chat_id == "all" else (int(chat_id) if str(chat_id).lstrip("-").isdigit() else None)
+
+
+def _safe_graph_lab_filters(raw: str) -> dict:
+    if not raw:
+        return {}
+    if len(raw) > 12000:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _node_engagement_value(node: dict) -> float:
+    candidates = (
+        node.get("engagement"),
+        node.get("engagement_score"),
+        node.get("influence_score"),
+        node.get("centrality"),
+        node.get("degree"),
+    )
+    for c in candidates:
+        try:
+            v = float(c)
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            return v
+    return 0.0
+
+
+def _apply_graph_lab_filters(payload: dict, filters: dict) -> dict:
+    base_nodes = [dict(x) for x in (payload.get("nodes") or [])]
+    base_edges = [dict(x) for x in (payload.get("edges") or [])]
+    node_ids = {int(n.get("id", 0) or 0) for n in base_nodes if int(n.get("id", 0) or 0) != 0}
+    edges = []
+    for e in base_edges:
+        s = int(e.get("source", 0) or 0)
+        t = int(e.get("target", 0) or 0)
+        if s in node_ids and t in node_ids:
+            edges.append({"source": s, "target": t, **e})
+
+    degree: dict[int, int] = {}
+    for e in edges:
+        s = int(e.get("source", 0) or 0)
+        t = int(e.get("target", 0) or 0)
+        degree[s] = degree.get(s, 0) + 1
+        degree[t] = degree.get(t, 0) + 1
+
+    min_degree = max(0, int(filters.get("min_degree", 0) or 0))
+    nodes = base_nodes
+    if min_degree > 0:
+        keep = {nid for nid, deg in degree.items() if int(deg) >= min_degree}
+        nodes = [n for n in nodes if int(n.get("id", 0) or 0) in keep]
+        keep_ids = {int(n.get("id", 0) or 0) for n in nodes}
+        edges = [e for e in edges if int(e.get("source", 0) or 0) in keep_ids and int(e.get("target", 0) or 0) in keep_ids]
+
+    engagement_threshold = max(0.0, float(filters.get("engagement", 0.0) or 0.0))
+    if engagement_threshold > 0:
+        nodes = [n for n in nodes if _node_engagement_value(n) >= engagement_threshold]
+        keep_ids = {int(n.get("id", 0) or 0) for n in nodes}
+        edges = [e for e in edges if int(e.get("source", 0) or 0) in keep_ids and int(e.get("target", 0) or 0) in keep_ids]
+
+    focus_raw = str(filters.get("focus_user") or "").strip()
+    focus_user = int(focus_raw) if focus_raw.lstrip("-").isdigit() else None
+    ego_network = bool(filters.get("ego_network"))
+    if focus_user is not None:
+        if ego_network:
+            keep = {int(focus_user)}
+            for e in edges:
+                s = int(e.get("source", 0) or 0)
+                t = int(e.get("target", 0) or 0)
+                if s == int(focus_user):
+                    keep.add(t)
+                elif t == int(focus_user):
+                    keep.add(s)
+        else:
+            keep = {int(focus_user)}
+        nodes = [n for n in nodes if int(n.get("id", 0) or 0) in keep]
+        keep_ids = {int(n.get("id", 0) or 0) for n in nodes}
+        edges = [e for e in edges if int(e.get("source", 0) or 0) in keep_ids and int(e.get("target", 0) or 0) in keep_ids]
+
+    degree = {}
+    for e in edges:
+        s = int(e.get("source", 0) or 0)
+        t = int(e.get("target", 0) or 0)
+        degree[s] = degree.get(s, 0) + 1
+        degree[t] = degree.get(t, 0) + 1
+    n_count = max(1, len(nodes) - 1)
+    centrality = {nid: round(float(degree.get(nid, 0)) / float(n_count), 6) for nid in {int(n.get("id", 0) or 0) for n in nodes}}
+
+    node_by_id = {int(n.get("id", 0) or 0): n for n in nodes}
+    community_by_id = {nid: node_by_id.get(nid, {}).get("community_id") for nid in node_by_id.keys()}
+    neigh_communities: dict[int, set] = {nid: set() for nid in node_by_id.keys()}
+    for e in edges:
+        s = int(e.get("source", 0) or 0)
+        t = int(e.get("target", 0) or 0)
+        sc = community_by_id.get(s)
+        tc = community_by_id.get(t)
+        if tc is not None:
+            neigh_communities.setdefault(s, set()).add(tc)
+        if sc is not None:
+            neigh_communities.setdefault(t, set()).add(sc)
+    bridge_nodes = {nid for nid, groups in neigh_communities.items() if len(groups) >= 2}
+
+    influencers_enabled = bool(filters.get("show_influencers"))
+    bridge_enabled = bool(filters.get("show_bridges"))
+    centrality_enabled = bool(filters.get("show_centrality"))
+    outliers_enabled = bool(filters.get("show_outliers"))
+    influencer_candidates = []
+    if influencers_enabled:
+        for n in nodes:
+            nid = int(n.get("id", 0) or 0)
+            score = max(_node_engagement_value(n), float(centrality.get(nid, 0.0)))
+            influencer_candidates.append((nid, score))
+        influencer_candidates.sort(key=lambda x: x[1], reverse=True)
+    influencers = {nid for nid, _score in influencer_candidates[: max(1, int(len(influencer_candidates) * 0.1) or 3)]}
+
+    for n in nodes:
+        nid = int(n.get("id", 0) or 0)
+        if centrality_enabled:
+            c = float(centrality.get(nid, 0.0))
+            n["_centrality"] = c
+            n["_node_size"] = round(10 + c * 50, 2)
+        if bridge_enabled and nid in bridge_nodes:
+            n["_is_bridge"] = True
+            n["_color"] = "#FF6B9D"
+        if influencers_enabled and nid in influencers:
+            n["_is_influencer"] = True
+            if "_color" not in n:
+                n["_color"] = "#00D4FF"
+        if outliers_enabled and int(degree.get(nid, 0) or 0) <= 1:
+            n["_is_outlier"] = True
+            if "_color" not in n:
+                n["_color"] = "#F59E0B"
+
+    meta = dict(payload.get("meta") or {})
+    meta.update(
+        {
+            "source": "graph-lab",
+            "nodes_count": len(nodes),
+            "edges_count": len(edges),
+            "filters": filters,
+        }
+    )
+    return {"nodes": nodes, "edges": edges, "meta": meta}
+
+
+@app.route("/api/chat/<path:chat_id>/graph-lab")
+@login_required
+def api_chat_graph_lab(chat_id: str):
+    from services.graph_api import build_graph_payload
+
+    cid = _parse_graph_chat_id(chat_id)
+    raw_filters = (request.args.get("filters") or "{}").strip()
+    filters = _safe_graph_lab_filters(raw_filters)
+    try:
+        query_period = (request.args.get("period") or "7d").strip().lower()
+        activity_days = max(1, int(filters.get("activity_days", 7) or 7))
+    except (TypeError, ValueError):
+        query_period = "7d"
+        activity_days = 7
+    if activity_days <= 1:
+        period = "24h"
+    elif activity_days <= 7:
+        period = "7d"
+    elif activity_days <= 30:
+        period = "30d"
+    else:
+        period = query_period if query_period in {"24h", "7d", "30d", "all"} else "all"
+    focus_raw = str(filters.get("focus_user") or "").strip()
+    focus_user = int(focus_raw) if focus_raw.lstrip("-").isdigit() else None
+    ego_network = bool(filters.get("ego_network"))
+    ego = focus_user if (focus_user is not None and ego_network) else None
+    limit_raw = (request.args.get("limit") or "").strip()
+    limit = int(limit_raw) if limit_raw.isdigit() else None
+
+    payload = build_graph_payload(cid, period=period, ego_user=ego, limit=limit)
+    filtered = _apply_graph_lab_filters(payload, filters)
+    return jsonify({"ok": True, "graph": filtered})
+
+
+@app.route("/api/chat/<path:chat_id>/conflict-prediction")
+@login_required
+def api_chat_conflict_prediction(chat_id: str):
+    import social_graph
+    from user_stats import get_user_display_names
+
+    cid = _parse_graph_chat_id(chat_id)
+    try:
+        threshold = max(0.0, min(1.0, float(request.args.get("threshold", "0.5") or 0.5)))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid threshold"}), 400
+    try:
+        days = max(1, min(90, int(request.args.get("days", "30") or 30)))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid days"}), 400
+    try:
+        limit = max(1, min(200, int(request.args.get("limit", "50") or 50)))
+    except ValueError:
+        return jsonify({"ok": False, "error": "invalid limit"}), 400
+
+    base = social_graph.get_conflict_forecast(cid, limit=120)
+    names = get_user_display_names()
+    risks = []
+    for row in base:
+        risk = float(row.get("risk", 0.0) or 0.0)
+        c24 = int(row.get("message_count_24h", 0) or 0)
+        if days <= 1 and c24 <= 0:
+            continue
+        if risk < threshold:
+            continue
+        ua = int(row.get("user_a", 0) or 0)
+        ub = int(row.get("user_b", 0) or 0)
+        risks.append(
+            {
+                "chat_id": row.get("chat_id"),
+                "user1_id": ua,
+                "user2_id": ub,
+                "user1": names.get(str(ua), str(ua)),
+                "user2": names.get(str(ub), str(ub)),
+                "risk_score": round(risk, 4),
+                "tone": str(row.get("tone", "neutral") or "neutral"),
+                "trend_delta": float(row.get("trend_delta", 0.0) or 0.0),
+                "message_count_24h": c24,
+                "topics": list(row.get("topics") or []),
+            }
+        )
+    risks.sort(key=lambda x: float(x.get("risk_score", 0.0)), reverse=True)
+    total = len(risks)
+    return jsonify(
+        {
+            "ok": True,
+            "risks": risks[:limit],
+            "threshold": threshold,
+            "count": total,
+            "returned": min(total, limit),
+            "limit": limit,
+            "truncated": bool(total > limit),
+        }
+    )
+
+
 @app.route("/api/chat/<path:chat_id>/graph-delta")
 @login_required
 def api_chat_graph_delta(chat_id: str):
@@ -2158,8 +2559,9 @@ def api_storage_cutover():
     mode = str(payload.get("mode") or "").strip().lower()
     force = bool(payload.get("force", False))
     reason = str(payload.get("reason") or "manual").strip()
-    if mode not in {"json", "hybrid", "db"}:
-        return jsonify({"ok": False, "error": "mode must be one of: json, hybrid, db"}), 400
+    allowed_modes = {"json", "hybrid", "db", "dual", "db_first", "db_only"}
+    if mode not in allowed_modes:
+        return jsonify({"ok": False, "error": "mode must be one of: json, hybrid, db, dual, db_first, db_only"}), 400
     result = apply_cutover(mode, force=force, reason=reason)
     _API_CACHE.clear_prefix("storage_status")
     _API_CACHE.clear_prefix("storage_cutover_report")

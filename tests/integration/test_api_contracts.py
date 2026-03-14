@@ -1,8 +1,35 @@
 import admin_app
+import re
 
 
 def _disable_auth(monkeypatch):
     monkeypatch.setattr(admin_app, "login_required", lambda f: f)
+
+
+def _extract_csrf_token(html: str) -> str:
+    m = re.search(r'name="csrf_token" value="([^"]+)"', html or "")
+    return m.group(1) if m else ""
+
+
+def test_login_rejects_wrong_password_with_message(monkeypatch):
+    monkeypatch.setattr(admin_app, "_get_admin_password", lambda: "secret123")
+    with admin_app.app.test_client() as client:
+        page = client.get("/login")
+        token = _extract_csrf_token(page.get_data(as_text=True))
+        assert token
+        resp = client.post("/login", data={"password": "bad-password", "csrf_token": token})
+        assert resp.status_code == 401
+        html = resp.get_data(as_text=True)
+        assert "Неверный пароль." in html
+
+
+def test_login_rejects_missing_csrf(monkeypatch):
+    monkeypatch.setattr(admin_app, "_get_admin_password", lambda: "secret123")
+    with admin_app.app.test_client() as client:
+        resp = client.post("/login", data={"password": "secret123"})
+        assert resp.status_code == 400
+        html = resp.get_data(as_text=True)
+        assert "Сессия формы истекла" in html
 
 
 def test_admin_route_defaults_to_modern_dashboard(monkeypatch):
@@ -13,6 +40,18 @@ def test_admin_route_defaults_to_modern_dashboard(monkeypatch):
         html = resp.get_data(as_text=True)
         assert "Modern Dashboard" in html
         assert "/admin-legacy" in html
+
+
+def test_admin_dashboard_has_graph_lab_tabs(monkeypatch):
+    _disable_auth(monkeypatch)
+    with admin_app.app.test_client() as client:
+        resp = client.get("/admin")
+        assert resp.status_code == 200
+        html = resp.get_data(as_text=True)
+        assert 'data-tab="graph-view"' in html
+        assert 'data-tab="graph-lab"' in html
+        assert "labApplyFilters" in html
+        assert "/api/chat/" in html
 
 
 def test_admin_legacy_route_still_available(monkeypatch):
@@ -33,6 +72,50 @@ def test_admin_legacy_query_flag_compat(monkeypatch):
         assert "Админ-панель" in html
 
 
+def test_api_chat_mode_get_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    import bot_settings
+
+    monkeypatch.setattr(bot_settings, "get_chat_mode", lambda chat_id: "soft")
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/chat-mode?chat_id=123")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["mode"] == "soft"
+        assert "descriptions" in body
+
+
+def test_api_chat_mode_post_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    import bot_settings
+
+    monkeypatch.setattr(bot_settings, "set_chat_mode", lambda chat_id, mode: True)
+    with admin_app.app.test_client() as client:
+        resp = client.post("/api/chat-mode", json={"chat_id": 123, "mode": "active"})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["mode"] == "active"
+
+
+def test_admin_user_profile_route_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    import user_stats
+
+    monkeypatch.setattr(admin_app, "_load_users", lambda: {"users": {"42": {"display_name": "User42", "stats": {"total_messages": 12}}}})
+    monkeypatch.setattr(admin_app, "_collect_user_connections", lambda user_id, chat_id, limit=50: ([{"peer_name": "Peer1", "message_count_7d": 3, "message_count_30d": 7, "tone": "neutral"}], [1]))
+    monkeypatch.setattr(user_stats, "get_user", lambda user_id, display_name="": {"display_name": display_name or f"u{user_id}", "rank": "neutral", "stats": {"total_messages": 12, "political_messages": 2, "warnings_received": 1}})
+
+    with admin_app.app.test_client() as client:
+        resp = client.get("/admin/user/42?chat=all")
+        assert resp.status_code == 200
+        html = resp.get_data(as_text=True)
+        assert "Профиль пользователя" in html
+        assert "loadUserMetrics" in html
+        assert "USER_ID = \"42\"" in html
+
+
 def test_api_chat_graph_contract(monkeypatch):
     _disable_auth(monkeypatch)
     with admin_app.app.test_client() as client:
@@ -41,6 +124,61 @@ def test_api_chat_graph_contract(monkeypatch):
         body = resp.get_json()
         assert body["ok"] is True
         assert "graph" in body
+
+
+def test_api_chat_graph_lab_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    from services import graph_api
+
+    monkeypatch.setattr(
+        graph_api,
+        "build_graph_payload",
+        lambda chat_id, period="30d", ego_user=None, limit=None: {
+            "nodes": [
+                {"id": 1, "label": "u1", "community_id": 1, "influence_score": 0.8},
+                {"id": 2, "label": "u2", "community_id": 1, "influence_score": 0.3},
+                {"id": 3, "label": "u3", "community_id": 2, "influence_score": 0.2},
+            ],
+            "edges": [
+                {"source": 1, "target": 2, "weight_period": 5},
+                {"source": 1, "target": 3, "weight_period": 2},
+            ],
+            "meta": {"source": "db", "period": period},
+        },
+    )
+    with admin_app.app.test_client() as client:
+        resp = client.get(
+            '/api/chat/all/graph-lab?filters={"min_degree":1,"show_centrality":true,"show_bridges":true}&period=30d'
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "graph" in body
+        assert body["graph"]["meta"]["source"] == "graph-lab"
+        assert len(body["graph"]["nodes"]) >= 1
+
+
+def test_api_chat_conflict_prediction_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    import social_graph
+    import user_stats
+
+    monkeypatch.setattr(
+        social_graph,
+        "get_conflict_forecast",
+        lambda chat_id=None, limit=120: [
+            {"chat_id": 1, "user_a": 10, "user_b": 20, "tone": "toxic", "trend_delta": 0.6, "risk": 0.78, "message_count_24h": 4, "topics": ["politics"]},
+            {"chat_id": 1, "user_a": 30, "user_b": 40, "tone": "neutral", "trend_delta": 0.1, "risk": 0.22, "message_count_24h": 1, "topics": []},
+        ],
+    )
+    monkeypatch.setattr(user_stats, "get_user_display_names", lambda: {"10": "Alice", "20": "Bob", "30": "Carol", "40": "Dan"})
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/chat/all/conflict-prediction?threshold=0.5&days=30")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["count"] == 1
+        assert body["risks"][0]["user1"] == "Alice"
 
 
 def test_api_chat_graph_delta_contract(monkeypatch):
@@ -517,6 +655,22 @@ def test_api_storage_cutover_contract(monkeypatch):
         body = resp.get_json()
         assert body["ok"] is True
         assert body["mode"] == "db"
+
+
+def test_flask_cors_blocks_unknown_origin(monkeypatch):
+    _disable_auth(monkeypatch)
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://admin.example.com")
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/storage/status", headers={"Origin": "https://evil.example.com"})
+        assert resp.status_code == 403
+
+
+def test_flask_cors_allows_known_origin(monkeypatch):
+    _disable_auth(monkeypatch)
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://admin.example.com")
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/storage/status", headers={"Origin": "https://admin.example.com"})
+        assert resp.status_code == 200
 
 
 def test_api_topic_policies_contract(monkeypatch):

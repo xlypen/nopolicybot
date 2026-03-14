@@ -8,7 +8,12 @@ import user_stats
 from db.engine import get_db
 from db.repositories.edge_repo import EdgeRepository
 from db.repositories.user_repo import UserRepository
-from services.storage_cutover import get_storage_mode
+from services.storage_cutover import (
+    get_storage_mode,
+    storage_db_only_mode,
+    storage_db_reads_enabled,
+    storage_json_fallback_enabled,
+)
 
 try:
     import networkx as nx
@@ -289,17 +294,34 @@ def _build_payload_from_rows(chat_id, rows, names, period: str = "all", ego_user
     }
 
 
+def _run_db_payload_sync(chat_id: int | None, period: str, ego_user: int | None, limit: int | None) -> dict:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        coro = _build_graph_payload_from_db(chat_id, period=period, ego_user=ego_user, limit=limit)
+        try:
+            return asyncio.run(coro)
+        except Exception:
+            # asyncio.run() may fail before coroutine execution (e.g. loop policy/runtime mismatch).
+            # Explicit close avoids "coroutine was never awaited" runtime warnings.
+            coro.close()
+            raise
+    raise RuntimeError("db graph payload cannot run via asyncio.run inside active event loop")
+
+
 def build_graph_payload(chat_id: int | None, period: str = "all", ego_user: int | None = None, limit: int | None = None) -> dict:
     mode = get_storage_mode()
-    if chat_id is not None and mode in {"db", "hybrid"}:
+    if storage_db_reads_enabled(mode):
         try:
-            db_payload = asyncio.run(_build_graph_payload_from_db(chat_id, period=period, ego_user=ego_user, limit=limit))
+            db_payload = _run_db_payload_sync(chat_id, period=period, ego_user=ego_user, limit=limit)
             has_graph = bool((db_payload.get("nodes") or []) or (db_payload.get("edges") or []))
-            if has_graph or mode == "db":
+            if has_graph or storage_db_only_mode(mode):
                 return db_payload
         except Exception:
-            if mode == "db":
+            if storage_db_only_mode(mode):
                 return {"nodes": [], "edges": [], "meta": {"chat_id": chat_id, "period": str(period or "all"), "source": "db_error"}}
+    if not storage_json_fallback_enabled(mode) and storage_db_reads_enabled(mode):
+        return {"nodes": [], "edges": [], "meta": {"chat_id": chat_id, "period": str(period or "all"), "source": "db_empty"}}
 
     rows = social_graph.get_connections(chat_id)
     if not rows:
@@ -310,16 +332,30 @@ def build_graph_payload(chat_id: int | None, period: str = "all", ego_user: int 
     return payload
 
 
-async def build_payload(chat_id: int, edge_repo, user_repo, period: int = 7, ego_user: int | None = None, limit: int | None = None) -> dict:
-    edge_models = await edge_repo.get_all(chat_id)
-    user_models = await user_repo.get_all(chat_id)
+async def build_payload(chat_id: int | None, edge_repo, user_repo, period: int = 7, ego_user: int | None = None, limit: int | None = None) -> dict:
+    if chat_id is None:
+        edge_models = await edge_repo.get_all_chats()
+        user_models = await user_repo.get_all_active()
+    else:
+        edge_models = await edge_repo.get_all(chat_id)
+        user_models = await user_repo.get_all(chat_id)
+
     names = {}
+    if hasattr(user_stats, "get_user_display_names"):
+        try:
+            names.update(user_stats.get_user_display_names() or {})
+        except Exception:
+            pass
     for u in user_models or []:
         uid = int(getattr(u, "id", 0) or 0)
         if uid:
             first = str(getattr(u, "first_name", "") or "").strip()
             username = str(getattr(u, "username", "") or "").strip()
-            names[str(uid)] = first or username or str(uid)
+            db_name = first or username or str(uid)
+            if db_name and not str(db_name).lstrip("-").isdigit():
+                names[str(uid)] = db_name
+            else:
+                names.setdefault(str(uid), db_name)
     rows = [
         {
             "user_a": int(getattr(e, "from_user", 0) or 0),
@@ -333,12 +369,20 @@ async def build_payload(chat_id: int, edge_repo, user_repo, period: int = 7, ego
         for e in edge_models or []
     ]
     period_key = "7d" if int(period) == 7 else ("30d" if int(period) == 30 else ("24h" if int(period) == 1 else "all"))
-    payload = _build_payload_from_rows(chat_id=chat_id, rows=rows, names=names, period=period_key, ego_user=ego_user, limit=limit, rank_by_user={})
+    payload = _build_payload_from_rows(
+        chat_id=chat_id,
+        rows=rows,
+        names=names,
+        period=period_key,
+        ego_user=ego_user,
+        limit=limit,
+        rank_by_user={},
+    )
     payload.setdefault("meta", {})["source"] = "db"
     return payload
 
 
-async def _build_graph_payload_from_db(chat_id: int, period: str = "all", ego_user: int | None = None, limit: int | None = None) -> dict:
+async def _build_graph_payload_from_db(chat_id: int | None, period: str = "all", ego_user: int | None = None, limit: int | None = None) -> dict:
     period_key = str(period or "all").lower()
     period_days = 7
     if period_key in {"24h", "1"}:
@@ -354,7 +398,7 @@ async def _build_graph_payload_from_db(chat_id: int, period: str = "all", ego_us
         edge_repo = EdgeRepository(session)
         user_repo = UserRepository(session)
         payload = await build_payload(
-            int(chat_id),
+            None if chat_id is None else int(chat_id),
             edge_repo,
             user_repo,
             period=period_days,

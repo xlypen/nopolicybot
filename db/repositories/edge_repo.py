@@ -14,6 +14,10 @@ class EdgeRepository:
         result = await self.session.execute(select(Edge).where(Edge.chat_id == chat_id))
         return result.scalars().all()
 
+    async def get_all_chats(self) -> list[Edge]:
+        result = await self.session.execute(select(Edge))
+        return result.scalars().all()
+
     async def upsert(self, chat_id: int, from_user: int, to_user: int, weight_delta: float = 1.0, period: str = "7d"):
         existing = await self.session.execute(
             select(Edge).where(Edge.chat_id == chat_id, Edge.from_user == from_user, Edge.to_user == to_user)

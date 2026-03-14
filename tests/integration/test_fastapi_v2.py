@@ -164,6 +164,22 @@ def test_fastapi_recommendations_contract():
         assert "recommendations" in body
 
 
+def test_fastapi_storage_status_contract(monkeypatch):
+    from services import data_platform
+
+    monkeypatch.setattr(
+        data_platform,
+        "export_snapshot",
+        lambda: {"json": {"users": 0, "messages": 0}, "db": {"users": 1, "messages": 2}, "storage_primary": "db"},
+    )
+    headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/storage/status", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "json" in body or "db" in body or "storage_primary" in body
+
+
 def test_fastapi_predictive_overview_contract():
     headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
     with TestClient(app) as client:

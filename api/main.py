@@ -16,6 +16,7 @@ from api.routers.health import router as health_router
 from api.routers.predictive import router as predictive_router
 from api.routers.recommendations import router as recommendations_router
 from api.routers.realtime import router as realtime_router
+from api.routers.storage import router as storage_router
 from api.routers.realtime import get_realtime_stats_snapshot, start_realtime_worker, stop_realtime_worker
 from db.engine import init_db
 from services.audit_log import read_recent, write_event
@@ -249,4 +250,5 @@ app.include_router(graph_router, prefix="/api/v2/graph", tags=["graph"])
 app.include_router(admin_router, prefix="/api/v2/admin", tags=["admin"])
 app.include_router(recommendations_router, prefix="/api/v2/recommendations", tags=["recommendations"])
 app.include_router(predictive_router, prefix="/api/v2/predictive", tags=["predictive"])
+app.include_router(storage_router, prefix="/api/v2/storage", tags=["storage"])
 app.include_router(realtime_router, prefix="/api/v2/realtime", tags=["realtime"])

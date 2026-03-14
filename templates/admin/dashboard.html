@@ -1027,8 +1027,8 @@ async function loadStorageStatus() {
   const el = document.getElementById('storageStatus');
   el.textContent = 'Загрузка...';
   const [stResp, reportResp] = await Promise.all([
-    fetch('/api/storage/status'),
-    fetch('/api/storage/cutover-report'),
+    fetch('/api/v2/storage/status'),
+    fetch('/api/v2/storage/cutover-report'),
   ]);
   const st = await stResp.json();
   const rep = await reportResp.json();

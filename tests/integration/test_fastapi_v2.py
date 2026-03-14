@@ -154,6 +154,26 @@ def test_fastapi_admin_dashboard_contract():
         assert "dashboard" in body
 
 
+def test_fastapi_recommendations_contract():
+    headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/recommendations?chat_id=all&days=30&limit=10", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert "recommendations" in body
+
+
+def test_fastapi_predictive_overview_contract():
+    headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/predictive/overview?chat_id=all&horizon_days=7&lookback_days=30", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert "overview" in body
+
+
 def test_fastapi_admin_at_risk_action_contract():
     headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
     with TestClient(app) as client:

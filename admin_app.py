@@ -559,6 +559,32 @@ def api_v2_admin_proxy(subpath: str):
     return Response(body, status=status, mimetype="application/json")
 
 
+@app.route("/api/v2/recommendations", methods=["GET"])
+@app.route("/api/v2/recommendations/<path:subpath>", methods=["GET", "POST"])
+@login_required
+def api_v2_recommendations_proxy(subpath: str = ""):
+    """Прокси recommendations API в FastAPI v2."""
+    path = f"/api/v2/recommendations/{subpath}".rstrip("/") if subpath else "/api/v2/recommendations"
+    data = None
+    if request.method == "POST" and request.is_json:
+        data = request.get_data()
+    body, status = _proxy_to_api_v2(path, method=request.method, data=data)
+    if isinstance(body, dict):
+        return jsonify(body), status
+    return Response(body, status=status, mimetype="application/json")
+
+
+@app.route("/api/v2/predictive/<path:subpath>", methods=["GET"])
+@login_required
+def api_v2_predictive_proxy(subpath: str):
+    """Прокси predictive API в FastAPI v2."""
+    path = f"/api/v2/predictive/{subpath}"
+    body, status = _proxy_to_api_v2(path)
+    if isinstance(body, dict):
+        return jsonify(body), status
+    return Response(body, status=status, mimetype="application/json")
+
+
 @app.route("/api/monitoring/metrics")
 @login_required
 def api_monitoring_metrics():

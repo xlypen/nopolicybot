@@ -853,7 +853,7 @@ async function markRecommendationDone(domKey, chat) {
   if (!item) {
     return;
   }
-  await requestJson('/api/recommendations/mark-done', {
+  await requestJson('/api/v2/recommendations/mark-done', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
@@ -968,7 +968,7 @@ async function loadPredictive(chat) {
   if (!sumEl || !rowsEl) return;
   sumEl.textContent = 'Прогноз: загрузка...';
   rowsEl.innerHTML = '';
-  const r = await fetch(`/api/predictive/overview?chat_id=${encodeURIComponent(chat)}&horizon_days=7&lookback_days=30`);
+  const r = await fetch(`/api/v2/predictive/overview?chat_id=${encodeURIComponent(chat)}&horizon_days=7&lookback_days=30`);
   const b = await r.json();
   const ov = (b && b.overview) || {};
   const signals = ov.signals || {};

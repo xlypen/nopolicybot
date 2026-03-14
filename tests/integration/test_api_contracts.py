@@ -361,6 +361,29 @@ def test_api_recommendations_contract(monkeypatch):
         assert "recommendations" in body
 
 
+def test_api_recommendations_mark_done_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    monkeypatch.setattr(admin_app, "write_event", lambda *args, **kwargs: None)
+    with admin_app.app.test_client() as client:
+        resp = client.post(
+            "/api/recommendations/mark-done",
+            json={
+                "chat_id": "all",
+                "completed": True,
+                "item": {
+                    "type": "retention_standard",
+                    "priority": "medium",
+                    "user_id": 42,
+                    "reason": "churn=0.72",
+                    "action": "Проверить вовлеченность",
+                },
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+
+
 def test_api_predictive_overview_contract(monkeypatch):
     _disable_auth(monkeypatch)
     from services import predictive_models
@@ -464,6 +487,18 @@ def test_api_admin_at_risk_contract(monkeypatch):
         body = resp.get_json()
         assert body["ok"] is True
         assert "at_risk" in body
+
+
+def test_api_admin_at_risk_action_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    monkeypatch.setattr(admin_app, "write_event", lambda *args, **kwargs: None)
+    with admin_app.app.test_client() as client:
+        resp = client.post("/api/admin/at-risk-action", json={"action": "dm", "chat_id": "all", "user_id": 42})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["action"] == "dm"
+        assert body["queued"] is True
 
 
 def test_api_admin_decision_quality_contract(monkeypatch):
@@ -685,6 +720,45 @@ def test_flask_cors_allows_same_origin_when_allowed_origins_empty(monkeypatch):
         assert resp.status_code != 403
         body = resp.get_json() or {}
         assert body.get("error") != "origin not allowed"
+
+
+def test_api_portrait_classify_unknown_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    import ai_analyzer
+    import user_stats
+
+    monkeypatch.setattr(
+        admin_app,
+        "_load_users",
+        lambda: {
+            "users": {
+                "101": {"rank": "unknown"},
+                "202": {"rank": "neutral"},
+            }
+        },
+    )
+    monkeypatch.setattr(user_stats, "get_users_in_chat", lambda chat_id: [101, 202])
+    monkeypatch.setattr(user_stats, "get_user_messages_archive", lambda user_id, chat_id=None: ["m1", "m2"])
+    monkeypatch.setattr(user_stats, "get_user", lambda user_id, display_name="": {"display_name": f"user{user_id}"})
+    monkeypatch.setattr(ai_analyzer, "build_deep_portrait_from_messages", lambda messages, display_name: ("portrait", "neutral"))
+
+    captured = {}
+
+    def _set_deep_portrait(user_id, portrait, rank):
+        captured[int(user_id)] = {"portrait": portrait, "rank": rank}
+        return True
+
+    monkeypatch.setattr(user_stats, "set_deep_portrait", _set_deep_portrait)
+
+    with admin_app.app.test_client() as client:
+        resp = client.post("/api/portrait-classify-unknown", json={"chat_id": 123})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["unknown_total"] == 1
+        assert body["processed"] == 1
+        assert body["failed"] == 0
+        assert 101 in captured
 
 
 def test_api_topic_policies_contract(monkeypatch):

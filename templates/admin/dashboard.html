@@ -1,16 +1,16 @@
 {% extends "admin/base.html" %}
-{% block title %}Modern Dashboard — Nopolicybot{% endblock %}
+{% block title %}Панель мониторинга — Nopolicybot{% endblock %}
 {% block body %}
 <div class="hero">
   <div class="header" style="margin-bottom:6px;">
-    <h1>Modern Dashboard</h1>
+    <h1>Панель мониторинга</h1>
     <div class="actions">
-      <a class="btn btn-secondary" href="{{ url_for('admin_legacy') }}">Legacy Admin</a>
+      <a class="btn btn-secondary" href="{{ url_for('admin_legacy') }}">Классическая админка</a>
       <a class="btn btn-secondary" href="{{ url_for('settings') }}">Настройки</a>
       <a class="btn btn-secondary" href="{{ url_for('logout') }}">Выйти</a>
     </div>
   </div>
-  <div style="color:var(--text-secondary)">Единая modern-панель: core-метрики, ops-контроль и встроенный Graph Lab.</div>
+  <div style="color:var(--text-secondary)">Единая панель: основные метрики, управление и граф сообщества.</div>
 </div>
 
 <div class="cards">
@@ -23,12 +23,28 @@
 <div class="grid">
   <div class="card">
     <div class="title">Ранги</div>
+    {% set loyal = metrics.ranks.loyal or 0 %}
+    {% set neutral = metrics.ranks.neutral or 0 %}
+    {% set opposition = metrics.ranks.opposition or 0 %}
+    {% set unknown = metrics.ranks.unknown or 0 %}
+    {% set total_ranked = loyal + neutral + opposition + unknown %}
+    {% set unknown_share = (unknown / total_ranked) if total_ranked > 0 else 0 %}
     <ul>
-      <li>Лояльные: {{ metrics.ranks.loyal or 0 }}</li>
-      <li>Нейтральные: {{ metrics.ranks.neutral or 0 }}</li>
-      <li>Оппозиция: {{ metrics.ranks.opposition or 0 }}</li>
-      <li>Unknown: {{ metrics.ranks.unknown or 0 }}</li>
+      <li>Лояльные: {{ loyal }}</li>
+      <li>Нейтральные: {{ neutral }}</li>
+      <li>Оппозиция: {{ opposition }}</li>
+      <li class="rank-unknown {% if unknown_share > 0.8 %}rank-unknown-critical{% elif unknown_share > 0.5 %}rank-unknown-warn{% endif %}">
+        Не классифицированы: {{ unknown }}
+      </li>
     </ul>
+    {% if unknown_share > 0.5 %}
+    <div class="rank-warning {% if unknown_share > 0.8 %}rank-warning-critical{% endif %}">
+      {{ (unknown_share * 100) | round(0, 'common') | int }}% пользователей не классифицированы — запустите анализ.
+    </div>
+    {% endif %}
+    <div style="margin-top:10px;">
+      <button class="btn btn-secondary btn-sm" id="classifyUnknownBtn">Классифицировать</button>
+    </div>
   </div>
   <div class="card">
     <div class="title">Выбор чата и режима</div>
@@ -42,29 +58,29 @@
       </select>
       <label>Режим:</label>
       <select id="modeSel">
-        <option value="force">Force</option>
-        <option value="radial">Radial</option>
-        <option value="community">Community</option>
-        <option value="matrix">Matrix</option>
+        <option value="force">Силовой</option>
+        <option value="radial">Радиальный</option>
+        <option value="community">Сообщества</option>
+        <option value="matrix">Матрица</option>
         <option value="webgl">WebGL</option>
-        <option value="sankey">Sankey</option>
-        <option value="hierarchy">Hierarchy</option>
-        <option value="bubble">Bubble</option>
-        <option value="ego">Ego</option>
+        <option value="sankey">Сэнки</option>
+        <option value="hierarchy">Иерархия</option>
+        <option value="bubble">Пузырьки</option>
+        <option value="ego">Эго-сеть</option>
       </select>
       <label style="display:flex;gap:6px;align-items:center;">
         <input type="checkbox" id="autoRefreshChk" checked>
-        live delta
+        Живые обновления
       </label>
       <button class="btn" id="loadGraphBtn">Загрузить</button>
-      <span id="graphLiveStatus" style="font-size:12px;color:var(--text-secondary);">Live: init</span>
+      <span id="graphLiveStatus" class="live-status live-status-neutral">Live: инициализация</span>
     </div>
   </div>
 </div>
 
 <div class="grid">
   <div class="card">
-    <div class="title">Ops Controls</div>
+    <div class="title">Управление</div>
     <div class="row">
       <label for="opsChatModeSel">Режим чата:</label>
       <select id="opsChatModeSel">
@@ -73,20 +89,20 @@
         {% endfor %}
       </select>
       <button class="btn btn-secondary" id="applyChatModeBtn">Применить режим</button>
-      <button class="btn btn-secondary" id="resetPoliticalBtn">Сбросить полит. счётчик</button>
+      <button class="btn btn-secondary btn-danger-outline" id="resetPoliticalBtn">Сбросить полит. счётчик</button>
     </div>
     <div class="row">
-      <label for="portraitUserIdInput">User ID:</label>
+      <label for="portraitUserIdInput">ID пользователя:</label>
       <input id="portraitUserIdInput" type="number" min="1" step="1" placeholder="Напр. 123456789">
       <button class="btn btn-secondary" id="openUserProfileBtn">Открыть профиль</button>
       <button class="btn btn-secondary" id="buildPortraitBtn">Собрать портрет пользователя</button>
-      <button class="btn btn-secondary" id="restartBotBtn">Перезапустить бота</button>
+      <button class="btn btn-secondary btn-danger-outline" id="restartBotBtn">Перезапустить бота</button>
     </div>
     <div id="opsFeedback" style="font-size:12px;color:var(--text-secondary);">Выберите чат, затем применяйте операции.</div>
     <div id="opsChatModeDesc" style="margin-top:6px;font-size:12px;color:var(--text-secondary);"></div>
   </div>
   <div class="card">
-    <div class="title">Chat Digest & Analysis Preview</div>
+    <div class="title">Дайджест и анализ</div>
     <div class="row" style="margin-bottom:8px;">
       <button class="btn btn-secondary" id="refreshDigestBtn">Обновить дайджест</button>
       <button class="btn btn-secondary" id="refreshAnalysisBtn">Обновить анализ (без AI)</button>
@@ -99,66 +115,72 @@
 
 <div class="card">
   <div class="title graph-card-title">
-    <span>Graph Lab</span>
+    <span>Граф сообщества</span>
     <div class="graph-tab-switcher">
-      <button class="tab-btn active" type="button" data-tab="graph-view">Quick View</button>
-      <button class="tab-btn" type="button" data-tab="graph-lab">Advanced Lab</button>
+      <button class="tab-btn active" type="button" data-tab="graph-view">Обзор</button>
+      <button class="tab-btn" type="button" data-tab="graph-lab">Детальный режим</button>
     </div>
   </div>
 
   <div id="tab-graph-view" class="graph-tab active">
     <div id="graphMetaLine" style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">Источник: —</div>
-    <div id="modernGraphRoot" style="min-height:520px;border:1px solid var(--border-input);border-radius:10px;padding:10px;background:var(--bg-secondary);"></div>
+    <div class="graph-view-layout">
+      <div id="modernGraphRoot" style="min-height:520px;border:1px solid var(--border-input);border-radius:10px;padding:10px;background:var(--bg-secondary);"></div>
+      <aside id="graphNodePanel" class="graph-node-panel">
+        <div class="graph-node-panel-title">Карточка узла</div>
+        <div class="graph-node-panel-empty">Кликните по узлу, чтобы увидеть детали.</div>
+      </aside>
+    </div>
   </div>
 
   <div id="tab-graph-lab" class="graph-tab">
     <div class="graph-lab-layout">
       <aside class="graph-lab-controls">
         <section class="graph-lab-section">
-          <h4>Filters</h4>
-          <label for="labFilterMinDegree">Min Degree:</label>
+          <h4>Фильтры</h4>
+          <label for="labFilterMinDegree">Минимальная степень:</label>
           <input type="number" id="labFilterMinDegree" value="0" min="0" max="100">
 
-          <label for="labFilterActivityDays">Activity (days):</label>
+          <label for="labFilterActivityDays">Активность (дни):</label>
           <input type="number" id="labFilterActivityDays" value="7" min="1" max="90">
 
-          <label for="labFilterEngagement">Engagement >=</label>
+          <label for="labFilterEngagement">Вовлечённость >=</label>
           <input type="number" id="labFilterEngagement" value="0" min="0" max="1" step="0.1">
         </section>
 
         <section class="graph-lab-section">
-          <h4>Focus</h4>
-          <label for="labFocusUser">User ID:</label>
-          <input type="text" id="labFocusUser" placeholder="e.g. 123456">
+          <h4>Фокус</h4>
+          <label for="labFocusUser">ID пользователя:</label>
+          <input type="text" id="labFocusUser" placeholder="например, 123456">
           <label class="graph-lab-check">
             <input type="checkbox" id="labFocusEgoNetwork" checked>
-            Ego Network (1-hop)
+            Эго-сеть (1 переход)
           </label>
         </section>
 
         <section class="graph-lab-section">
-          <h4>Roles & Metrics</h4>
-          <label class="graph-lab-check"><input type="checkbox" id="labShowCentrality" checked> Centrality (nodes)</label>
-          <label class="graph-lab-check"><input type="checkbox" id="labShowBridges" checked> Bridge Users</label>
-          <label class="graph-lab-check"><input type="checkbox" id="labShowInfluencers" checked> Influencers</label>
-          <label class="graph-lab-check"><input type="checkbox" id="labShowOutliers"> Outliers</label>
+          <h4>Роли и метрики</h4>
+          <label class="graph-lab-check"><input type="checkbox" id="labShowCentrality" checked> Центральность</label>
+          <label class="graph-lab-check"><input type="checkbox" id="labShowBridges" checked> Связующие участники</label>
+          <label class="graph-lab-check"><input type="checkbox" id="labShowInfluencers" checked> Лидеры влияния</label>
+          <label class="graph-lab-check"><input type="checkbox" id="labShowOutliers"> Выбросы</label>
         </section>
 
         <section class="graph-lab-section">
-          <h4>Conflict Prediction</h4>
-          <label class="graph-lab-check"><input type="checkbox" id="labShowConflictRisk" checked> Show Risk Pairs</label>
-          <label for="labConflictThreshold">Risk Threshold:</label>
+          <h4>Прогноз конфликтов</h4>
+          <label class="graph-lab-check"><input type="checkbox" id="labShowConflictRisk" checked> Показать риск-пары</label>
+          <label for="labConflictThreshold">Порог риска:</label>
           <input type="number" id="labConflictThreshold" value="0.5" min="0" max="1" step="0.1">
-          <button id="labPredictConflicts" class="btn btn-secondary graph-lab-full">Predict</button>
+          <button id="labPredictConflicts" class="btn btn-secondary graph-lab-full">Рассчитать</button>
           <div id="labConflictResults" class="graph-lab-box">-</div>
         </section>
 
-        <button id="labApplyFilters" class="btn btn-primary graph-lab-full">Apply & Render</button>
+        <button id="labApplyFilters" class="btn btn-primary graph-lab-full">Применить и отрисовать</button>
       </aside>
 
       <section class="graph-lab-canvas">
-        <div id="labGraphMeta" style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">Lab Graph Ready</div>
-        <div id="labGraphRoot" style="min-height:500px;border:1px solid var(--border);border-radius:10px;padding:10px;background:var(--bg-secondary);">Graph Lab загружен. Примените фильтры.</div>
+        <div id="labGraphMeta" style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">Граф готов</div>
+        <div id="labGraphRoot" style="min-height:500px;border:1px solid var(--border);border-radius:10px;padding:10px;background:var(--bg-secondary);">Граф загружен. Примените фильтры.</div>
       </section>
     </div>
   </div>
@@ -166,30 +188,30 @@
 
 <div class="grid">
   <div class="card">
-    <div class="title">Storage Status</div>
+    <div class="title">Статус хранилища</div>
     <div id="storageStatus" style="color:var(--text-secondary);">Загрузка...</div>
     <div style="margin-top:8px;">
       <button class="btn btn-secondary" id="reloadStorageBtn">Обновить статус</button>
     </div>
   </div>
   <div class="card">
-    <div class="title">Recommendations + Predictive</div>
+    <div class="title">Рекомендации</div>
     <ul id="recoList" style="margin:0;padding-left:18px;color:var(--text-secondary);">
       <li>Загрузка...</li>
     </ul>
-    <div id="predictiveSummary" style="margin-top:10px;color:var(--text-secondary);font-size:12px;">Predictive: загрузка...</div>
+    <div id="predictiveSummary" style="margin-top:10px;color:var(--text-secondary);font-size:12px;">Прогноз: загрузка...</div>
     <div id="predictiveRows" style="margin-top:8px;display:grid;gap:6px;"></div>
   </div>
 </div>
 
 <div class="grid">
   <div class="card">
-    <div class="title">Chat Health Overview</div>
+    <div class="title">Здоровье чата</div>
     <div id="healthOverviewMain" style="color:var(--text-secondary);">Загрузка...</div>
     <div id="healthOverviewTopics" style="margin-top:8px;color:var(--text-secondary);font-size:12px;"></div>
   </div>
   <div class="card">
-    <div class="title">Community Structure</div>
+    <div class="title">Структура сообщества</div>
     <div id="communityStructureMain" style="color:var(--text-secondary);">Загрузка...</div>
     <ol id="communityBridgeRows" style="margin:8px 0 0;padding-left:18px;color:var(--text-secondary);">
       <li>Загрузка...</li>
@@ -199,15 +221,15 @@
 
 <div class="grid">
   <div class="card">
-    <div class="title">User Leaderboard</div>
+    <div class="title">Рейтинг участников</div>
     <div class="row" style="margin-bottom:8px;">
-      <label>Metric:</label>
+      <label>Метрика:</label>
       <select id="leaderboardMetricSel">
-        <option value="engagement">engagement</option>
-        <option value="influence">influence</option>
-        <option value="retention">retention</option>
-        <option value="viral">viral</option>
-        <option value="churn">churn</option>
+        <option value="engagement">вовлечённость</option>
+        <option value="influence">влияние</option>
+        <option value="retention">удержание</option>
+        <option value="viral">виральность</option>
+        <option value="churn">отток</option>
       </select>
     </div>
     <div style="overflow:auto;max-height:260px;">
@@ -215,31 +237,33 @@
         <thead>
           <tr>
             <th style="text-align:left;padding:6px;border-bottom:1px solid var(--border-card);">#</th>
-            <th style="text-align:left;padding:6px;border-bottom:1px solid var(--border-card);">User</th>
-            <th style="text-align:right;padding:6px;border-bottom:1px solid var(--border-card);">Score</th>
+            <th style="text-align:left;padding:6px;border-bottom:1px solid var(--border-card);">Участник</th>
+            <th style="text-align:center;padding:6px;border-bottom:1px solid var(--border-card);">Тренд</th>
+            <th style="text-align:right;padding:6px;border-bottom:1px solid var(--border-card);">Оценка</th>
           </tr>
         </thead>
         <tbody id="leaderboardRows">
-          <tr><td colspan="3" style="padding:6px;color:var(--text-secondary);">Загрузка...</td></tr>
+          <tr><td colspan="4" style="padding:6px;color:var(--text-secondary);">Загрузка...</td></tr>
         </tbody>
       </table>
     </div>
   </div>
   <div class="card">
-    <div class="title">Advanced Analytics Panel</div>
+    <div class="title">Аналитика</div>
     <div class="row" style="margin-bottom:8px;">
-      <label>View:</label>
+      <label>Режим:</label>
       <select id="analyticsPanelSel">
-        <option value="at-risk-users">At-risk users</option>
-        <option value="decision-quality">Decision quality</option>
-        <option value="content-analysis">Content analysis</option>
-        <option value="moderation-activity">Moderation activity</option>
-        <option value="trends">Growth & trends</option>
+        <option value="at-risk-users">Пользователи в зоне риска</option>
+        <option value="decision-quality">Качество решений</option>
+        <option value="content-analysis">Контент-анализ</option>
+        <option value="moderation-activity">Активность модерации</option>
+        <option value="trends">Рост и тренды</option>
       </select>
     </div>
     <div id="analyticsPanelBody" style="color:var(--text-secondary);">Загрузка...</div>
   </div>
 </div>
+<div id="toastHost" class="toast-host" aria-live="polite" aria-atomic="true"></div>
 {% endblock %}
 
 {% block scripts %}
@@ -259,6 +283,8 @@ let _graphRenderEngine = 'auto';
 let _activeGraphTab = 'graph-view';
 let _labGraphState = {nodes: [], edges: [], meta: {}};
 let _labLoadedOnce = false;
+let _selectedGraphNodeId = null;
+let _selectedGraphNodeSnapshot = null;
 const _chatModeJsonEl = document.getElementById('chatModeDescriptionsJson');
 const CHAT_MODE_DESCRIPTIONS = JSON.parse((_chatModeJsonEl && _chatModeJsonEl.textContent) || '{}');
 
@@ -297,13 +323,178 @@ function userProfileUrl(userId, chat) {
   return `/admin/user/${encodeURIComponent(uid)}?chat=${encodeURIComponent(chatVal)}`;
 }
 
-function setLiveStatus(text, color) {
+function graphNodeById(nodeId) {
+  const target = Number(nodeId || 0);
+  if (!Number.isFinite(target) || target === 0) {
+    return null;
+  }
+  const nodes = Array.isArray(_graphState.nodes) ? _graphState.nodes : [];
+  for (const node of nodes) {
+    if (Number(node && node.id || 0) === target) {
+      return node || null;
+    }
+  }
+  return null;
+}
+
+function graphNodeDegree(nodeId) {
+  const target = Number(nodeId || 0);
+  if (!Number.isFinite(target) || target === 0) {
+    return 0;
+  }
+  const edges = Array.isArray(_graphState.edges) ? _graphState.edges : [];
+  let count = 0;
+  for (const edge of edges) {
+    const a = Number(edge && edge.source || 0);
+    const b = Number(edge && edge.target || 0);
+    if (a === target || b === target) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function renderGraphNodePanel(snapshot) {
+  const panel = document.getElementById('graphNodePanel');
+  if (!panel) {
+    return;
+  }
+  const node = snapshot || null;
+  if (!node || !Number.isFinite(Number(node.id || 0))) {
+    panel.innerHTML = `
+      <div class="graph-node-panel-title">Карточка узла</div>
+      <div class="graph-node-panel-empty">Кликните по узлу, чтобы увидеть детали.</div>
+    `;
+    return;
+  }
+  const uid = Number(node.id || 0);
+  const chatSel = document.getElementById('chatSel');
+  const chat = String((chatSel && chatSel.value) || 'all');
+  const name = String(node.label || node.username || uid);
+  const rank = String(node.rank || node.tier || 'unknown');
+  const influence = Number(node.influence_score || 0);
+  const degree = Number(node.degree || graphNodeDegree(uid));
+  const neighbors = Number(node.neighbor_count || degree || 0);
+  const lastActivity = String(node.last_activity || node.last_active || node.last_seen || 'нет данных');
+  panel.innerHTML = `
+    <div class="graph-node-panel-title">${esc(name)}</div>
+    <div class="graph-node-panel-row"><strong>ID:</strong> ${esc(uid)}</div>
+    <div class="graph-node-panel-row"><strong>Ранг:</strong> ${esc(rank)}</div>
+    <div class="graph-node-panel-row"><strong>Индекс влияния:</strong> ${fmt(influence, 3)}</div>
+    <div class="graph-node-panel-row"><strong>Количество связей:</strong> ${Number(degree)}</div>
+    <div class="graph-node-panel-row"><strong>Соседи:</strong> ${Number(neighbors)}</div>
+    <div class="graph-node-panel-row"><strong>Последняя активность:</strong> ${esc(lastActivity)}</div>
+    <div class="graph-node-panel-actions">
+      <a class="btn btn-secondary btn-sm" href="${userProfileUrl(uid, chat)}">Открыть профиль</a>
+      <button class="btn btn-secondary btn-sm" type="button" id="clearGraphSelectionBtn">Сбросить выделение</button>
+    </div>
+  `;
+  const clearBtn = document.getElementById('clearGraphSelectionBtn');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      _selectedGraphNodeId = null;
+      _selectedGraphNodeSnapshot = null;
+      renderGraphNodePanel(null);
+      renderGraphFromState();
+    });
+  }
+}
+
+function handleGraphNodeSelect(payload) {
+  const node = payload && typeof payload === 'object' ? payload : null;
+  const selectedId = Number(node && node.id || 0);
+  if (!Number.isFinite(selectedId) || selectedId === 0) {
+    _selectedGraphNodeId = null;
+    _selectedGraphNodeSnapshot = null;
+    renderGraphNodePanel(null);
+    renderGraphFromState();
+    return;
+  }
+  if (Number(_selectedGraphNodeId || 0) === selectedId) {
+    _selectedGraphNodeId = null;
+    _selectedGraphNodeSnapshot = null;
+    renderGraphNodePanel(null);
+    renderGraphFromState();
+    return;
+  }
+  const fresh = graphNodeById(selectedId) || {};
+  _selectedGraphNodeId = selectedId;
+  _selectedGraphNodeSnapshot = { ...fresh, ...node, id: selectedId };
+  renderGraphNodePanel(_selectedGraphNodeSnapshot);
+  renderGraphFromState();
+}
+
+function ensureToastHost() {
+  let host = document.getElementById('toastHost');
+  if (host) {
+    return host;
+  }
+  host = document.createElement('div');
+  host.id = 'toastHost';
+  host.className = 'toast-host';
+  host.setAttribute('aria-live', 'polite');
+  host.setAttribute('aria-atomic', 'true');
+  document.body.appendChild(host);
+  return host;
+}
+
+function showToast(message, kind = 'info') {
+  const host = ensureToastHost();
+  const item = document.createElement('div');
+  item.className = `toast toast-${String(kind || 'info')}`;
+  item.textContent = String(message || '');
+  host.appendChild(item);
+  window.setTimeout(() => {
+    item.classList.add('toast-hide');
+    window.setTimeout(() => item.remove(), 220);
+  }, 3200);
+}
+
+function setLiveStatus(text, state = 'neutral') {
   const live = document.getElementById('graphLiveStatus');
   if (!live) {
     return;
   }
+  const safeState = String(state || 'neutral');
+  live.className = `live-status live-status-${safeState}`;
+  if (safeState === 'reconnecting') {
+    live.innerHTML = `Live: ${esc(String(text || ''))}<span class="live-dot" aria-hidden="true"></span>`;
+    return;
+  }
   live.textContent = `Live: ${String(text || '')}`;
-  live.style.color = color || 'var(--text-secondary)';
+}
+
+function setLiveStatusByRaw(statusText) {
+  const status = String(statusText || '').toLowerCase();
+  if (status.includes('ws connected')) {
+    setLiveStatus('подключено', 'connected');
+    return;
+  }
+  if (status.includes('reconnecting')) {
+    setLiveStatus('Соединение восстанавливается...', 'reconnecting');
+    return;
+  }
+  if (status.includes('ws error') || status.includes('unavailable')) {
+    setLiveStatus('соединение потеряно', 'disconnected');
+    return;
+  }
+  if (status.includes('connecting')) {
+    setLiveStatus('подключение...', 'reconnecting');
+    return;
+  }
+  if (status.includes('poll')) {
+    setLiveStatus('резервный опрос активен', 'reconnecting');
+    return;
+  }
+  if (status.includes('disabled')) {
+    setLiveStatus('выключено', 'neutral');
+    return;
+  }
+  if (status.includes('stopped')) {
+    setLiveStatus('остановлено', 'disconnected');
+    return;
+  }
+  setLiveStatus(String(statusText || '—'), 'neutral');
 }
 
 function edgeId(edge) {
@@ -329,7 +520,7 @@ function updateGraphMetaLine(graph) {
   const nodesCount = Number(meta.nodes_count || (g.nodes || []).length || 0);
   const edgesCount = Number(meta.edges_count || (g.edges || []).length || 0);
   const period = String(meta.period || '7d');
-  metaLine.textContent = `Источник: ${source} · Период: ${period} · Узлы: ${nodesCount} · Связи: ${edgesCount} · Render: ${_graphRenderEngine} · Обновлено: ${loadedAt}`;
+  metaLine.textContent = `Источник: ${source} · Период: ${period} · Узлы: ${nodesCount} · Связи: ${edgesCount} · Рендер: ${_graphRenderEngine} · Обновлено: ${loadedAt}`;
 }
 
 function renderGraphFromState() {
@@ -338,14 +529,20 @@ function renderGraphFromState() {
   if (!root) {
     return;
   }
-  const payload = { root, data: _graphState, mode };
+  const payload = {
+    root,
+    data: _graphState,
+    mode,
+    selectedNodeId: _selectedGraphNodeId,
+    onNodeSelect: handleGraphNodeSelect,
+  };
   if (window.GraphRenderPipeline && typeof window.GraphRenderPipeline.render === 'function') {
     const ok = window.GraphRenderPipeline.render({
       ...payload,
       defer: true,
       largeGraphThresholds: { nodes: 260, edges: 1100 },
       onUnavailable: function () {
-        root.textContent = 'Graph modules not loaded.';
+        root.textContent = 'Модули графа не загружены.';
       },
       onEngineSelected: function (info) {
         _graphRenderEngine = String((info && info.engine) || 'auto');
@@ -353,7 +550,7 @@ function renderGraphFromState() {
       },
     });
     if (!ok) {
-      root.textContent = 'Graph modules loading...';
+      root.textContent = 'Загрузка модулей графа...';
     }
     return;
   }
@@ -361,7 +558,7 @@ function renderGraphFromState() {
     window.GraphVisualizations.render(payload);
     return;
   }
-  root.textContent = 'Graph modules not loaded.';
+  root.textContent = 'Модули графа не загружены.';
 }
 
 function setGraphTab(tabName) {
@@ -410,7 +607,7 @@ function renderLabGraphFromState() {
   const nodes = Array.isArray(g.nodes) ? g.nodes : [];
   const edges = Array.isArray(g.edges) ? g.edges : [];
   const info = g.meta || {};
-  meta.textContent = `Lab · source: ${String(info.source || 'graph-lab')} · period: ${String(info.period || '30d')} · nodes: ${nodes.length} · edges: ${edges.length}`;
+  meta.textContent = `Детальный режим · источник: ${String(info.source || 'graph-lab')} · период: ${String(info.period || '30d')} · узлы: ${nodes.length} · связи: ${edges.length}`;
   if (!nodes.length) {
     root.textContent = 'Нет данных для выбранных фильтров.';
     return;
@@ -426,15 +623,15 @@ function renderLabGraphFromState() {
       defer: true,
       largeGraphThresholds: { nodes: 260, edges: 1100 },
       onUnavailable: function () {
-        canvas.textContent = 'Graph module unavailable.';
+        canvas.textContent = 'Модуль графа недоступен.';
       },
     });
     if (!ok) {
-      canvas.textContent = 'Graph modules loading...';
+      canvas.textContent = 'Загрузка модулей графа...';
     }
     return;
   }
-  canvas.textContent = 'Graph module unavailable.';
+  canvas.textContent = 'Модуль графа недоступен.';
 }
 
 async function loadConflictPrediction(chat, filters) {
@@ -453,7 +650,7 @@ async function loadConflictPrediction(chat, filters) {
     resultsEl.innerHTML = risks.map((r) => `
       <div style="margin-bottom:0.45rem;padding:0.45rem;background:var(--bg-tertiary);border-radius:4px;border-left:3px solid #ff6b9d;">
         <div><strong>${esc(r.user1)} ⟷ ${esc(r.user2)}</strong></div>
-        <div style="font-size:0.8rem;">Risk: ${fmt(Number(r.risk_score || 0) * 100, 1)}% · tone: ${esc(r.tone || 'neutral')}</div>
+        <div style="font-size:0.8rem;">Риск: ${fmt(Number(r.risk_score || 0) * 100, 1)}% · тон: ${esc(r.tone || 'neutral')}</div>
       </div>
     `).join('');
   } catch (e) {
@@ -486,7 +683,7 @@ async function loadGraphLab() {
   const chat = document.getElementById('chatSel').value;
   const root = document.getElementById('labGraphRoot');
   if (root && !_labLoadedOnce) {
-    root.textContent = 'Graph Lab загружен. Примените фильтры.';
+    root.textContent = 'Граф загружен. Примените фильтры.';
   }
   _labLoadedOnce = true;
   await applyGraphLabFilters();
@@ -504,6 +701,17 @@ async function loadAndRender() {
   const body = await resp.json();
   _graphState = (body && body.graph) || {nodes: [], edges: [], meta: {}};
   _graphVersion = String((body && body.graph_version) || '');
+  if (_selectedGraphNodeId && !graphNodeById(_selectedGraphNodeId)) {
+    _selectedGraphNodeId = null;
+    _selectedGraphNodeSnapshot = null;
+    renderGraphNodePanel(null);
+  } else if (_selectedGraphNodeId) {
+    const fresh = graphNodeById(_selectedGraphNodeId);
+    if (fresh) {
+      _selectedGraphNodeSnapshot = { ...fresh, ...(_selectedGraphNodeSnapshot || {}) };
+      renderGraphNodePanel(_selectedGraphNodeSnapshot);
+    }
+  }
   updateGraphMetaLine(_graphState);
   try {
     renderGraphFromState();
@@ -613,9 +821,86 @@ async function loadInsights(chat) {
   ]);
 }
 
+const _dismissedRecommendationKeys = new Set();
+const _recommendationByDomKey = new Map();
+const _recommendationRawKeyByDomKey = new Map();
+
+function recommendationTypeLabel(type) {
+  const t = String(type || '').trim().toLowerCase();
+  const map = {
+    chat_health_alert: 'Низкое здоровье чата',
+    retention_high_value: 'Риск оттока у ключевого участника',
+    retention_standard: 'Снижение вовлечённости',
+    viral_support: 'Поддержка вирального участника',
+    predictive_churn_risk: 'Прогноз: риск оттока',
+    predictive_toxicity_risk: 'Прогноз: рост токсичности',
+    predictive_virality_window: 'Прогноз: окно роста',
+    decision_quality_drop: 'Качество решений снижено',
+  };
+  return map[t] || (t ? t.replaceAll('_', ' ') : 'Рекомендация');
+}
+
+function recommendationPriorityBadge(priority) {
+  const p = String(priority || 'low').toLowerCase();
+  const color = p === 'high' ? '#ef4444' : (p === 'medium' ? '#f59e0b' : '#22c55e');
+  const label = p === 'high' ? 'высокий' : (p === 'medium' ? 'средний' : 'низкий');
+  return `<span style="display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;border:1px solid ${color};color:${color};font-size:11px;font-weight:600;">${esc(label)}</span>`;
+}
+
+async function markRecommendationDone(domKey, chat) {
+  const item = _recommendationByDomKey.get(String(domKey || ''));
+  const rawKey = _recommendationRawKeyByDomKey.get(String(domKey || ''));
+  if (!item) {
+    return;
+  }
+  await requestJson('/api/recommendations/mark-done', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      chat_id: String(chat || 'all'),
+      item,
+      completed: true,
+    }),
+  });
+  if (rawKey) {
+    _dismissedRecommendationKeys.add(rawKey);
+  }
+  const card = document.querySelector(`[data-reco-key="${String(domKey || '')}"]`);
+  if (card) {
+    card.remove();
+  }
+  showToast('Рекомендация отмечена как выполненная.', 'success');
+}
+
+function reasonCodeLabel(code) {
+  const c = String(code || '').trim().toLowerCase();
+  const map = {
+    activity_drop: 'Резкое снижение активности',
+    conflict_rise: 'Рост конфликтных сообщений',
+    isolation: 'Изоляция в графе сообщества',
+    retention_risk: 'Риск оттока',
+  };
+  return map[c] || 'Риск оттока';
+}
+
+async function performAtRiskAction(userId, action, chat) {
+  const body = await requestJson('/api/admin/at-risk-action', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      user_id: Number(userId || 0),
+      action: String(action || ''),
+      chat_id: String(chat || 'all'),
+    }),
+  });
+  return body;
+}
+
 async function loadRecommendations(chat) {
   const list = document.getElementById('recoList');
   list.innerHTML = '<li>Загрузка...</li>';
+  _recommendationByDomKey.clear();
+  _recommendationRawKeyByDomKey.clear();
   const r = await fetch(`/api/recommendations?chat_id=${encodeURIComponent(chat)}&days=30&limit=10`);
   const b = await r.json();
   const items = (((b || {}).recommendations || {}).items) || [];
@@ -623,26 +908,65 @@ async function loadRecommendations(chat) {
     list.innerHTML = '<li>Рекомендаций пока нет.</li>';
     return;
   }
-  list.innerHTML = items.map((item) => {
-    const whoText = item.display_name || item.user_id || '';
-    const who = whoText
-      ? ` <strong><a href="${userProfileUrl(item.user_id || '', chat)}">${esc(whoText)}</a></strong>`
+  const rows = [];
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i] || {};
+    const rawKey = `${String(item.type || 'item')}|${String(item.user_id || 'all')}|${String(item.reason || '')}|${i}`;
+    const domKey = String(i + 1);
+    if (_dismissedRecommendationKeys.has(rawKey)) {
+      continue;
+    }
+    _recommendationByDomKey.set(domKey, item);
+    _recommendationRawKeyByDomKey.set(domKey, rawKey);
+    const name = String(item.display_name || '').trim() || 'Пользователь';
+    const hasUserId = Number.isFinite(Number(item.user_id));
+    const profileBtn = hasUserId
+      ? `<a class="btn btn-secondary btn-sm" href="${userProfileUrl(item.user_id, chat)}">Открыть профиль</a>`
       : '';
-    return `<li><span style="color:var(--text-primary);">[${esc(item.priority || 'low')}] ${esc(item.type || 'item')}</span>${who}: ${esc(item.action || '')}</li>`;
-  }).join('');
+    rows.push(`
+      <li data-reco-key="${domKey}" style="list-style:none;margin:0 0 8px;padding:10px;border:1px solid var(--border-card);border-radius:10px;background:var(--bg-secondary);">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+          <strong style="color:var(--text-primary);">${esc(name)}</strong>
+          ${recommendationPriorityBadge(item.priority)}
+        </div>
+        <div style="margin-top:6px;color:var(--text-primary);font-weight:600;">${esc(recommendationTypeLabel(item.type))}</div>
+        <div style="margin-top:4px;font-size:12px;color:var(--text-secondary);">${esc(item.reason || 'Без уточнения причины')}</div>
+        <div style="margin-top:6px;font-size:13px;color:var(--text-primary);">Рекомендация: ${esc(item.action || '—')}</div>
+        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+          ${profileBtn}
+          <button class="btn btn-secondary btn-sm" type="button" data-reco-done="${domKey}">Отметить выполненным</button>
+        </div>
+      </li>
+    `);
+  }
+  list.style.paddingLeft = '0';
+  list.innerHTML = rows.length ? rows.join('') : '<li>Рекомендаций пока нет.</li>';
+  for (const btn of Array.from(list.querySelectorAll('[data-reco-done]'))) {
+    btn.addEventListener('click', async () => {
+      const key = String(btn.getAttribute('data-reco-done') || '');
+      btn.disabled = true;
+      try {
+        await markRecommendationDone(key, chat);
+      } catch (e) {
+        showToast(`Ошибка: ${e.message || e}`, 'error');
+        btn.disabled = false;
+      }
+    });
+  }
 }
 
 function signalBadge(signal){
   const d = String(signal.direction || 'flat');
   const color = d === 'up' ? '#f59e0b' : (d === 'down' ? '#4ade80' : '#94a3b8');
-  return `<span style="display:inline-block;padding:2px 7px;border-radius:999px;border:1px solid ${color};color:${color};font-size:11px;">${esc(d)}</span>`;
+  const label = d === 'up' ? 'вверх' : (d === 'down' ? 'вниз' : 'ровно');
+  return `<span style="display:inline-block;padding:2px 7px;border-radius:999px;border:1px solid ${color};color:${color};font-size:11px;">${esc(label)}</span>`;
 }
 
 async function loadPredictive(chat) {
   const sumEl = document.getElementById('predictiveSummary');
   const rowsEl = document.getElementById('predictiveRows');
   if (!sumEl || !rowsEl) return;
-  sumEl.textContent = 'Predictive: загрузка...';
+  sumEl.textContent = 'Прогноз: загрузка...';
   rowsEl.innerHTML = '';
   const r = await fetch(`/api/predictive/overview?chat_id=${encodeURIComponent(chat)}&horizon_days=7&lookback_days=30`);
   const b = await r.json();
@@ -651,22 +975,51 @@ async function loadPredictive(chat) {
   const churn = signals.churn_risk || {};
   const tox = signals.toxicity || {};
   const vir = signals.virality || {};
-  sumEl.textContent = `Predictive horizon: ${Number(ov.horizon_days || 7)}d`;
-  const renderSignal = (title, s) => `
-    <div style="border:1px solid var(--border-card);border-radius:8px;padding:8px;">
-      <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">
-        <strong>${esc(title)}</strong>
-        ${signalBadge(s)}
+  sumEl.textContent = `Горизонт прогноза: ${Number(ov.horizon_days || 7)} дн.`;
+  const trendArrow = (s) => {
+    const cur = Number(s.current || 0);
+    const pred = Number(s.predicted || 0);
+    const delta = Number(s.delta || (pred - cur) || 0);
+    if (Math.abs(delta) < 0.01) return '→';
+    return pred > cur ? '↑' : '↓';
+  };
+  const signalColor = (kind, value) => {
+    const v = Number(value || 0);
+    if (kind === 'virality') {
+      if (v > 0.6) return '#22c55e';
+      if (v >= 0.3) return '#f59e0b';
+      return '#ef4444';
+    }
+    if (v > 0.6) return '#ef4444';
+    if (v >= 0.3) return '#f59e0b';
+    return '#22c55e';
+  };
+  const renderSignal = (key, title, s) => {
+    const current = Math.max(0, Math.min(1, Number(s.current || 0)));
+    const predicted = Math.max(0, Math.min(1, Number(s.predicted || 0)));
+    const confidence = Math.max(0, Math.min(1, Number(s.confidence || 0)));
+    const color = signalColor(key, predicted);
+    return `
+      <div style="border:1px solid var(--border-card);border-radius:8px;padding:8px;">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">
+          <strong>${esc(title)}</strong>
+          <span style="color:${color};font-weight:700;">${trendArrow(s)}</span>
+        </div>
+        <div style="margin-top:7px;height:8px;background:var(--bg-hover);border-radius:999px;overflow:hidden;">
+          <div style="height:100%;width:${fmt(current * 100, 1)}%;background:${color};border-radius:999px;"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;gap:8px;margin-top:6px;font-size:12px;color:var(--text-secondary);">
+          <span>Текущее: ${fmt(current, 3)}</span>
+          <span>Прогноз: ${fmt(predicted, 3)}</span>
+        </div>
+        <div style="margin-top:4px;font-size:12px;color:var(--text-secondary);">Уверенность: ${fmt(confidence * 100, 0)}%</div>
       </div>
-      <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">
-        current: ${fmt(s.current, 3)} · predicted: ${fmt(s.predicted, 3)} · delta: ${fmt(s.delta, 3)} · conf: ${fmt(s.confidence, 2)}
-      </div>
-    </div>
-  `;
+    `;
+  };
   rowsEl.innerHTML = [
-    renderSignal('churn_risk', churn),
-    renderSignal('toxicity', tox),
-    renderSignal('virality', vir),
+    renderSignal('churn_risk', 'Риск оттока', churn),
+    renderSignal('toxicity', 'Токсичность', tox),
+    renderSignal('virality', 'Виральность', vir),
   ].join('');
 }
 
@@ -683,10 +1036,10 @@ async function loadStorageStatus() {
   const d = (st && st.db) || {};
   const ok = !!(rep && rep.db_ready_for_cutover);
   el.innerHTML = `
-    <div>Mode: <strong>${esc(rep.current_mode || st.storage_primary || 'hybrid')}</strong></div>
-    <div>DB ready: <strong style="color:${ok ? '#4ade80' : '#fbbf24'}">${ok ? 'yes' : 'no'}</strong></div>
-    <div style="margin-top:4px;">JSON → users ${j.users || 0}, messages ${j.messages || 0}, edges ${j.edges || 0}</div>
-    <div>DB → users ${d.users || 0}, messages ${d.messages || 0}, edges ${d.edges || 0}</div>
+    <div>Режим: <strong>${esc(rep.current_mode || st.storage_primary || 'hybrid')}</strong></div>
+    <div>БД готова: <strong style="color:${ok ? '#4ade80' : '#fbbf24'}">${ok ? 'да' : 'нет'}</strong></div>
+    <div style="margin-top:4px;">JSON → пользователей ${j.users || 0}, сообщений ${j.messages || 0}, связей ${j.edges || 0}</div>
+    <div>БД → пользователей ${d.users || 0}, сообщений ${d.messages || 0}, связей ${d.edges || 0}</div>
   `;
 }
 
@@ -694,6 +1047,18 @@ function trendMark(value){
   const v = Number(value || 0);
   if (!Number.isFinite(v) || Math.abs(v) < 0.0001) return '→';
   return v > 0 ? '↗' : '↘';
+}
+
+function metricVsTargetColor(value, target) {
+  const v = Number(value || 0);
+  const t = Number(target || 0);
+  if (!Number.isFinite(v) || !Number.isFinite(t) || t <= 0) {
+    return 'var(--text-primary)';
+  }
+  const ratio = v / t;
+  if (ratio < 0.5) return '#ef4444';
+  if (ratio < 0.8) return '#f59e0b';
+  return '#22c55e';
 }
 
 async function loadAdminHealth(chat) {
@@ -705,15 +1070,54 @@ async function loadAdminHealth(chat) {
   const r = await fetch(`/api/admin/dashboard?chat_id=${encodeURIComponent(chat)}&days=30`);
   const b = await r.json();
   const d = (b && b.dashboard) || {};
+  const targets = d.targets || {};
+  const healthTarget = Number(targets.health_score || 0.4);
+  const engagementTarget = Number(targets.engagement || 0.45);
+  const retentionTarget = Number(targets.retention || 0.5);
+  const hVal = Number(d.health_score || 0);
+  const eVal = Number(d.engagement || 0);
+  const rVal = Number(d.retention || 0);
   main.innerHTML = `
-    <div>Health: <strong>${fmt(d.health_score, 3)}</strong> ${trendMark(d.health_trend)} (${fmt(d.health_trend, 3)})</div>
-    <div>Engagement: <strong>${fmt(d.engagement, 3)}</strong> ${trendMark(d.engagement_trend)} · Retention: <strong>${fmt(d.retention, 3)}</strong> ${trendMark(d.retention_trend)}</div>
-    <div>Toxicity: <strong>${fmt(d.toxicity, 3)}</strong> ${trendMark(d.toxicity_trend)} · Active 24h: <strong>${Number(d.active_users_24h || 0)}</strong> · Messages today: <strong>${Number(d.messages_today || 0)}</strong></div>
+    <div title="Текущее значение (целевое значение)">
+      Здоровье:
+      <strong style="color:${metricVsTargetColor(hVal, healthTarget)}">${fmt(hVal, 3)}</strong>
+      ${trendMark(d.health_trend)}
+      <span style="color:var(--text-secondary);">(цель: ${fmt(healthTarget, 3)})</span>
+    </div>
+    <div title="Текущее значение (целевое значение)">
+      Вовлечённость:
+      <strong style="color:${metricVsTargetColor(eVal, engagementTarget)}">${fmt(eVal, 3)}</strong>
+      ${trendMark(d.engagement_trend)}
+      <span style="color:var(--text-secondary);">(цель: ${fmt(engagementTarget, 3)})</span>
+      ·
+      Удержание:
+      <strong style="color:${metricVsTargetColor(rVal, retentionTarget)}">${fmt(rVal, 3)}</strong>
+      ${trendMark(d.retention_trend)}
+      <span style="color:var(--text-secondary);">(цель: ${fmt(retentionTarget, 3)})</span>
+    </div>
+    <div>Токсичность: <strong>${fmt(d.toxicity, 3)}</strong> ${trendMark(d.toxicity_trend)} · Активных за 24ч: <strong>${Number(d.active_users_24h || 0)}</strong> · Сообщений сегодня: <strong>${Number(d.messages_today || 0)}</strong></div>
   `;
   const topicRows = Array.isArray(d.dominant_topics) ? d.dominant_topics : [];
-  topics.textContent = topicRows.length
-    ? `Topics: ${topicRows.slice(0, 5).map((x) => `${String(x.topic || 'topic')} (${Number(x.count || 0)})`).join(' · ')}`
-    : 'Topics: no data';
+  if (!topicRows.length) {
+    topics.textContent = 'Темы: нет данных';
+    return;
+  }
+  topics.innerHTML = `
+    <div style="margin-bottom:4px;">Темы:</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      ${topicRows.slice(0, 6).map((x) => `
+        <button type="button" class="topic-tag" data-topic-name="${esc(String(x.topic || 'тема'))}">
+          ${esc(String(x.topic || 'тема'))} (${Number(x.count || 0)})
+        </button>
+      `).join('')}
+    </div>
+  `;
+  for (const btn of Array.from(topics.querySelectorAll('.topic-tag'))) {
+    btn.addEventListener('click', () => {
+      const topic = String(btn.getAttribute('data-topic-name') || 'тема');
+      showToast(`Тема выбрана: ${topic}`, 'info');
+    });
+  }
 }
 
 async function loadAdminCommunity(chat) {
@@ -726,13 +1130,13 @@ async function loadAdminCommunity(chat) {
   const b = await r.json();
   const d = (b && b.community) || {};
   main.innerHTML = `
-    <div>Density: <strong>${fmt(d.density, 4)}</strong> · Avg degree: <strong>${fmt(d.avg_degree, 2)}</strong></div>
-    <div>Communities: <strong>${Number(d.number_of_communities || 0)}</strong> · Largest: <strong>${Number(d.largest_community_size || 0)}</strong> (${fmt(Number(d.largest_community_percentage || 0) * 100, 1)}%)</div>
-    <div>Modularity: <strong>${fmt(d.modularity, 3)}</strong></div>
+    <div>Плотность: <strong>${fmt(d.density, 4)}</strong> · Средняя степень: <strong>${fmt(d.avg_degree, 2)}</strong></div>
+    <div>Сообществ: <strong>${Number(d.number_of_communities || 0)}</strong> · Крупнейшее: <strong>${Number(d.largest_community_size || 0)}</strong> (${fmt(Number(d.largest_community_percentage || 0) * 100, 1)}%)</div>
+    <div>Модулярность: <strong>${fmt(d.modularity, 3)}</strong></div>
   `;
   const bridge = Array.isArray(d.bridge_users) ? d.bridge_users : [];
   if (!bridge.length) {
-    rows.innerHTML = '<li>Bridge users not found.</li>';
+    rows.innerHTML = '<li>Связующие участники не найдены.</li>';
     return;
   }
   rows.innerHTML = bridge.slice(0, 8).map((u) => `<li>${esc(u.username || u.user_id)} · ${fmt(u.betweenness, 3)}</li>`).join('');
@@ -743,18 +1147,31 @@ async function loadAdminLeaderboard(chat) {
   const metricSel = document.getElementById('leaderboardMetricSel');
   if (!body || !metricSel) return;
   const metric = String(metricSel.value || 'engagement');
-  body.innerHTML = '<tr><td colspan="3" style="padding:6px;color:var(--text-secondary);">Загрузка...</td></tr>';
+  body.innerHTML = '<tr><td colspan="4" style="padding:6px;color:var(--text-secondary);">Загрузка...</td></tr>';
   const r = await fetch(`/api/admin/leaderboard?chat_id=${encodeURIComponent(chat)}&metric=${encodeURIComponent(metric)}&limit=12&days=30`);
   const b = await r.json();
   const users = (((b || {}).leaderboard || {}).users) || [];
   if (!users.length) {
-    body.innerHTML = '<tr><td colspan="3" style="padding:6px;color:var(--text-secondary);">Нет данных.</td></tr>';
+    body.innerHTML = '<tr><td colspan="4" style="padding:6px;color:var(--text-secondary);">Нет данных.</td></tr>';
     return;
   }
+  const trendArrow = (row) => {
+    const t = String((row && row.trend) || 'flat');
+    if (t === 'up') return '↑';
+    if (t === 'down') return '↓';
+    return '→';
+  };
+  const trendColor = (row) => {
+    const t = String((row && row.trend) || 'flat');
+    if (t === 'up') return '#22c55e';
+    if (t === 'down') return '#ef4444';
+    return '#94a3b8';
+  };
   body.innerHTML = users.map((u) => `
     <tr>
       <td style="padding:6px;border-bottom:1px solid var(--border-card);">#${Number(u.rank || 0)}</td>
       <td style="padding:6px;border-bottom:1px solid var(--border-card);"><a href="${userProfileUrl(u.user_id, chat)}">${esc(u.username || u.user_id)}</a></td>
+      <td style="padding:6px;text-align:center;border-bottom:1px solid var(--border-card);color:${trendColor(u)};font-weight:700;" title="Δ ${fmt(Number(u.trend_delta || 0), 3)}">${trendArrow(u)}</td>
       <td style="padding:6px;text-align:right;border-bottom:1px solid var(--border-card);">${fmt(u.score, 3)}</td>
     </tr>
   `).join('');
@@ -776,18 +1193,57 @@ async function loadAdminPanel(chat) {
   if (view === 'at-risk-users') {
     const p = b.at_risk || {};
     const rows = Array.isArray(p.users) ? p.users : [];
+    const listId = `atRiskList-${Date.now()}`;
     body.innerHTML = `
-      <div style="margin-bottom:6px;">At-risk users: <strong>${Number(p.count || 0)}</strong> (threshold=${fmt(p.threshold, 2)})</div>
-      <ul style="margin:0;padding-left:18px;">${rows.slice(0, 6).map((u) => `<li><a href="${userProfileUrl(u.user_id, chat)}">${esc(u.username || u.user_id)}</a> · risk ${fmt(u.churn_risk, 2)} · ${esc(u.recommended_action || '')}</li>`).join('')}</ul>
+      <div style="margin-bottom:6px;">Пользователи в зоне риска: <strong>${Number(p.count || 0)}</strong> (порог=${fmt(p.threshold, 2)})</div>
+      <ul id="${listId}" style="margin:0;padding-left:0;display:grid;gap:8px;">
+        ${rows.slice(0, 8).map((u, idx) => `
+          <li style="list-style:none;border:1px solid var(--border-card);border-radius:8px;padding:8px;background:var(--bg-secondary);" data-risk-user="${Number(u.user_id || 0)}">
+            <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;">
+              <a href="${userProfileUrl(u.user_id, chat)}"><strong>${esc(u.username || u.user_id)}</strong></a>
+              <span style="font-size:12px;color:#ef4444;">риск ${fmt(u.churn_risk, 2)}</span>
+            </div>
+            <div style="margin-top:4px;font-size:12px;color:var(--text-secondary);">${esc(reasonCodeLabel(u.reason_code))}</div>
+            <div style="margin-top:4px;font-size:12px;color:var(--text-secondary);">${esc(u.reason || '')}</div>
+            <div style="margin-top:6px;font-size:13px;">${esc(u.recommended_action || '')}</div>
+            <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+              <button type="button" class="btn btn-secondary btn-sm" data-risk-action="dm" data-risk-user-id="${Number(u.user_id || 0)}">Написать</button>
+              <button type="button" class="btn btn-secondary btn-sm" data-risk-action="clear_flag" data-risk-user-id="${Number(u.user_id || 0)}">Снять флаг</button>
+            </div>
+          </li>
+        `).join('')}
+      </ul>
     `;
+    const listEl = document.getElementById(listId);
+    if (listEl) {
+      for (const btn of Array.from(listEl.querySelectorAll('[data-risk-action]'))) {
+        btn.addEventListener('click', async () => {
+          const action = String(btn.getAttribute('data-risk-action') || '');
+          const uid = Number(btn.getAttribute('data-risk-user-id') || 0);
+          if (!uid || !action) return;
+          btn.disabled = true;
+          try {
+            await performAtRiskAction(uid, action, chat);
+            if (action === 'clear_flag') {
+              const row = listEl.querySelector(`[data-risk-user="${uid}"]`);
+              if (row) row.remove();
+            }
+            showToast(action === 'dm' ? 'Сообщение поставлено в очередь.' : 'Флаг снят.', 'success');
+          } catch (e) {
+            btn.disabled = false;
+            showToast(`Ошибка: ${e.message || e}`, 'error');
+          }
+        });
+      }
+    }
     return;
   }
   if (view === 'decision-quality') {
     const p = b.quality || {};
     body.innerHTML = `
-      <div>Total: <strong>${Number(p.total_decisions || 0)}</strong> · Approval: <strong>${fmt(p.approval_rate, 2)}</strong></div>
-      <div>Decision quality: <strong>${fmt(p.decision_quality, 2)}</strong> · Avg confidence: <strong>${fmt(p.avg_confidence, 2)}</strong></div>
-      <div style="margin-top:6px;">A/B winner: <strong>${esc(((p.ab_test || {}).winner) || 'n/a')}</strong></div>
+      <div>Всего: <strong>${Number(p.total_decisions || 0)}</strong> · Одобрение: <strong>${fmt(p.approval_rate, 2)}</strong></div>
+      <div>Качество решений: <strong>${fmt(p.decision_quality, 2)}</strong> · Средняя уверенность: <strong>${fmt(p.avg_confidence, 2)}</strong></div>
+      <div style="margin-top:6px;">Победитель A/B: <strong>${esc(((p.ab_test || {}).winner) || 'n/a')}</strong></div>
     `;
     return;
   }
@@ -796,8 +1252,8 @@ async function loadAdminPanel(chat) {
     const sentiment = p.sentiment || {};
     const topics = Array.isArray(p.top_topics) ? p.top_topics : [];
     body.innerHTML = `
-      <div>Sentiment: +${fmt(Number(sentiment.positive || 0) * 100, 1)}% / 0 ${fmt(Number(sentiment.neutral || 0) * 100, 1)}% / - ${fmt(Number(sentiment.negative || 0) * 100, 1)}%</div>
-      <div style="margin-top:6px;">Top topics: ${topics.slice(0, 5).map((x) => `${esc(x.topic || '')} (${Number(x.messages || 0)})`).join(' · ') || 'n/a'}</div>
+      <div>Тональность: +${fmt(Number(sentiment.positive || 0) * 100, 1)}% / 0 ${fmt(Number(sentiment.neutral || 0) * 100, 1)}% / - ${fmt(Number(sentiment.negative || 0) * 100, 1)}%</div>
+      <div style="margin-top:6px;">Топ тем: ${topics.slice(0, 5).map((x) => `${esc(x.topic || '')} (${Number(x.messages || 0)})`).join(' · ') || 'n/a'}</div>
     `;
     return;
   }
@@ -805,8 +1261,8 @@ async function loadAdminPanel(chat) {
     const p = b.activity || {};
     const eff = p.effectiveness || {};
     body.innerHTML = `
-      <div>Messages: <strong>${Number(p.total_messages || 0)}</strong> · Political: <strong>${Number(p.political_detected || 0)}</strong> · AI decisions: <strong>${Number(p.ai_decisions || 0)}</strong></div>
-      <div>Warnings: <strong>${Number(eff.warnings_issued || 0)}</strong> · Users paused: <strong>${Number(eff.users_paused || 0)}</strong> · Prevented: <strong>${Number(eff.conflicts_prevented || 0)}</strong></div>
+      <div>Сообщений: <strong>${Number(p.total_messages || 0)}</strong> · Политических: <strong>${Number(p.political_detected || 0)}</strong> · AI-решений: <strong>${Number(p.ai_decisions || 0)}</strong></div>
+      <div>Замечаний: <strong>${Number(eff.warnings_issued || 0)}</strong> · Поставлено на паузу: <strong>${Number(eff.users_paused || 0)}</strong> · Предотвращено: <strong>${Number(eff.conflicts_prevented || 0)}</strong></div>
     `;
     return;
   }
@@ -814,9 +1270,9 @@ async function loadAdminPanel(chat) {
   const growth = p.user_growth || {};
   const fc = p.forecast || {};
   body.innerHTML = `
-    <div>Growth: new <strong>${Number(growth.new_users || 0)}</strong> / churned <strong>${Number(growth.churned_users || 0)}</strong> / net <strong>${Number(growth.net_growth || 0)}</strong> (${esc(growth.trend || 'flat')})</div>
-    <div>Engagement trend: <strong>${fmt(p.engagement_trend, 3)}</strong> · Retention trend: <strong>${fmt(p.retention_trend, 3)}</strong></div>
-    <div>Forecast: health <strong>${fmt(fc.expected_health, 3)}</strong> · churn users <strong>${Number(fc.expected_churn_users || 0)}</strong> · new users <strong>${Number(fc.expected_new_users || 0)}</strong></div>
+    <div>Рост: новые <strong>${Number(growth.new_users || 0)}</strong> / ушедшие <strong>${Number(growth.churned_users || 0)}</strong> / итог <strong>${Number(growth.net_growth || 0)}</strong> (${esc(growth.trend || 'flat')})</div>
+    <div>Тренд вовлечённости: <strong>${fmt(p.engagement_trend, 3)}</strong> · Тренд удержания: <strong>${fmt(p.retention_trend, 3)}</strong></div>
+    <div>Прогноз: здоровье <strong>${fmt(fc.expected_health, 3)}</strong> · возможный отток <strong>${Number(fc.expected_churn_users || 0)}</strong> · новые участники <strong>${Number(fc.expected_new_users || 0)}</strong></div>
   `;
 }
 
@@ -932,6 +1388,10 @@ async function resetPoliticalCountFromOps() {
     setOpsFeedback('Сначала выберите конкретный чат.', '#f59e0b');
     return;
   }
+  if (!window.confirm('Вы уверены? Это действие нельзя отменить.')) {
+    showToast('Сброс отменён.', 'warn');
+    return;
+  }
   const btn = document.getElementById('resetPoliticalBtn');
   if (btn) btn.disabled = true;
   try {
@@ -941,8 +1401,10 @@ async function resetPoliticalCountFromOps() {
       body: JSON.stringify({chat_id: chat}),
     });
     setOpsFeedback(body.message || 'Сброс запланирован.', '#10b981');
+    showToast(body.message || 'Сброс политического счётчика запланирован.', 'success');
   } catch (e) {
     setOpsFeedback(`Ошибка сброса: ${e.message || e}`, '#ef4444');
+    showToast(`Ошибка: ${e.message || e}`, 'error');
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -953,7 +1415,7 @@ async function buildPortraitFromOps() {
   const rawUserId = String((userInput && userInput.value) || '').trim();
   const uid = Number(rawUserId);
   if (!rawUserId || !Number.isFinite(uid) || uid <= 0) {
-    setOpsFeedback('Укажите корректный User ID.', '#f59e0b');
+    setOpsFeedback('Укажите корректный ID пользователя.', '#f59e0b');
     return;
   }
   const chat = selectedChatIdForOps() || 'all';
@@ -978,7 +1440,7 @@ function openUserProfileFromOps() {
   const rawUserId = String((userInput && userInput.value) || '').trim();
   const uid = Number(rawUserId);
   if (!rawUserId || !Number.isFinite(uid) || uid <= 0) {
-    setOpsFeedback('Укажите корректный User ID.', '#f59e0b');
+    setOpsFeedback('Укажите корректный ID пользователя.', '#f59e0b');
     return;
   }
   const chat = selectedChatIdForOps() || 'all';
@@ -1030,6 +1492,10 @@ async function refreshAnalysisFromOps(withAi) {
 }
 
 async function restartBotFromOps() {
+  if (!window.confirm('Вы уверены? Это действие нельзя отменить.')) {
+    showToast('Перезапуск отменён.', 'warn');
+    return;
+  }
   const btn = document.getElementById('restartBotBtn');
   if (btn) btn.disabled = true;
   try {
@@ -1043,12 +1509,39 @@ async function restartBotFromOps() {
       const st = await requestJson('/api/restart-status');
       if (st.restarted) {
         setOpsFeedback('Бот успешно перезапущен.', '#10b981');
+        showToast('Бот успешно перезапущен.', 'success');
         return;
       }
     }
     setOpsFeedback('Перезапуск не подтверждён за ожидаемое время.', '#f59e0b');
+    showToast('Перезапуск не подтверждён за ожидаемое время.', 'warn');
   } catch (e) {
     setOpsFeedback(`Ошибка перезапуска: ${e.message || e}`, '#ef4444');
+    showToast(`Ошибка: ${e.message || e}`, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function classifyUnknownUsers() {
+  const btn = document.getElementById('classifyUnknownBtn');
+  if (btn) btn.disabled = true;
+  const chatSel = document.getElementById('chatSel');
+  const chat = String((chatSel && chatSel.value) || 'all');
+  try {
+    const body = await requestJson('/api/portrait-classify-unknown', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ chat_id: chat }),
+    });
+    const msg = `Классификация завершена: обработано ${Number(body.processed || 0)} из ${Number(body.unknown_total || 0)}.`;
+    setOpsFeedback(msg, '#10b981');
+    showToast(msg, 'success');
+    await loadAndRender();
+    await syncOpsState();
+  } catch (e) {
+    setOpsFeedback(`Ошибка классификации: ${e.message || e}`, '#ef4444');
+    showToast(`Ошибка: ${e.message || e}`, 'error');
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -1092,11 +1585,11 @@ function restartRealtime() {
   const chk = document.getElementById('autoRefreshChk');
   if (!chk || !chk.checked) {
     stopRealtime();
-    setLiveStatus('disabled', '#9ca3af');
+    setLiveStatus('выключено', 'neutral');
     return;
   }
   if (!window.createGraphRealtimeClient) {
-    setLiveStatus('unavailable', '#f59e0b');
+    setLiveStatus('недоступно', 'disconnected');
     return;
   }
   const chatIds = collectChatIdsForSelection();
@@ -1107,15 +1600,15 @@ function restartRealtime() {
     pollIntervalMs: 5000,
     throttleMs: 800,
     onStatus: function(statusText){
-      const status = String(statusText || '');
-      const isErr = status.includes('error');
-      const isWarn = status.includes('poll');
-      setLiveStatus(status, isErr ? '#ef4444' : (isWarn ? '#f59e0b' : '#4ade80'));
+      setLiveStatusByRaw(statusText);
     },
     onDelta: function(evt){
       const src = String((evt || {}).source || 'ws');
-      const chatId = (evt && evt.chat_id != null) ? ` chat:${evt.chat_id}` : '';
-      setLiveStatus(`delta (${src}${chatId})`, '#4ade80');
+      if (src === 'ws') {
+        setLiveStatus('подключено', 'connected');
+      } else {
+        setLiveStatus('резервный опрос активен', 'reconnecting');
+      }
       fetchAndApplyDelta().catch(() => {
         loadAndRender().catch(() => {});
       });
@@ -1131,7 +1624,7 @@ function handleAutoToggle() {
     return;
   }
   stopRealtime();
-  setLiveStatus('disabled', '#9ca3af');
+  setLiveStatus('выключено', 'neutral');
 }
 
 document.getElementById('reloadStorageBtn').addEventListener('click', () => {
@@ -1164,6 +1657,9 @@ document.getElementById('refreshAnalysisAiBtn').addEventListener('click', () => 
 document.getElementById('restartBotBtn').addEventListener('click', () => {
   restartBotFromOps().catch(() => {});
 });
+document.getElementById('classifyUnknownBtn').addEventListener('click', () => {
+  classifyUnknownUsers().catch(() => {});
+});
 document.getElementById('opsChatModeSel').addEventListener('change', () => {
   const modeSel = document.getElementById('opsChatModeSel');
   setOpsModeDescription(modeSel ? modeSel.value : '');
@@ -1186,6 +1682,9 @@ document.getElementById('labPredictConflicts').addEventListener('click', () => {
 });
 
 document.getElementById('chatSel').addEventListener('change', () => {
+  _selectedGraphNodeId = null;
+  _selectedGraphNodeSnapshot = null;
+  renderGraphNodePanel(null);
   _graphVersion = '';
   loadAndRender().catch(() => {});
   restartRealtime();

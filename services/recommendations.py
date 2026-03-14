@@ -80,6 +80,12 @@ def build_retention_dashboard(chat_id: int | None = None, *, days: int = 30, lim
     rows: list[dict] = []
     for uid, display_name in users:
         metrics = get_user_metrics(uid, chat_id=chat_id, days=days)
+        totals = metrics.get("totals") or {}
+        components = metrics.get("components") or {}
+        negative = float(totals.get("negative", 0.0) or 0.0)
+        positive = float(totals.get("positive", 0.0) or 0.0)
+        neutral = float(totals.get("neutral", 0.0) or 0.0)
+        sentiment_total = max(1.0, negative + positive + neutral)
         rows.append(
             {
                 "user_id": uid,
@@ -91,6 +97,9 @@ def build_retention_dashboard(chat_id: int | None = None, *, days: int = 30, lim
                 "viral_coefficient": float(metrics.get("viral_coefficient", 0.0) or 0.0),
                 "active_days": int(metrics.get("active_days", 0) or 0),
                 "activity_streak": int(metrics.get("activity_streak", 0) or 0),
+                "negative_share": float(negative / sentiment_total),
+                "reach_factor": float(components.get("reach_factor", 0.0) or 0.0),
+                "discussion_depth": float(components.get("discussion_depth", 0.0) or 0.0),
             }
         )
     rows.sort(key=lambda row: row["churn_risk"], reverse=True)

@@ -235,6 +235,11 @@ def build_chat_health_dashboard(chat_id: int | None, *, days: int = 30) -> dict:
     neu = _safe_int(bands.get("neutral", 0), 0)
     neg = _safe_int(bands.get("negative", 0), 0)
     total = max(1, pos + neu + neg)
+    targets = {
+        "health_score": 0.4,
+        "engagement": 0.45,
+        "retention": 0.5,
+    }
 
     return {
         "chat_id": "all" if chat_id is None else int(chat_id),
@@ -253,6 +258,8 @@ def build_chat_health_dashboard(chat_id: int | None, *, days: int = 30) -> dict:
         "participants": int(health.get("participants", 0) or 0),
         "health_status": str(health.get("health_status") or "unknown"),
         "dominant_topics": topics,
+        "targets": targets,
+        "target_semantics": "target_value",
         "sentiment_distribution": {
             "positive": round(pos / total, 4),
             "neutral": round(neu / total, 4),
@@ -328,22 +335,47 @@ def build_user_leaderboard_dashboard(
     limit: int = 10,
     days: int = 30,
 ) -> dict:
+    metric_key = str(metric or "engagement")
+    safe_days = max(1, min(int(days or 30), 180))
+    safe_limit = max(1, min(int(limit or 10), 100))
     rows = marketing_metrics.get_leaderboard(
-        metric=str(metric or "engagement"),
+        metric=metric_key,
         chat_id=chat_id,
-        days=max(1, min(int(days or 30), 180)),
-        limit=max(1, min(int(limit or 10), 100)),
+        days=safe_days,
+        limit=safe_limit,
     )
+    score_key_map = {
+        "engagement": "engagement_score",
+        "influence": "influence_score",
+        "retention": "retention_score",
+        "viral": "viral_coefficient",
+        "churn": "churn_risk",
+    }
+    score_key = str(score_key_map.get(metric_key, "engagement_score"))
     users = []
-    for idx, row in enumerate(rows):
+    for row in rows:
         uid = _safe_int(row.get("user_id", 0), 0)
+        current_score = round(_safe_float(row.get("score", 0.0), 0.0), 4)
+        prev_window = marketing_metrics.get_user_metrics(uid, chat_id=chat_id, days=max(7, min(180, safe_days * 2)))
+        previous_score = round(_safe_float(prev_window.get(score_key, 0.0), 0.0), 4)
+        trend_delta = round(current_score - previous_score, 4)
+        if abs(trend_delta) < 0.005:
+            trend = "flat"
+        else:
+            trend = "up" if trend_delta > 0 else "down"
+        activity_24h = marketing_metrics.get_user_metrics(uid, chat_id=chat_id, days=1)
+        activity_24h_msgs = int((activity_24h.get("totals") or {}).get("messages", 0) or 0)
         users.append(
             {
-                "rank": idx + 1,
+                "rank": 0,
                 "user_id": uid,
                 "user_hash": user_hash(uid, chat_id),
                 "username": str(row.get("display_name") or row.get("user_id") or ""),
-                "score": round(_safe_float(row.get("score", 0.0), 0.0), 4),
+                "score": current_score,
+                "score_previous": previous_score,
+                "trend": trend,
+                "trend_delta": trend_delta,
+                "activity_24h_messages": activity_24h_msgs,
                 "details": {
                     "engagement": round(_safe_float(row.get("engagement_score", 0.0), 0.0), 4),
                     "influence": round(_safe_float(row.get("influence_score", 0.0), 0.0), 4),
@@ -353,10 +385,19 @@ def build_user_leaderboard_dashboard(
                 },
             }
         )
+    users.sort(
+        key=lambda x: (
+            -_safe_float(x.get("score", 0.0), 0.0),
+            -_safe_int(x.get("activity_24h_messages", 0), 0),
+            str(x.get("username") or ""),
+        )
+    )
+    for idx, row in enumerate(users):
+        row["rank"] = idx + 1
     return {
         "chat_id": "all" if chat_id is None else int(chat_id),
-        "metric": str(metric or "engagement"),
-        "limit": int(max(1, min(int(limit or 10), 100))),
+        "metric": metric_key,
+        "limit": int(safe_limit),
         "users": users,
     }
 
@@ -366,22 +407,34 @@ def _retention_action(row: dict, *, days: int) -> dict:
     influence = _safe_float(row.get("influence_score", 0.0), 0.0)
     active_days = _safe_int(row.get("active_days", 0), 0)
     streak = _safe_int(row.get("activity_streak", 0), 0)
+    negative_share = _safe_float(row.get("negative_share", 0.0), 0.0)
+    reach_factor = _safe_float(row.get("reach_factor", 0.0), 0.0)
+    discussion_depth = _safe_float(row.get("discussion_depth", 0.0), 0.0)
     days_inactive = max(0, int(days) - active_days)
-    if churn >= 0.8 and influence >= 0.55:
-        action = "Send personal high-touch DM"
-        reason = "high churn + high influence"
+    if days_inactive >= max(3, int(days * 0.35)):
+        action = "Мягкий ре-онбординг: личное сообщение + вопрос для возврата в диалог."
+        reason_code = "activity_drop"
+        reason = f"Резкое снижение активности: {days_inactive} дн. без устойчивого участия"
         trend = "dropping"
-    elif churn >= 0.7:
-        action = "Soft check-in and topic re-entry"
-        reason = "high churn risk"
+    elif negative_share >= 0.32:
+        action = "Снизить конфликтную нагрузку: предложить нейтральную тему и ручную модерацию треда."
+        reason_code = "conflict_rise"
+        reason = f"Рост конфликтных сигналов: доля негатива {negative_share:.0%}"
         trend = "declining"
+    elif reach_factor < 0.18 and discussion_depth < 0.22:
+        action = "Интеграция в сообщество: упоминание в активной ветке + социальный мост."
+        reason_code = "isolation"
+        reason = f"Изоляция в графе: reach={reach_factor:.2f}, depth={discussion_depth:.2f}"
+        trend = "isolated"
     elif streak >= 3:
-        action = "Monitor and support current momentum"
-        reason = "activity returning"
+        action = "Поддержать возвращение: закрепить участие в текущем обсуждении."
+        reason_code = "retention_risk"
+        reason = "Активность возвращается, но риск оттока сохраняется"
         trend = "returning"
     else:
-        action = "Invite to active thread"
-        reason = "retention requires nudge"
+        action = "Точечный пинг: дать вход в активный тред и попросить короткий комментарий."
+        reason_code = "retention_risk"
+        reason = f"Риск оттока: churn={churn:.2f}, influence={influence:.2f}"
         trend = "stable"
     dm = (
         f"Привет! Не хватает твоего голоса в обсуждениях. "
@@ -391,6 +444,7 @@ def _retention_action(row: dict, *, days: int) -> dict:
         "days_inactive": int(days_inactive),
         "activity_trend": trend,
         "recommended_action": action,
+        "reason_code": reason_code,
         "reason": reason,
         "suggested_message": dm,
     }

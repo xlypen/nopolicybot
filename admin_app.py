@@ -1408,6 +1408,81 @@ def api_portrait_from_storage():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/api/portrait-classify-unknown", methods=["POST"])
+@login_required
+def api_portrait_classify_unknown():
+    """Массово классифицирует пользователей с rank=unknown через построение портрета."""
+    try:
+        from ai_analyzer import build_deep_portrait_from_messages
+        from user_stats import get_user, get_user_messages_archive, get_users_in_chat, set_deep_portrait
+
+        payload = request.get_json(silent=True) or {}
+        raw_chat = str(payload.get("chat_id", "all") or "all").strip()
+        chat_id: int | None = None
+        if raw_chat != "all":
+            if not raw_chat.lstrip("-").isdigit():
+                return jsonify({"ok": False, "error": "Некорректный chat_id"}), 400
+            chat_id = int(raw_chat)
+
+        users = ((_load_users() or {}).get("users", {}) or {})
+        chat_members: set[str] | None = None
+        if chat_id is not None:
+            try:
+                chat_members = {str(int(uid)) for uid in (get_users_in_chat(int(chat_id)) or [])}
+            except Exception:
+                chat_members = set()
+
+        candidate_ids: list[int] = []
+        for uid, row in users.items():
+            uid_str = str(uid or "").strip()
+            if not uid_str.lstrip("-").isdigit():
+                continue
+            if chat_members is not None and uid_str not in chat_members:
+                continue
+            rank = str((row or {}).get("rank", "unknown") or "unknown").strip().lower()
+            if rank == "unknown":
+                candidate_ids.append(int(uid_str))
+
+        processed = 0
+        skipped_no_messages = 0
+        skipped_in_progress = 0
+        failed = 0
+        for uid in candidate_ids:
+            uid_key = str(uid)
+            if uid_key in _portrait_building:
+                skipped_in_progress += 1
+                continue
+            _portrait_building.add(uid_key)
+            try:
+                messages = get_user_messages_archive(uid, chat_id)
+                if not messages:
+                    skipped_no_messages += 1
+                    continue
+                u = get_user(uid) or {}
+                display_name = str(u.get("display_name") or uid)
+                portrait, rank = build_deep_portrait_from_messages(messages, display_name)
+                set_deep_portrait(uid, portrait, rank)
+                processed += 1
+            except Exception:
+                failed += 1
+            finally:
+                _portrait_building.discard(uid_key)
+
+        return jsonify(
+            {
+                "ok": True,
+                "chat_id": "all" if chat_id is None else int(chat_id),
+                "unknown_total": len(candidate_ids),
+                "processed": int(processed),
+                "skipped_no_messages": int(skipped_no_messages),
+                "skipped_in_progress": int(skipped_in_progress),
+                "failed": int(failed),
+            }
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/portrait-building-status")
 @login_required
 def api_portrait_building_status():
@@ -2247,6 +2322,33 @@ def api_recommendations():
     return jsonify({"ok": True, "recommendations": payload})
 
 
+@app.route("/api/recommendations/mark-done", methods=["POST"])
+@login_required
+def api_recommendations_mark_done():
+    try:
+        payload = request.get_json(silent=True) or {}
+        item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
+        chat_raw = str(payload.get("chat_id", "all") or "all").strip().lower()
+        completed = bool(payload.get("completed", True))
+        write_event(
+            "recommendation_marked_done",
+            severity="info",
+            source="flask_admin",
+            payload={
+                "chat_id": chat_raw,
+                "completed": completed,
+                "type": str(item.get("type") or ""),
+                "priority": str(item.get("priority") or ""),
+                "user_id": int(item.get("user_id", 0) or 0) if str(item.get("user_id", "")).lstrip("-").isdigit() else None,
+                "reason": str(item.get("reason") or "")[:240],
+                "action": str(item.get("action") or "")[:240],
+            },
+        )
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/admin/recommendations")
 @login_required
 def admin_recommendations():
@@ -2430,6 +2532,31 @@ def api_admin_at_risk_users():
         limit=limit,
     )
     return jsonify({"ok": True, "at_risk": payload})
+
+
+@app.route("/api/admin/at-risk-action", methods=["POST"])
+@login_required
+def api_admin_at_risk_action():
+    payload = request.get_json(silent=True) or {}
+    action = str(payload.get("action") or "").strip().lower()
+    chat_id = str(payload.get("chat_id") or "all").strip().lower()
+    user_id_raw = str(payload.get("user_id") or "").strip()
+    if action not in {"dm", "clear_flag"}:
+        return jsonify({"ok": False, "error": "invalid action"}), 400
+    if not user_id_raw.lstrip("-").isdigit():
+        return jsonify({"ok": False, "error": "invalid user_id"}), 400
+    user_id = int(user_id_raw)
+    write_event(
+        "admin_at_risk_action",
+        severity="info",
+        source="flask_admin",
+        payload={
+            "action": action,
+            "chat_id": chat_id,
+            "user_id": user_id,
+        },
+    )
+    return jsonify({"ok": True, "action": action, "user_id": user_id, "chat_id": chat_id, "queued": action == "dm"})
 
 
 @app.route("/api/admin/decision-quality")

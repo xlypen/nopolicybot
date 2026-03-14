@@ -169,6 +169,58 @@
     return "rgba(56,189,248,0.9)";
   }
 
+  function buildNeighborMap(edges) {
+    const map = new Map();
+    (edges || []).forEach((e) => {
+      const a = n(e && e.source, 0);
+      const b = n(e && e.target, 0);
+      if (!a || !b) return;
+      if (!map.has(a)) map.set(a, new Set());
+      if (!map.has(b)) map.set(b, new Set());
+      map.get(a).add(b);
+      map.get(b).add(a);
+    });
+    return map;
+  }
+
+  function nodeScreenPos(state, nodeId) {
+    const p = state.posById[n(nodeId, 0)];
+    if (!p) return null;
+    const t = state.transform;
+    return {
+      x: p.x * t.scale + t.tx,
+      y: p.y * t.scale + t.ty,
+    };
+  }
+
+  function nodeRadiusOnScreen(node, scale) {
+    const deg = n(node && node.degree, 0);
+    const influence = n(node && node.influence_score, 0);
+    return Math.max(2.2, Math.min(9, (2.5 + deg * 0.26 + influence * 6) * scale));
+  }
+
+  function findNearestNode(state, x, y, tolerance) {
+    const nodes = state.nodes || [];
+    let bestNode = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < nodes.length; i += 1) {
+      const node = nodes[i];
+      const id = n(node && node.id, 0);
+      if (!id) continue;
+      const screen = nodeScreenPos(state, id);
+      if (!screen) continue;
+      const dx = screen.x - x;
+      const dy = screen.y - y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const limit = Math.max(6, nodeRadiusOnScreen(node, state.transform.scale) + Math.max(4, tolerance || 0));
+      if (dist <= limit && dist < bestDist) {
+        bestDist = dist;
+        bestNode = node;
+      }
+    }
+    return bestNode;
+  }
+
   function drawScene(state) {
     state.raf = 0;
     const ctx = state.ctx;
@@ -181,6 +233,8 @@
     const posById = state.posById;
     const nodes = state.nodes;
     const edges = state.edges;
+    const selectedId = n(state.selectedNodeId, 0);
+    const selectedNeighbors = selectedId && state.neighborMap.has(selectedId) ? state.neighborMap.get(selectedId) : new Set();
 
     ctx.save();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -190,8 +244,10 @@
 
     for (let i = 0; i < edges.length; i += 1) {
       const e = edges[i];
-      const a = posById[n(e && e.source, 0)];
-      const b = posById[n(e && e.target, 0)];
+      const sourceId = n(e && e.source, 0);
+      const targetId = n(e && e.target, 0);
+      const a = posById[sourceId];
+      const b = posById[targetId];
       if (!a || !b) continue;
       const x1 = a.x * t.scale + t.tx;
       const y1 = a.y * t.scale + t.ty;
@@ -200,9 +256,14 @@
       ctx.beginPath();
       ctx.moveTo(x1, y1);
       ctx.lineTo(x2, y2);
-      ctx.strokeStyle = edgeColor(e);
+      let stroke = edgeColor(e);
+      if (selectedId) {
+        const connected = sourceId === selectedId || targetId === selectedId;
+        stroke = connected ? "rgba(56,189,248,0.98)" : "rgba(148,163,184,0.12)";
+      }
+      ctx.strokeStyle = stroke;
       const base = Math.max(0.35, Math.min(2.2, n(e && (e.weight_period || e.weight), 1) * 0.08));
-      ctx.lineWidth = Math.max(0.3, base * t.scale);
+      ctx.lineWidth = Math.max(0.3, (selectedId ? base * 1.25 : base) * t.scale);
       ctx.stroke();
     }
 
@@ -212,24 +273,43 @@
       if (!p) continue;
       const x = p.x * t.scale + t.tx;
       const y = p.y * t.scale + t.ty;
-      const deg = n(node && node.degree, 0);
-      const influence = n(node && node.influence_score, 0);
-      const rad = Math.max(2.2, Math.min(9, (2.5 + deg * 0.26 + influence * 6) * t.scale));
+      const id = n(node && node.id, 0);
+      const isSelected = selectedId && id === selectedId;
+      const isNeighbor = selectedId && selectedNeighbors.has(id);
+      const rad = nodeRadiusOnScreen(node, t.scale) + (isSelected ? 1.1 : 0);
       ctx.beginPath();
       ctx.arc(x, y, rad, 0, Math.PI * 2);
-      ctx.fillStyle = nodeColor(node);
+      let fill = nodeColor(node);
+      if (selectedId) {
+        if (isSelected) fill = "rgba(34,197,94,0.95)";
+        else if (isNeighbor) fill = "rgba(56,189,248,0.92)";
+        else fill = "rgba(148,163,184,0.33)";
+      }
+      ctx.fillStyle = fill;
       ctx.fill();
     }
 
-    const labelCandidates = nodes.slice().sort((a, b) => nodeScore(b) - nodeScore(a)).slice(0, 24);
-    if (t.scale >= 0.65) {
+    if (state.hoverNodeId) {
+      const hoverNode = state.nodeById.get(n(state.hoverNodeId, 0));
+      const screen = hoverNode ? nodeScreenPos(state, n(state.hoverNodeId, 0)) : null;
+      if (hoverNode && screen) {
+        const label = String(hoverNode.label || hoverNode.username || hoverNode.id || "");
+        if (label) {
+          ctx.fillStyle = "rgba(226,232,240,0.95)";
+          ctx.font = `${Math.max(10, Math.min(13, 10 + t.scale * 0.7))}px sans-serif`;
+          ctx.fillText(label, screen.x + 6, screen.y - 8);
+        }
+      }
+    } else if (!selectedId && t.scale >= 1.6) {
+      // Only show sparse labels when zoomed in and nothing selected.
+      const labelCandidates = nodes.slice().sort((a, b) => nodeScore(b) - nodeScore(a)).slice(0, 8);
       ctx.fillStyle = "rgba(226,232,240,0.92)";
       ctx.font = `${Math.max(10, Math.min(13, 10 + t.scale))}px sans-serif`;
       labelCandidates.forEach((node) => {
         const p = posById[n(node && node.id, 0)];
         if (!p) return;
         const x = p.x * t.scale + t.tx + 5;
-        const y = p.y * t.scale + t.ty - 5;
+        const y = p.y * t.scale + t.ty - 6;
         ctx.fillText(String((node && node.label) || (node && node.id) || ""), x, y);
       });
     }
@@ -249,6 +329,9 @@
     let startY = 0;
     let startTx = 0;
     let startTy = 0;
+    let moved = false;
+    let downX = 0;
+    let downY = 0;
 
     canvas.addEventListener(
       "wheel",
@@ -270,19 +353,80 @@
     canvas.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
       dragging = true;
+      moved = false;
       startX = e.clientX;
       startY = e.clientY;
+      downX = e.clientX;
+      downY = e.clientY;
       startTx = t.tx;
       startTy = t.ty;
     });
     window.addEventListener("mousemove", (e) => {
       if (!dragging) return;
+      const travel = Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY);
+      if (travel > 4) moved = true;
       t.tx = startTx + (e.clientX - startX);
       t.ty = startTy + (e.clientY - startY);
       scheduleDraw(state);
     });
     window.addEventListener("mouseup", () => {
       dragging = false;
+    });
+
+    canvas.addEventListener("mousemove", (e) => {
+      if (dragging) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const nearest = findNearestNode(state, x, y, 4);
+      const nextHover = n(nearest && nearest.id, 0) || 0;
+      if (nextHover !== n(state.hoverNodeId, 0)) {
+        state.hoverNodeId = nextHover || null;
+        canvas.style.cursor = nearest ? "pointer" : "grab";
+        scheduleDraw(state);
+      }
+    });
+
+    canvas.addEventListener("mouseleave", () => {
+      if (state.hoverNodeId) {
+        state.hoverNodeId = null;
+        canvas.style.cursor = "grab";
+        scheduleDraw(state);
+      }
+    });
+
+    canvas.addEventListener("click", (e) => {
+      if (moved) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const nearest = findNearestNode(state, x, y, 5);
+      if (!nearest) {
+        state.selectedNodeId = 0;
+        if (typeof state.onNodeSelect === "function") state.onNodeSelect(null);
+        scheduleDraw(state);
+        return;
+      }
+      const id = n(nearest && nearest.id, 0);
+      state.selectedNodeId = n(state.selectedNodeId, 0) === id ? 0 : id;
+      if (typeof state.onNodeSelect === "function") {
+        if (state.selectedNodeId) {
+          const neighbors = state.neighborMap.get(id) || new Set();
+          state.onNodeSelect({
+            id,
+            label: String(nearest.label || nearest.username || nearest.id),
+            username: String(nearest.username || ""),
+            rank: String(nearest.rank || nearest.tier || ""),
+            influence_score: n(nearest && nearest.influence_score, 0),
+            degree: n(nearest && nearest.degree, 0),
+            neighbor_count: neighbors.size,
+            last_activity: String(nearest.last_activity || nearest.last_active || nearest.last_seen || ""),
+          });
+        } else {
+          state.onNodeSelect(null);
+        }
+      }
+      scheduleDraw(state);
     });
   }
 
@@ -302,8 +446,8 @@
     note.className = "text-sm text-muted";
     const webglReady = detectWebGL();
     note.textContent = subset.culled
-      ? `GPU pipeline (${webglReady ? "webgl-ready" : "canvas-fallback"}): render ${subset.nodes.length}/${subset.originalNodes} nodes, ${subset.edges.length}/${subset.originalEdges} edges`
-      : `GPU pipeline (${webglReady ? "webgl-ready" : "canvas-fallback"}): ${subset.nodes.length} nodes, ${subset.edges.length} edges`;
+      ? `GPU-рендер (${webglReady ? "webgl готов" : "canvas резерв"}): отрисовано ${subset.nodes.length}/${subset.originalNodes} узлов, ${subset.edges.length}/${subset.originalEdges} связей`
+      : `GPU-рендер (${webglReady ? "webgl готов" : "canvas резерв"}): ${subset.nodes.length} узлов, ${subset.edges.length} связей`;
     const canvas = document.createElement("canvas");
     canvas.className = "graph-webgl-canvas";
     canvas.style.border = "1px solid rgba(71,85,105,0.45)";
@@ -321,7 +465,7 @@
     const dpr = applyCanvasSize(canvas, width, height);
     const ctx2d = canvas.getContext("2d", { alpha: false, desynchronized: true });
     if (!ctx2d) {
-      root.innerHTML = '<div style="padding:0.8rem;color:var(--text-muted);">Canvas renderer unavailable</div>';
+      root.innerHTML = '<div style="padding:0.8rem;color:var(--text-muted);">Canvas-рендер недоступен</div>';
       return;
     }
 
@@ -332,8 +476,13 @@
       mode,
       nodes: subset.nodes,
       edges: subset.edges,
+      nodeById: new Map(subset.nodes.map((node) => [n(node && node.id, 0), node])),
+      neighborMap: buildNeighborMap(subset.edges),
       posById: positionNodes(subset.nodes, width, height, mode),
       transform: { scale: 1, tx: 0, ty: 0 },
+      selectedNodeId: n(payload.selectedNodeId, 0) || 0,
+      hoverNodeId: null,
+      onNodeSelect: typeof payload.onNodeSelect === "function" ? payload.onNodeSelect : null,
       raf: 0,
     };
 

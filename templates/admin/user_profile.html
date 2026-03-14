@@ -1,0 +1,246 @@
+{% extends "admin/base.html" %}
+{% block title %}Профиль пользователя {{ user_id }}{% endblock %}
+{% block head_extra %}
+<style>
+.user-grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1rem; }
+.user-compact-list { margin: 0; padding-left: 18px; color: var(--text-secondary); }
+.user-compact-list li { margin-bottom: 0.45rem; }
+.meta-line { color: var(--text-secondary); font-size: 0.86rem; }
+.portrait-box { white-space: pre-wrap; font-size: 0.9rem; line-height: 1.55; color: var(--text-primary); }
+.user-graph-root { min-height: 460px; border: 1px solid var(--border-card); border-radius: 10px; background: var(--bg-secondary); padding: 10px; }
+.muted-box { background: var(--bg-secondary); border: 1px solid var(--border-card); border-radius: 8px; padding: 8px; font-size: 0.86rem; }
+</style>
+{% endblock %}
+{% block body %}
+<div class="hero">
+  <div class="header" style="margin-bottom: 6px;">
+    <h1>Профиль пользователя</h1>
+    <div class="actions">
+      <a class="btn btn-secondary" href="{{ url_for('admin_modern') }}">← Dashboard</a>
+      <a class="btn btn-secondary" href="{{ url_for('user_detail', user_id=user_id, chat=chat_id) }}">Legacy detail</a>
+      <a class="btn btn-secondary" href="{{ url_for('logout') }}">Выйти</a>
+    </div>
+  </div>
+  <div class="meta-line">ID: {{ user_id }} · Чат: {{ chat_id }} · Ранг: {{ rank_labels.get(u.get('rank'), u.get('rank')) }} · Тон: {{ effective_tone }}</div>
+</div>
+
+<div class="cards">
+  <div class="card"><h3>Сообщений</h3><span class="val">{{ u.get('stats', {}).get('total_messages', 0) }}</span></div>
+  <div class="card"><h3>Полит.</h3><span class="val">{{ u.get('stats', {}).get('political_messages', 0) }}</span></div>
+  <div class="card"><h3>Замечаний</h3><span class="val">{{ u.get('stats', {}).get('warnings_received', 0) }}</span></div>
+  <div class="card"><h3>Sentiment +/-/0</h3><span class="val" style="font-size:1.2rem;">{{ u.get('stats', {}).get('positive_sentiment', 0) }} / {{ u.get('stats', {}).get('negative_sentiment', 0) }} / {{ u.get('stats', {}).get('neutral_sentiment', 0) }}</span></div>
+</div>
+
+<div class="user-grid-2">
+  <div class="card">
+    <div class="title">Основное</div>
+    <div style="margin-bottom:8px;"><strong>{{ u.get('display_name', user_id) }}</strong></div>
+    <div class="row">
+      <button class="btn btn-secondary" id="buildPortraitBtn">Собрать портрет</button>
+      {% if portrait_exists %}
+      <a class="btn btn-secondary" href="{{ url_for('portrait_image', user_id=user_id) }}" target="_blank" rel="noopener">Открыть image-портрет</a>
+      {% endif %}
+      <a class="btn btn-secondary" href="{{ me_url }}" target="_blank" rel="noopener">Ссылка /me</a>
+    </div>
+    <div id="profileFeedback" class="meta-line">Готово к действиям.</div>
+  </div>
+  <div class="card">
+    <div class="title">Связи пользователя</div>
+    {% if my_connections %}
+    <ul class="user-compact-list">
+      {% for r in my_connections %}
+      <li>
+        <strong>{{ r.get('peer_name', '—') }}</strong>
+        <span class="meta-line">· 7d: {{ r.get('message_count_7d', 0) }} · 30d: {{ r.get('message_count_30d', 0) }} · tone: {{ r.get('tone', 'neutral') }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="meta-line">Нет данных по связям для выбранного фильтра.</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="title">Психологический портрет</div>
+  <div class="portrait-box">{{ u.get('portrait', 'Портрет пока не сформирован.') }}</div>
+</div>
+
+<div class="card">
+  <div class="title">Личный граф (ego)</div>
+  <div class="row">
+    <label for="userGraphModeSel">Режим:</label>
+    <select id="userGraphModeSel">
+      <option value="force">Force</option>
+      <option value="radial">Radial</option>
+      <option value="community">Community</option>
+      <option value="matrix">Matrix</option>
+      <option value="webgl">WebGL</option>
+      <option value="ego">Ego</option>
+    </select>
+    <button class="btn btn-secondary" id="loadUserGraphBtn">Обновить граф</button>
+    <span id="userGraphStatus" class="meta-line">Загрузка…</span>
+  </div>
+  <div id="userGraphRoot" class="user-graph-root"></div>
+</div>
+
+<div class="user-grid-2">
+  <div class="card">
+    <div class="title">Метрики пользователя</div>
+    <div id="userMetricsBox" class="muted-box">Загрузка метрик…</div>
+  </div>
+  <div class="card">
+    <div class="title">Последние решения по пользователю</div>
+    <div id="userDecisionsBox" class="muted-box">Загрузка решений…</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/graph_webgl_viz.js') }}"></script>
+<script src="{{ url_for('static', filename='js/graph_render_pipeline.js') }}"></script>
+<script type="module" src="{{ url_for('static', filename='js/graph_visualizations.jsx') }}"></script>
+<script>
+(function () {
+  const USER_ID = {{ user_id|tojson }};
+  const CHAT_ID = {{ chat_id|tojson }};
+  let graphData = {nodes: [], edges: [], meta: {}};
+
+  function esc(text) {
+    return String(text || "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  }
+
+  function setProfileFeedback(text, color) {
+    const el = document.getElementById("profileFeedback");
+    if (!el) return;
+    el.textContent = String(text || "");
+    el.style.color = color || "var(--text-secondary)";
+  }
+
+  function setGraphStatus(text, isError) {
+    const el = document.getElementById("userGraphStatus");
+    if (!el) return;
+    el.textContent = String(text || "");
+    el.style.color = isError ? "#ef4444" : "var(--text-secondary)";
+  }
+
+  function renderGraph() {
+    const root = document.getElementById("userGraphRoot");
+    const modeSel = document.getElementById("userGraphModeSel");
+    const mode = String((modeSel && modeSel.value) || "ego");
+    if (!root) return;
+    if (window.GraphRenderPipeline && typeof window.GraphRenderPipeline.render === "function") {
+      const ok = window.GraphRenderPipeline.render({
+        root: root,
+        mode: mode,
+        data: graphData,
+        defer: true,
+        largeGraphThresholds: { nodes: 260, edges: 1100 },
+      });
+      if (!ok) {
+        root.textContent = "Graph modules loading...";
+      }
+      return;
+    }
+    root.textContent = "Graph module unavailable.";
+  }
+
+  async function loadUserGraph() {
+    setGraphStatus("Загрузка графа…", false);
+    try {
+      const resp = await fetch("/api/chat/" + encodeURIComponent(String(CHAT_ID)) + "/graph?period=7d&ego_user=" + encodeURIComponent(String(USER_ID)) + "&limit=220", { cache: "no-store" });
+      const body = await resp.json();
+      if (!resp.ok || !body || !body.ok) {
+        throw new Error((body && body.error) || ("HTTP " + resp.status));
+      }
+      graphData = body.graph || {nodes: [], edges: [], meta: {}};
+      renderGraph();
+      setGraphStatus("Узлов: " + ((graphData.nodes || []).length) + " · Связей: " + ((graphData.edges || []).length), false);
+    } catch (e) {
+      setGraphStatus("Ошибка загрузки графа", true);
+    }
+  }
+
+  async function loadUserMetrics() {
+    const box = document.getElementById("userMetricsBox");
+    if (!box) return;
+    box.textContent = "Загрузка метрик…";
+    try {
+      const resp = await fetch("/api/metrics/user/" + encodeURIComponent(String(USER_ID)) + "?chat_id=" + encodeURIComponent(String(CHAT_ID)) + "&days=30", { cache: "no-store" });
+      const body = await resp.json();
+      if (!resp.ok || !body || !body.ok) {
+        throw new Error((body && body.error) || ("HTTP " + resp.status));
+      }
+      const m = body.metrics || {};
+      box.innerHTML = [
+        "<div>engagement: <strong>" + Number(m.engagement_score || 0).toFixed(3) + "</strong></div>",
+        "<div>influence: <strong>" + Number(m.influence_score || 0).toFixed(3) + "</strong></div>",
+        "<div>retention: <strong>" + Number(m.retention_score || 0).toFixed(3) + "</strong></div>",
+        "<div>viral: <strong>" + Number(m.viral_coefficient || 0).toFixed(3) + "</strong></div>"
+      ].join("");
+    } catch (e) {
+      box.innerHTML = "<span style='color:#ef4444;'>" + esc(e.message || e) + "</span>";
+    }
+  }
+
+  async function loadUserDecisions() {
+    const box = document.getElementById("userDecisionsBox");
+    if (!box) return;
+    box.textContent = "Загрузка решений…";
+    try {
+      const resp = await fetch("/api/decisions/recent?chat_id=" + encodeURIComponent(String(CHAT_ID)) + "&user_id=" + encodeURIComponent(String(USER_ID)) + "&limit=12", { cache: "no-store" });
+      const body = await resp.json();
+      if (!resp.ok || !body || !body.ok) {
+        throw new Error((body && body.error) || ("HTTP " + resp.status));
+      }
+      const rows = Array.isArray(body.decisions) ? body.decisions : [];
+      if (!rows.length) {
+        box.textContent = "Решений пока нет.";
+        return;
+      }
+      box.innerHTML = "<ul class='user-compact-list'>" + rows.slice(0, 10).map(function (row) {
+        return "<li><strong>" + esc(row.strategy || "strategy") + "</strong> · outcome: " + esc(row.outcome || "n/a") + "</li>";
+      }).join("") + "</ul>";
+    } catch (e) {
+      box.innerHTML = "<span style='color:#ef4444;'>" + esc(e.message || e) + "</span>";
+    }
+  }
+
+  async function buildPortrait() {
+    const btn = document.getElementById("buildPortraitBtn");
+    if (btn) btn.disabled = true;
+    setProfileFeedback("Собираю портрет…", "#f59e0b");
+    try {
+      const resp = await fetch("/api/portrait-from-storage", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ user_id: Number(USER_ID), chat_id: String(CHAT_ID) }),
+      });
+      const body = await resp.json();
+      if (!resp.ok || !body || !body.ok) {
+        throw new Error((body && body.error) || ("HTTP " + resp.status));
+      }
+      setProfileFeedback("Портрет обновлён. Перезагрузите страницу для актуального текста.", "#10b981");
+    } catch (e) {
+      setProfileFeedback("Ошибка портрета: " + (e.message || e), "#ef4444");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  document.getElementById("loadUserGraphBtn").addEventListener("click", function () {
+    loadUserGraph().catch(function () {});
+  });
+  document.getElementById("userGraphModeSel").addEventListener("change", function () {
+    renderGraph();
+  });
+  document.getElementById("buildPortraitBtn").addEventListener("click", function () {
+    buildPortrait().catch(function () {});
+  });
+
+  loadUserGraph().catch(function () {});
+  loadUserMetrics().catch(function () {});
+  loadUserDecisions().catch(function () {});
+})();
+</script>
+{% endblock %}

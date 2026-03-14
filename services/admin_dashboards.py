@@ -11,6 +11,7 @@ from services.community_health import build_community_health
 from services.decision_engine import get_decision_quality, get_recent_decisions
 from services.learning_loop import feedback_summary
 from services.moderation_risk import build_moderation_risk
+from services.data_privacy import user_hash
 from services.predictive_models import predict_overview
 from services.recommendations import build_retention_dashboard, get_recent_churn_snapshots
 from services.tone_analyzer import ToneAnalyzer
@@ -298,6 +299,7 @@ def build_community_structure_dashboard(chat_id: int | None, *, period: str = "3
         bridge_rows.append(
             {
                 "user_id": uid,
+                "user_hash": user_hash(uid, chat_id),
                 "username": str(node.get("label") or uid),
                 "betweenness": round(float(score), 4),
             }
@@ -334,10 +336,12 @@ def build_user_leaderboard_dashboard(
     )
     users = []
     for idx, row in enumerate(rows):
+        uid = _safe_int(row.get("user_id", 0), 0)
         users.append(
             {
                 "rank": idx + 1,
-                "user_id": _safe_int(row.get("user_id", 0), 0),
+                "user_id": uid,
+                "user_hash": user_hash(uid, chat_id),
                 "username": str(row.get("display_name") or row.get("user_id") or ""),
                 "score": round(_safe_float(row.get("score", 0.0), 0.0), 4),
                 "details": {
@@ -411,10 +415,12 @@ def build_at_risk_users_dashboard(
 
     users = []
     for row in rows[: max(1, min(int(limit or 30), 200))]:
+        uid = _safe_int(row.get("user_id", 0), 0)
         action = _retention_action(row, days=safe_days)
         users.append(
             {
-                "user_id": _safe_int(row.get("user_id", 0), 0),
+                "user_id": uid,
+                "user_hash": user_hash(uid, chat_id),
                 "username": str(row.get("display_name") or row.get("user_id") or ""),
                 "churn_risk": round(_safe_float(row.get("churn_risk", 0.0), 0.0), 4),
                 "retention_score": round(_safe_float(row.get("retention_score", 0.0), 0.0), 4),
@@ -635,12 +641,14 @@ def build_moderation_activity_dashboard(chat_id: int | None, *, period_days: int
     timeline = []
     for row in selected[:12]:
         ts = _safe_float(row.get("ts", 0.0), 0.0)
+        uid = _safe_int(row.get("user_id", 0), 0) if row.get("user_id") is not None else None
         timeline.append(
             {
                 "ts": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat() if ts > 0 else "",
                 "outcome": str(row.get("outcome") or ""),
                 "strategy": str(row.get("strategy") or ""),
-                "user_id": row.get("user_id"),
+                "user_id": uid,
+                "user_hash": user_hash(uid, chat_id) if uid is not None else None,
             }
         )
 

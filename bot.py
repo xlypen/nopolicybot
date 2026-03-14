@@ -25,6 +25,7 @@ from aiogram.types import Message, InputProfilePhotoStatic, ReactionTypeEmoji
 from aiogram.types import FSInputFile
 from dotenv import load_dotenv
 
+from config.validate_secrets import validate_secrets
 from ai_analyzer import (
     _ALLOWED_REACTION_EMOJI,
     analyze_messages,
@@ -56,7 +57,14 @@ import voice_transcribe
 from handlers.direct_reply import build_reply_context_with_images
 from services.reactions import pick_allowed_emoji, set_photo_reaction
 from services.schedulers import restart_checker, social_graph_daily_task
-from services.schedulers import social_graph_realtime_task, portrait_image_daily_task, marketing_metrics_rollup_task, churn_detection_task
+from services.schedulers import (
+    social_graph_realtime_task,
+    portrait_image_daily_task,
+    marketing_metrics_rollup_task,
+    churn_detection_task,
+    storage_parity_monitor_task,
+    data_retention_task,
+)
 from services.marketing_metrics import record_message_event, record_signal_event
 from services.decision_engine import DecisionEngine, append_decision_event
 from services.db_ingest import ingest_message_event
@@ -86,6 +94,16 @@ logging.basicConfig(
     force=True,
 )
 logger = logging.getLogger(__name__)
+
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_task(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
 
 CHAT_HISTORY: dict[int, deque[tuple[str, str]]] = {}
 HISTORY_SIZE = 50
@@ -176,7 +194,7 @@ async def _maybe_run_factcheck(
         except Exception as e:
             logger.warning("Факт-чек: %s: %s", type(e).__name__, e)
 
-    asyncio.create_task(_do_factcheck())
+    _spawn_task(_do_factcheck())
 
 
 def _persist_state() -> None:
@@ -1002,7 +1020,7 @@ async def check_and_reply(message: Message) -> None:
         and not message.from_user.is_bot
         and random.random() < spont_chance
     ):
-        asyncio.create_task(_maybe_spontaneous_reaction(message.bot, chat_id, message.message_id))
+        _spawn_task(_maybe_spontaneous_reaction(message.bot, chat_id, message.message_id))
 
     reply_to = message.reply_to_message
     reply_text = (reply_to.text or reply_to.caption or "") if reply_to else ""
@@ -1047,7 +1065,7 @@ async def check_and_reply(message: Message) -> None:
                     )
                 if image_result and len(image_result) >= 7 and bot_settings.get("reactions_on_photos") and not is_analysis_screenshot:
                     emoji = image_result[6]
-                    asyncio.create_task(
+                    _spawn_task(
                         set_photo_reaction(
                             message.bot,
                             chat_id,
@@ -1090,7 +1108,7 @@ async def check_and_reply(message: Message) -> None:
 
     try:
         media_type = "photo" if has_photo else ("voice" if has_voice else "text")
-        asyncio.create_task(
+        _spawn_task(
             ingest_message_event(
                 chat_id=int(chat_id),
                 user_id=int(message.from_user.id),
@@ -1192,7 +1210,7 @@ async def check_and_reply(message: Message) -> None:
         except Exception as e:
             logger.exception("Ошибка в отложенной проверке: %s", e)
 
-    task = asyncio.create_task(scheduled())
+    task = _spawn_task(scheduled())
     if not reactions_phase:
         _chat_scheduled[chat_id] = task
 
@@ -1316,7 +1334,7 @@ async def on_message_to_bot(message: Message) -> None:
                 await message.reply(body_html or "понял.", parse_mode="HTML")
                 logger.info("Чат %s: участливый ответ на вопрос дня пользователю %s", chat_id, first_name)
                 _debug_log("QOD_ENGAGING", chat_id=chat_id, user=first_name, detail="ответ на вопрос дня")
-                asyncio.create_task(_update_portrait_background(user_id, first_name))
+                _spawn_task(_update_portrait_background(user_id, first_name))
                 return
             # Иначе — «и так сойдёт»: не отвечаем
             logger.info("Чат %s: ответ на вопрос дня от %s — без участливости (короткий/не по теме/грубый)", chat_id, first_name)
@@ -1430,7 +1448,7 @@ async def on_message_to_bot(message: Message) -> None:
         reply_type = "kind" if is_positive else ("technical" if message_type == "technical_question" else ("substantive" if is_substantive else "rude"))
         _debug_log("DM_REPLY", chat_id=chat_id, user=first_name, detail=reply_type)
         # Обновление портрета и тона в фоне (не блокирует ответ)
-        asyncio.create_task(_update_portrait_background(user_id, first_name))
+        _spawn_task(_update_portrait_background(user_id, first_name))
     except APIStatusError as e:
         if e.status_code == 402:
             logger.warning("ИИ недоступен: 402")
@@ -1477,7 +1495,7 @@ async def cmd_stats(message: Message) -> None:
 
 def _participant_me_link(user_id: int) -> str:
     """Ссылка на страницу «Мой профиль» для участника (подписанный токен)."""
-    secret_raw = (os.getenv("PARTICIPANT_SECRET") or os.getenv("ADMIN_SECRET_KEY") or "change-me-in-production").strip()
+    secret_raw = (os.getenv("PARTICIPANT_SECRET") or os.getenv("ADMIN_SECRET_KEY") or "").strip()
     secret = secret_raw.encode("utf-8")
     ttl_sec = 7 * 24 * 3600
     exp = int(time.time()) + ttl_sec
@@ -1692,6 +1710,7 @@ async def _content_digest_scheduler(bot: Bot) -> None:
 
 
 async def main() -> None:
+    validate_secrets("bot")
     logger.info("Python: %s", sys.executable)
     if bot_settings.get("analyze_voice"):
         try:
@@ -1746,16 +1765,26 @@ async def main() -> None:
     )
     logger.info("Бот запущен. ИИ: %s", os.getenv("OPENAI_BASE_URL", "(не задан)"))
     _debug_log("SESSION_START", detail=f"ИИ={os.getenv('OPENAI_BASE_URL', '—')}")
-    asyncio.create_task(restart_checker(RESTART_FLAG_PATH, logger))
-    asyncio.create_task(_state_persistence_loop())
-    asyncio.create_task(_question_of_day_scheduler(bot))
-    asyncio.create_task(_content_digest_scheduler(bot))
-    asyncio.create_task(social_graph_daily_task(social_graph.process_pending_days, logger))
-    asyncio.create_task(social_graph_realtime_task(social_graph.process_realtime_updates, logger))
-    asyncio.create_task(portrait_image_daily_task(logger))
-    asyncio.create_task(marketing_metrics_rollup_task(logger))
-    asyncio.create_task(churn_detection_task(bot, logger))
-    await dp.start_polling(bot)
+    _spawn_task(restart_checker(RESTART_FLAG_PATH, logger))
+    _spawn_task(_state_persistence_loop())
+    _spawn_task(_question_of_day_scheduler(bot))
+    _spawn_task(_content_digest_scheduler(bot))
+    _spawn_task(social_graph_daily_task(social_graph.process_pending_days, logger))
+    _spawn_task(social_graph_realtime_task(social_graph.process_realtime_updates, logger))
+    _spawn_task(portrait_image_daily_task(logger))
+    _spawn_task(marketing_metrics_rollup_task(logger))
+    _spawn_task(churn_detection_task(bot, logger))
+    _spawn_task(storage_parity_monitor_task(logger))
+    _spawn_task(data_retention_task(logger))
+    try:
+        await dp.start_polling(bot)
+    finally:
+        pending = [task for task in list(_background_tasks) if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        await bot.session.close()
 
 
 if __name__ == "__main__":

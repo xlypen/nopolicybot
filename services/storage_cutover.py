@@ -10,7 +10,8 @@ from services.data_platform import export_snapshot
 
 _MODE_PATH = Path(__file__).resolve().parent.parent / "data" / "storage_mode.json"
 _MIGRATION_MARKER = Path(__file__).resolve().parent.parent / ".sqlite_migrated_from_json"
-_ALLOWED_MODES = {"json", "hybrid", "db"}
+_PARITY_DIFF_LOG = Path(__file__).resolve().parent.parent / "data" / "parity_diff.log"
+_ALLOWED_MODES = {"json", "dual", "db_first", "db_only"}
 
 
 def _now_iso() -> str:
@@ -26,23 +27,48 @@ def _save_json(path: Path, payload: dict) -> None:
     tmp_path.replace(path)
 
 
+def _normalize_mode(mode: str | None) -> str:
+    raw = str(mode or "").strip().lower()
+    aliases = {
+        "hybrid": "dual",
+        "db": "db_only",
+        "database": "db_only",
+    }
+    normalized = aliases.get(raw, raw)
+    if normalized in _ALLOWED_MODES:
+        return normalized
+    return "dual"
+
+
+def storage_db_reads_enabled(mode: str | None = None) -> bool:
+    return _normalize_mode(mode or get_storage_mode()) in {"dual", "db_first", "db_only"}
+
+
+def storage_db_writes_enabled(mode: str | None = None) -> bool:
+    return _normalize_mode(mode or get_storage_mode()) in {"dual", "db_first", "db_only"}
+
+
+def storage_json_fallback_enabled(mode: str | None = None) -> bool:
+    return _normalize_mode(mode or get_storage_mode()) in {"dual", "db_first"}
+
+
+def storage_db_only_mode(mode: str | None = None) -> bool:
+    return _normalize_mode(mode or get_storage_mode()) == "db_only"
+
+
 def get_storage_mode() -> str:
     if _MODE_PATH.exists():
         try:
             payload = json.loads(_MODE_PATH.read_text(encoding="utf-8"))
-            mode = str(payload.get("mode", "")).strip().lower()
-            if mode in _ALLOWED_MODES:
-                return mode
+            return _normalize_mode(str(payload.get("mode", "")).strip().lower())
         except Exception:
             pass
-    env_mode = (os.getenv("STORAGE_PRIMARY") or "hybrid").strip().lower()
-    if env_mode in _ALLOWED_MODES:
-        return env_mode
-    return "hybrid"
+    env_mode = (os.getenv("STORAGE_MODE") or os.getenv("STORAGE_PRIMARY") or "dual").strip().lower()
+    return _normalize_mode(env_mode)
 
 
 def set_storage_mode(mode: str, *, reason: str = "manual") -> dict:
-    mode_norm = str(mode or "").strip().lower()
+    mode_norm = _normalize_mode(mode)
     if mode_norm not in _ALLOWED_MODES:
         raise ValueError(f"unsupported mode: {mode}")
     payload = {
@@ -81,18 +107,18 @@ def build_cutover_report() -> dict:
         "storage_snapshot": snapshot,
         "db_ready_for_cutover": bool(ready),
         "blocking_reasons": reasons,
-        "recommended_mode": "db" if ready else mode,
+        "recommended_mode": "db_only" if ready else mode,
     }
     return report
 
 
 def apply_cutover(mode: str, *, force: bool = False, reason: str = "manual") -> dict:
-    mode_norm = str(mode or "").strip().lower()
+    mode_norm = _normalize_mode(mode)
     if mode_norm not in _ALLOWED_MODES:
         return {"ok": False, "error": f"unsupported mode: {mode}"}
     report = build_cutover_report()
     ready = bool(report.get("db_ready_for_cutover"))
-    if mode_norm == "db" and not ready and not force:
+    if mode_norm == "db_only" and not ready and not force:
         return {
             "ok": False,
             "error": "db_not_ready",
@@ -100,7 +126,7 @@ def apply_cutover(mode: str, *, force: bool = False, reason: str = "manual") -> 
         }
     saved = set_storage_mode(mode_norm, reason=reason)
     marker_written = False
-    if mode_norm == "db" and (ready or force):
+    if mode_norm == "db_only" and (ready or force):
         marker = {
             "at": _now_iso(),
             "mode": mode_norm,
@@ -118,3 +144,33 @@ def apply_cutover(mode: str, *, force: bool = False, reason: str = "manual") -> 
         "report": build_cutover_report(),
     }
     return out
+
+
+def _build_parity_payload(snapshot: dict) -> dict:
+    json_counts = snapshot.get("json") or {}
+    db_counts = snapshot.get("db") or {}
+    deltas = {
+        "users": int(db_counts.get("users", 0) or 0) - int(json_counts.get("users", 0) or 0),
+        "messages": int(db_counts.get("messages", 0) or 0) - int(json_counts.get("messages", 0) or 0),
+        "edges": int(db_counts.get("edges", 0) or 0) - int(json_counts.get("edges", 0) or 0),
+    }
+    critical = [k for k, v in deltas.items() if int(v) < 0]
+    return {
+        "ts": _now_iso(),
+        "mode": get_storage_mode(),
+        "json": {k: int(json_counts.get(k, 0) or 0) for k in ("users", "messages", "edges", "chats")},
+        "db": {k: int(db_counts.get(k, 0) or 0) for k in ("users", "messages", "edges", "chats")},
+        "delta_db_minus_json": deltas,
+        "critical": bool(critical),
+        "critical_keys": critical,
+        "db_error": snapshot.get("db_error"),
+    }
+
+
+def run_parity_check_once() -> dict:
+    snapshot = export_snapshot()
+    payload = _build_parity_payload(snapshot if isinstance(snapshot, dict) else {})
+    _PARITY_DIFF_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with _PARITY_DIFF_LOG.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    return payload

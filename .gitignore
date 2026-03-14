@@ -32,6 +32,7 @@ data/bot.db
 data/storage_mode.json
 data/topic_policies.json
 data/audit_events.jsonl
+data/parity_diff.log
 bot_last_start.json
 .sqlite_migrated_from_json
 graf_ex/

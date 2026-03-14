@@ -19,6 +19,9 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
+      - name: Validate SLO thresholds against current metrics
+        run: |
+          python scripts/check_slo_gate.py --slo-file docs/slo.md
       - name: Run pre-release checks
         run: |
           chmod +x scripts/pre_release_check.sh

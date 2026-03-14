@@ -13,6 +13,8 @@ This policy defines how the project moves from mixed JSON/DB operation to DB-fir
 - JSON and DB paths coexist in selected surfaces.
 - DB repositories and migration tooling are available.
 - Storage status endpoints report parity signals (`/api/storage/status`, `/api/storage/cutover-report`).
+- Runtime mode is controlled by `STORAGE_MODE` (`dual` / `db_first` / `db_only`).
+- Parity monitor writes periodic diffs to `data/parity_diff.log` (default every 300s).
 
 ## Cutover phases
 

@@ -4,22 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}Nopolicybot Admin{% endblock %}</title>
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
-  <style>
-    .admin-shell {
-      min-height: 100vh;
-      background: radial-gradient(1200px 600px at 20% -10%, rgba(233, 69, 96, 0.18), transparent),
-                  radial-gradient(900px 500px at 100% 0%, rgba(79, 70, 229, 0.14), transparent);
-    }
-    .admin-wrap { max-width: 1260px; margin: 0 auto; padding: 18px; }
-    .hero {
-      border: 1px solid var(--border-card);
-      background: linear-gradient(135deg, rgba(22,33,62,0.95), rgba(15,52,96,0.92));
-      border-radius: 14px;
-      padding: 16px;
-      margin-bottom: 14px;
-    }
-  </style>
   {% block head_extra %}{% endblock %}
 </head>
 <body class="admin-shell">

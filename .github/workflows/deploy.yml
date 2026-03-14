@@ -28,6 +28,19 @@ jobs:
         run: |
           pytest -q tests/integration/test_fastapi_v2.py tests/integration/test_api_contracts.py
           python scripts/smoke_checks.py
+      - name: SLO gate (production)
+        if: ${{ inputs.target == 'production' }}
+        env:
+          SLO_METRICS_URL: ${{ secrets.SLO_METRICS_URL }}
+          SLO_ALERTS_URL: ${{ secrets.SLO_ALERTS_URL }}
+          SLO_AUTH_TOKEN: ${{ secrets.SLO_AUTH_TOKEN }}
+        run: |
+          python scripts/check_slo_gate.py \
+            --slo-file docs/slo.md \
+            --metrics-url "${SLO_METRICS_URL}" \
+            --alerts-url "${SLO_ALERTS_URL}" \
+            --auth-token "${SLO_AUTH_TOKEN}" \
+            --require-remote
 
   deploy:
     needs: preflight

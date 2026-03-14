@@ -7,11 +7,10 @@
     <div class="actions">
       <a class="btn btn-secondary" href="{{ url_for('admin_legacy') }}">Legacy Admin</a>
       <a class="btn btn-secondary" href="{{ url_for('settings') }}">Настройки</a>
-      <a class="btn btn-secondary" href="{{ url_for('social_graph') }}">Дерево связей</a>
       <a class="btn btn-secondary" href="{{ url_for('logout') }}">Выйти</a>
     </div>
   </div>
-  <div style="color:var(--text-secondary)">Восстановленный UI по recovery-плану: метрики + интерактивные граф-режимы.</div>
+  <div style="color:var(--text-secondary)">Единая modern-панель: core-метрики, ops-контроль и встроенный Graph Lab.</div>
 </div>
 
 <div class="cards">
@@ -63,39 +62,105 @@
   </div>
 </div>
 
-<div class="card">
-  <div class="title">Graph Canvas</div>
-  <div id="graphMetaLine" style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">Источник: —</div>
-  <div id="modernGraphRoot" style="min-height:520px;border:1px solid var(--border-input);border-radius:10px;padding:10px;background:#0b1630;"></div>
-</div>
-
 <div class="grid">
   <div class="card">
-    <div class="title">Retention & At-Risk</div>
-    <div id="retentionSummary" style="color:var(--text-secondary);margin-bottom:8px;">Загрузка...</div>
-    <div style="overflow:auto;max-height:280px;">
-      <table style="width:100%;border-collapse:collapse;">
-        <thead>
-          <tr>
-            <th style="text-align:left;padding:6px;border-bottom:1px solid var(--border-card);">Пользователь</th>
-            <th style="text-align:right;padding:6px;border-bottom:1px solid var(--border-card);">Risk</th>
-            <th style="text-align:right;padding:6px;border-bottom:1px solid var(--border-card);">Influence</th>
-          </tr>
-        </thead>
-        <tbody id="atRiskRows"></tbody>
-      </table>
+    <div class="title">Ops Controls</div>
+    <div class="row">
+      <label for="opsChatModeSel">Режим чата:</label>
+      <select id="opsChatModeSel">
+        {% for mode_key, mode_label in chat_mode_presets.items() %}
+        <option value="{{ mode_key }}">{{ mode_label }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn btn-secondary" id="applyChatModeBtn">Применить режим</button>
+      <button class="btn btn-secondary" id="resetPoliticalBtn">Сбросить полит. счётчик</button>
     </div>
-    <div style="margin-top:8px;">
-      <button class="btn btn-secondary" id="runChurnBtn">Пересчитать churn сейчас</button>
+    <div class="row">
+      <label for="portraitUserIdInput">User ID:</label>
+      <input id="portraitUserIdInput" type="number" min="1" step="1" placeholder="Напр. 123456789">
+      <button class="btn btn-secondary" id="openUserProfileBtn">Открыть профиль</button>
+      <button class="btn btn-secondary" id="buildPortraitBtn">Собрать портрет пользователя</button>
+      <button class="btn btn-secondary" id="restartBotBtn">Перезапустить бота</button>
     </div>
+    <div id="opsFeedback" style="font-size:12px;color:var(--text-secondary);">Выберите чат, затем применяйте операции.</div>
+    <div id="opsChatModeDesc" style="margin-top:6px;font-size:12px;color:var(--text-secondary);"></div>
   </div>
   <div class="card">
-    <div class="title">Recommendations + Predictive</div>
-    <ul id="recoList" style="margin:0;padding-left:18px;color:var(--text-secondary);">
-      <li>Загрузка...</li>
-    </ul>
-    <div id="predictiveSummary" style="margin-top:10px;color:var(--text-secondary);font-size:12px;">Predictive: загрузка...</div>
-    <div id="predictiveRows" style="margin-top:8px;display:grid;gap:6px;"></div>
+    <div class="title">Chat Digest & Analysis Preview</div>
+    <div class="row" style="margin-bottom:8px;">
+      <button class="btn btn-secondary" id="refreshDigestBtn">Обновить дайджест</button>
+      <button class="btn btn-secondary" id="refreshAnalysisBtn">Обновить анализ (без AI)</button>
+      <button class="btn btn-secondary" id="refreshAnalysisAiBtn">Портрет чата (AI)</button>
+    </div>
+    <div id="opsDigestPreview" style="background:var(--bg-secondary);border:1px solid var(--border-card);border-radius:8px;padding:8px;margin-bottom:8px;color:var(--text-primary);font-size:13px;">Выберите чат и нажмите «Обновить дайджест».</div>
+    <div id="opsAnalysisPreview" style="background:var(--bg-secondary);border:1px solid var(--border-card);border-radius:8px;padding:8px;color:var(--text-primary);font-size:13px;">Выберите чат и нажмите «Обновить анализ».</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="title graph-card-title">
+    <span>Graph Lab</span>
+    <div class="graph-tab-switcher">
+      <button class="tab-btn active" type="button" data-tab="graph-view">Quick View</button>
+      <button class="tab-btn" type="button" data-tab="graph-lab">Advanced Lab</button>
+    </div>
+  </div>
+
+  <div id="tab-graph-view" class="graph-tab active">
+    <div id="graphMetaLine" style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">Источник: —</div>
+    <div id="modernGraphRoot" style="min-height:520px;border:1px solid var(--border-input);border-radius:10px;padding:10px;background:var(--bg-secondary);"></div>
+  </div>
+
+  <div id="tab-graph-lab" class="graph-tab">
+    <div class="graph-lab-layout">
+      <aside class="graph-lab-controls">
+        <section class="graph-lab-section">
+          <h4>Filters</h4>
+          <label for="labFilterMinDegree">Min Degree:</label>
+          <input type="number" id="labFilterMinDegree" value="0" min="0" max="100">
+
+          <label for="labFilterActivityDays">Activity (days):</label>
+          <input type="number" id="labFilterActivityDays" value="7" min="1" max="90">
+
+          <label for="labFilterEngagement">Engagement >=</label>
+          <input type="number" id="labFilterEngagement" value="0" min="0" max="1" step="0.1">
+        </section>
+
+        <section class="graph-lab-section">
+          <h4>Focus</h4>
+          <label for="labFocusUser">User ID:</label>
+          <input type="text" id="labFocusUser" placeholder="e.g. 123456">
+          <label class="graph-lab-check">
+            <input type="checkbox" id="labFocusEgoNetwork" checked>
+            Ego Network (1-hop)
+          </label>
+        </section>
+
+        <section class="graph-lab-section">
+          <h4>Roles & Metrics</h4>
+          <label class="graph-lab-check"><input type="checkbox" id="labShowCentrality" checked> Centrality (nodes)</label>
+          <label class="graph-lab-check"><input type="checkbox" id="labShowBridges" checked> Bridge Users</label>
+          <label class="graph-lab-check"><input type="checkbox" id="labShowInfluencers" checked> Influencers</label>
+          <label class="graph-lab-check"><input type="checkbox" id="labShowOutliers"> Outliers</label>
+        </section>
+
+        <section class="graph-lab-section">
+          <h4>Conflict Prediction</h4>
+          <label class="graph-lab-check"><input type="checkbox" id="labShowConflictRisk" checked> Show Risk Pairs</label>
+          <label for="labConflictThreshold">Risk Threshold:</label>
+          <input type="number" id="labConflictThreshold" value="0.5" min="0" max="1" step="0.1">
+          <button id="labPredictConflicts" class="btn btn-secondary graph-lab-full">Predict</button>
+          <div id="labConflictResults" class="graph-lab-box">-</div>
+        </section>
+
+        <button id="labApplyFilters" class="btn btn-primary graph-lab-full">Apply & Render</button>
+      </aside>
+
+      <section class="graph-lab-canvas">
+        <div id="labGraphMeta" style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">Lab Graph Ready</div>
+        <div id="labGraphRoot" style="min-height:500px;border:1px solid var(--border);border-radius:10px;padding:10px;background:var(--bg-secondary);">Graph Lab загружен. Примените фильтры.</div>
+      </section>
+    </div>
   </div>
 </div>
 
@@ -108,18 +173,12 @@
     </div>
   </div>
   <div class="card">
-    <div class="title">Decision Audit (recent)</div>
-    <div id="decisionQualitySummary" style="color:var(--text-secondary);font-size:12px;margin-bottom:8px;">Quality: загрузка...</div>
-    <ul id="decisionList" style="margin:0;padding-left:18px;color:var(--text-secondary);">
+    <div class="title">Recommendations + Predictive</div>
+    <ul id="recoList" style="margin:0;padding-left:18px;color:var(--text-secondary);">
       <li>Загрузка...</li>
     </ul>
-  </div>
-</div>
-
-<div class="grid">
-  <div class="card">
-    <div class="title">Learning Summary (A/B + feedback)</div>
-    <div id="learningSummary" style="color:var(--text-secondary);">Загрузка...</div>
+    <div id="predictiveSummary" style="margin-top:10px;color:var(--text-secondary);font-size:12px;">Predictive: загрузка...</div>
+    <div id="predictiveRows" style="margin-top:8px;display:grid;gap:6px;"></div>
   </div>
 </div>
 
@@ -189,6 +248,7 @@
 <script src="{{ url_for('static', filename='js/graph_render_pipeline.js') }}"></script>
 <script type="module" src="{{ url_for('static', filename='js/graph_visualizations.jsx') }}"></script>
 <script type="module" src="{{ url_for('static', filename='js/advanced_graph_viz.jsx') }}"></script>
+<script id="chatModeDescriptionsJson" type="application/json">{{ chat_mode_descriptions|tojson }}</script>
 <script>
 let _loadPromise = null;
 let _dashboardRealtimeClient = null;
@@ -196,6 +256,11 @@ let _deltaPromise = null;
 let _graphState = {nodes: [], edges: [], meta: {}};
 let _graphVersion = '';
 let _graphRenderEngine = 'auto';
+let _activeGraphTab = 'graph-view';
+let _labGraphState = {nodes: [], edges: [], meta: {}};
+let _labLoadedOnce = false;
+const _chatModeJsonEl = document.getElementById('chatModeDescriptionsJson');
+const CHAT_MODE_DESCRIPTIONS = JSON.parse((_chatModeJsonEl && _chatModeJsonEl.textContent) || '{}');
 
 function fmt(num, digits = 2) {
   const n = Number(num || 0);
@@ -207,6 +272,29 @@ function esc(text) {
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;');
+}
+
+async function requestJson(url, options) {
+  const response = await fetch(url, options || {});
+  let body = null;
+  try {
+    body = await response.json();
+  } catch (_e) {
+    body = null;
+  }
+  if (!response.ok || !body || body.ok === false) {
+    throw new Error((body && body.error) || `HTTP ${response.status}`);
+  }
+  return body;
+}
+
+function userProfileUrl(userId, chat) {
+  const uid = String(userId || '').trim();
+  if (!uid) {
+    return '#';
+  }
+  const chatVal = String(chat || 'all');
+  return `/admin/user/${encodeURIComponent(uid)}?chat=${encodeURIComponent(chatVal)}`;
 }
 
 function setLiveStatus(text, color) {
@@ -274,6 +362,134 @@ function renderGraphFromState() {
     return;
   }
   root.textContent = 'Graph modules not loaded.';
+}
+
+function setGraphTab(tabName) {
+  const next = (tabName === 'graph-lab') ? 'graph-lab' : 'graph-view';
+  _activeGraphTab = next;
+  for (const b of Array.from(document.querySelectorAll('.tab-btn'))) {
+    b.classList.toggle('active', String(b.getAttribute('data-tab') || '') === next);
+  }
+  const viewTab = document.getElementById('tab-graph-view');
+  const labTab = document.getElementById('tab-graph-lab');
+  if (viewTab) viewTab.classList.toggle('active', next === 'graph-view');
+  if (labTab) labTab.classList.toggle('active', next === 'graph-lab');
+}
+
+function currentLabFilters() {
+  const asNum = (id, fallback) => {
+    const el = document.getElementById(id);
+    const v = Number(el && el.value);
+    return Number.isFinite(v) ? v : fallback;
+  };
+  const asBool = (id, fallback) => {
+    const el = document.getElementById(id);
+    return el ? !!el.checked : !!fallback;
+  };
+  const focusEl = document.getElementById('labFocusUser');
+  const focusRaw = String((focusEl && focusEl.value) || '').trim();
+  return {
+    min_degree: Math.max(0, Math.trunc(asNum('labFilterMinDegree', 0))),
+    activity_days: Math.max(1, Math.trunc(asNum('labFilterActivityDays', 7))),
+    engagement: Math.max(0, asNum('labFilterEngagement', 0)),
+    focus_user: focusRaw || null,
+    ego_network: asBool('labFocusEgoNetwork', true),
+    show_centrality: asBool('labShowCentrality', true),
+    show_bridges: asBool('labShowBridges', true),
+    show_influencers: asBool('labShowInfluencers', true),
+    show_outliers: asBool('labShowOutliers', false),
+    conflict_risk_threshold: Math.max(0, Math.min(1, asNum('labConflictThreshold', 0.5))),
+  };
+}
+
+function renderLabGraphFromState() {
+  const root = document.getElementById('labGraphRoot');
+  const meta = document.getElementById('labGraphMeta');
+  if (!root || !meta) return;
+  const g = _labGraphState || {nodes: [], edges: [], meta: {}};
+  const nodes = Array.isArray(g.nodes) ? g.nodes : [];
+  const edges = Array.isArray(g.edges) ? g.edges : [];
+  const info = g.meta || {};
+  meta.textContent = `Lab · source: ${String(info.source || 'graph-lab')} · period: ${String(info.period || '30d')} · nodes: ${nodes.length} · edges: ${edges.length}`;
+  if (!nodes.length) {
+    root.textContent = 'Нет данных для выбранных фильтров.';
+    return;
+  }
+  root.innerHTML = '<div id="labGraphCanvas" style="min-height:480px;"></div>';
+  const canvas = document.getElementById('labGraphCanvas');
+  if (!canvas) return;
+  if (window.GraphRenderPipeline && typeof window.GraphRenderPipeline.render === 'function') {
+    const ok = window.GraphRenderPipeline.render({
+      root: canvas,
+      data: g,
+      mode: 'force',
+      defer: true,
+      largeGraphThresholds: { nodes: 260, edges: 1100 },
+      onUnavailable: function () {
+        canvas.textContent = 'Graph module unavailable.';
+      },
+    });
+    if (!ok) {
+      canvas.textContent = 'Graph modules loading...';
+    }
+    return;
+  }
+  canvas.textContent = 'Graph module unavailable.';
+}
+
+async function loadConflictPrediction(chat, filters) {
+  const resultsEl = document.getElementById('labConflictResults');
+  if (!resultsEl) return;
+  const threshold = Number((filters && filters.conflict_risk_threshold) || 0.5);
+  const days = Math.max(1, Number((filters && filters.activity_days) || 30));
+  resultsEl.textContent = 'Предсказываю...';
+  try {
+    const resp = await requestJson(`/api/chat/${encodeURIComponent(chat)}/conflict-prediction?threshold=${encodeURIComponent(String(threshold))}&days=${encodeURIComponent(String(days))}`);
+    const risks = Array.isArray(resp.risks) ? resp.risks.slice(0, 10) : [];
+    if (!risks.length) {
+      resultsEl.textContent = 'Конфликтов не обнаружено.';
+      return;
+    }
+    resultsEl.innerHTML = risks.map((r) => `
+      <div style="margin-bottom:0.45rem;padding:0.45rem;background:var(--bg-tertiary);border-radius:4px;border-left:3px solid #ff6b9d;">
+        <div><strong>${esc(r.user1)} ⟷ ${esc(r.user2)}</strong></div>
+        <div style="font-size:0.8rem;">Risk: ${fmt(Number(r.risk_score || 0) * 100, 1)}% · tone: ${esc(r.tone || 'neutral')}</div>
+      </div>
+    `).join('');
+  } catch (e) {
+    resultsEl.textContent = `Ошибка: ${String(e && e.message || e)}`;
+  }
+}
+
+async function applyGraphLabFilters() {
+  const chat = document.getElementById('chatSel').value;
+  const root = document.getElementById('labGraphRoot');
+  const filters = currentLabFilters();
+  if (root) root.textContent = 'Применяю фильтры...';
+  try {
+    const q = new URLSearchParams({
+      filters: JSON.stringify(filters),
+      period: '30d',
+    });
+    const body = await requestJson(`/api/chat/${encodeURIComponent(chat)}/graph-lab?${q.toString()}`);
+    _labGraphState = (body && body.graph) || {nodes: [], edges: [], meta: {}};
+    renderLabGraphFromState();
+    if (document.getElementById('labShowConflictRisk')?.checked) {
+      await loadConflictPrediction(chat, filters);
+    }
+  } catch (e) {
+    if (root) root.textContent = `Ошибка: ${String(e && e.message || e)}`;
+  }
+}
+
+async function loadGraphLab() {
+  const chat = document.getElementById('chatSel').value;
+  const root = document.getElementById('labGraphRoot');
+  if (root && !_labLoadedOnce) {
+    root.textContent = 'Graph Lab загружен. Примените фильтры.';
+  }
+  _labLoadedOnce = true;
+  await applyGraphLabFilters();
 }
 
 async function loadAndRender() {
@@ -387,42 +603,14 @@ async function fetchAndApplyDelta() {
 
 async function loadInsights(chat) {
   await Promise.allSettled([
-    loadRetention(chat),
     loadRecommendations(chat),
     loadPredictive(chat),
     loadStorageStatus(),
-    loadDecisionQuality(chat),
-    loadLearningSummary(chat),
-    loadDecisions(chat),
     loadAdminHealth(chat),
     loadAdminCommunity(chat),
     loadAdminLeaderboard(chat),
     loadAdminPanel(chat),
   ]);
-}
-
-async function loadRetention(chat) {
-  const sumEl = document.getElementById('retentionSummary');
-  const rowsEl = document.getElementById('atRiskRows');
-  sumEl.textContent = 'Загрузка...';
-  rowsEl.innerHTML = '';
-  const r = await fetch(`/api/retention-dashboard?chat_id=${encodeURIComponent(chat)}&days=30&limit=50`);
-  const b = await r.json();
-  const d = (b && b.dashboard) || {};
-  const s = d.summary || {};
-  sumEl.textContent = `Users: ${s.users_considered || 0} | At-risk: ${s.at_risk_count || 0} | High-value: ${s.high_value_at_risk_count || 0}`;
-  const atRisk = d.at_risk || [];
-  if (!atRisk.length) {
-    rowsEl.innerHTML = `<tr><td colspan="3" style="padding:6px;color:var(--text-secondary);">Нет пользователей в зоне риска</td></tr>`;
-    return;
-  }
-  rowsEl.innerHTML = atRisk.slice(0, 12).map((u) => `
-    <tr>
-      <td style="padding:6px;border-bottom:1px solid var(--border-card);">${esc(u.display_name || u.user_id)}</td>
-      <td style="padding:6px;text-align:right;border-bottom:1px solid var(--border-card);">${fmt(u.churn_risk)}</td>
-      <td style="padding:6px;text-align:right;border-bottom:1px solid var(--border-card);">${fmt(u.influence_score)}</td>
-    </tr>
-  `).join('');
 }
 
 async function loadRecommendations(chat) {
@@ -436,8 +624,11 @@ async function loadRecommendations(chat) {
     return;
   }
   list.innerHTML = items.map((item) => {
-    const who = item.display_name ? ` <strong>${esc(item.display_name)}</strong>` : '';
-    return `<li><span style="color:#dfe9ff;">[${esc(item.priority || 'low')}] ${esc(item.type || 'item')}</span>${who}: ${esc(item.action || '')}</li>`;
+    const whoText = item.display_name || item.user_id || '';
+    const who = whoText
+      ? ` <strong><a href="${userProfileUrl(item.user_id || '', chat)}">${esc(whoText)}</a></strong>`
+      : '';
+    return `<li><span style="color:var(--text-primary);">[${esc(item.priority || 'low')}] ${esc(item.type || 'item')}</span>${who}: ${esc(item.action || '')}</li>`;
   }).join('');
 }
 
@@ -496,77 +687,6 @@ async function loadStorageStatus() {
     <div>DB ready: <strong style="color:${ok ? '#4ade80' : '#fbbf24'}">${ok ? 'yes' : 'no'}</strong></div>
     <div style="margin-top:4px;">JSON → users ${j.users || 0}, messages ${j.messages || 0}, edges ${j.edges || 0}</div>
     <div>DB → users ${d.users || 0}, messages ${d.messages || 0}, edges ${d.edges || 0}</div>
-  `;
-}
-
-async function loadDecisions(chat) {
-  const list = document.getElementById('decisionList');
-  list.innerHTML = '<li>Загрузка...</li>';
-  const r = await fetch(`/api/decisions/recent?chat_id=${encodeURIComponent(chat)}&limit=12`);
-  const b = await r.json();
-  const rows = (b && b.decisions) || [];
-  if (!rows.length) {
-    list.innerHTML = '<li>Решений пока нет.</li>';
-    return;
-  }
-  list.innerHTML = rows.map((row) => {
-    const strategy = esc(row.strategy || 'standard');
-    const outcome = esc(row.outcome || '');
-    const user = row.user_id ? `u${row.user_id}` : '—';
-    const eventId = String(row.event_id || '');
-    const hasFeedback = !!eventId;
-    const currentFb = row.feedback_label ? ` · fb:${esc(row.feedback_label)}` : '';
-    const controls = hasFeedback
-      ? `<span style="margin-left:6px;">
-          <button class="btn btn-secondary" data-did="${esc(eventId)}" data-fb="approve" style="padding:1px 6px;font-size:11px;">approve</button>
-          <button class="btn btn-secondary" data-did="${esc(eventId)}" data-fb="reject" style="padding:1px 6px;font-size:11px;">reject</button>
-        </span>`
-      : '';
-    return `<li><strong>${strategy}</strong> (${outcome}) · ${user}${currentFb}${controls}</li>`;
-  }).join('');
-}
-
-async function submitDecisionFeedback(eventId, feedback) {
-  const resp = await fetch('/api/decisions/feedback', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({event_id: String(eventId || ''), feedback: String(feedback || 'neutral')}),
-  });
-  const body = await resp.json();
-  if (!resp.ok || !body || !body.ok) {
-    throw new Error((body && body.error) || 'feedback error');
-  }
-}
-
-async function loadDecisionQuality(chat) {
-  const el = document.getElementById('decisionQualitySummary');
-  if (!el) return;
-  el.textContent = 'Quality: загрузка...';
-  const r = await fetch(`/api/decisions/quality?chat_id=${encodeURIComponent(chat)}&days=30`);
-  const b = await r.json();
-  const q = (b && b.quality) || {};
-  el.textContent = `Quality: approval=${fmt(q.approval_rate, 2)} · feedback=${Number(q.feedback_count || 0)} · avg_score=${fmt(q.avg_feedback_score, 2)}`;
-}
-
-async function loadLearningSummary(chat) {
-  const el = document.getElementById('learningSummary');
-  if (!el) return;
-  el.textContent = 'Загрузка...';
-  const r = await fetch(`/api/learning/summary?chat_id=${encodeURIComponent(chat)}&days=30`);
-  const b = await r.json();
-  const s = (b && b.summary) || {};
-  const byVariant = Array.isArray(s.variant) ? s.variant.slice(0, 3) : [];
-  const byStrategy = Array.isArray(s.strategy) ? s.strategy.slice(0, 3) : [];
-  const variantLine = byVariant.length
-    ? byVariant.map((x) => `${esc(x.name)}:${fmt(x.approval_rate, 2)}`).join(' · ')
-    : 'нет данных';
-  const strategyLine = byStrategy.length
-    ? byStrategy.map((x) => `${esc(x.name)}:${fmt(x.avg_score, 2)}`).join(' · ')
-    : 'нет данных';
-  el.innerHTML = `
-    <div style="font-size:13px;">Events: <strong>${Number(s.total_events || 0)}</strong></div>
-    <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">Variants: ${variantLine}</div>
-    <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">Strategies: ${strategyLine}</div>
   `;
 }
 
@@ -634,7 +754,7 @@ async function loadAdminLeaderboard(chat) {
   body.innerHTML = users.map((u) => `
     <tr>
       <td style="padding:6px;border-bottom:1px solid var(--border-card);">#${Number(u.rank || 0)}</td>
-      <td style="padding:6px;border-bottom:1px solid var(--border-card);">${esc(u.username || u.user_id)}</td>
+      <td style="padding:6px;border-bottom:1px solid var(--border-card);"><a href="${userProfileUrl(u.user_id, chat)}">${esc(u.username || u.user_id)}</a></td>
       <td style="padding:6px;text-align:right;border-bottom:1px solid var(--border-card);">${fmt(u.score, 3)}</td>
     </tr>
   `).join('');
@@ -658,7 +778,7 @@ async function loadAdminPanel(chat) {
     const rows = Array.isArray(p.users) ? p.users : [];
     body.innerHTML = `
       <div style="margin-bottom:6px;">At-risk users: <strong>${Number(p.count || 0)}</strong> (threshold=${fmt(p.threshold, 2)})</div>
-      <ul style="margin:0;padding-left:18px;">${rows.slice(0, 6).map((u) => `<li>${esc(u.username || u.user_id)} · risk ${fmt(u.churn_risk, 2)} · ${esc(u.recommended_action || '')}</li>`).join('')}</ul>
+      <ul style="margin:0;padding-left:18px;">${rows.slice(0, 6).map((u) => `<li><a href="${userProfileUrl(u.user_id, chat)}">${esc(u.username || u.user_id)}</a> · risk ${fmt(u.churn_risk, 2)} · ${esc(u.recommended_action || '')}</li>`).join('')}</ul>
     `;
     return;
   }
@@ -698,6 +818,240 @@ async function loadAdminPanel(chat) {
     <div>Engagement trend: <strong>${fmt(p.engagement_trend, 3)}</strong> · Retention trend: <strong>${fmt(p.retention_trend, 3)}</strong></div>
     <div>Forecast: health <strong>${fmt(fc.expected_health, 3)}</strong> · churn users <strong>${Number(fc.expected_churn_users || 0)}</strong> · new users <strong>${Number(fc.expected_new_users || 0)}</strong></div>
   `;
+}
+
+function selectedChatIdForOps() {
+  const chatSel = document.getElementById('chatSel');
+  if (!chatSel) {
+    return '';
+  }
+  const chat = String(chatSel.value || 'all');
+  if (chat === 'all') {
+    return '';
+  }
+  return chat;
+}
+
+function setOpsFeedback(text, color) {
+  const el = document.getElementById('opsFeedback');
+  if (!el) {
+    return;
+  }
+  el.textContent = String(text || '');
+  el.style.color = color || 'var(--text-secondary)';
+}
+
+function setOpsModeDescription(mode) {
+  const el = document.getElementById('opsChatModeDesc');
+  if (!el) {
+    return;
+  }
+  const key = String(mode || '');
+  const desc = CHAT_MODE_DESCRIPTIONS[key] || '';
+  el.textContent = desc ? `Описание: ${desc}` : '';
+}
+
+function setOpsDisabled(disabled) {
+  const ids = [
+    'opsChatModeSel',
+    'applyChatModeBtn',
+    'resetPoliticalBtn',
+    'portraitUserIdInput',
+    'buildPortraitBtn',
+    'refreshDigestBtn',
+    'refreshAnalysisBtn',
+    'refreshAnalysisAiBtn',
+  ];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (el) {
+      el.disabled = !!disabled;
+    }
+  }
+}
+
+async function syncOpsState() {
+  const chat = selectedChatIdForOps();
+  const digestEl = document.getElementById('opsDigestPreview');
+  const analysisEl = document.getElementById('opsAnalysisPreview');
+  if (!chat) {
+    setOpsDisabled(true);
+    setOpsFeedback('Выбран режим "Все чаты". Для ops-операций выберите конкретный чат.', '#f59e0b');
+    setOpsModeDescription('');
+    if (digestEl) {
+      digestEl.textContent = 'Выберите чат и нажмите «Обновить дайджест».';
+    }
+    if (analysisEl) {
+      analysisEl.textContent = 'Выберите чат и нажмите «Обновить анализ».';
+    }
+    return;
+  }
+  setOpsDisabled(false);
+  try {
+    const body = await requestJson(`/api/chat-mode?chat_id=${encodeURIComponent(chat)}`);
+    const mode = String(body.mode || 'default');
+    const modeSel = document.getElementById('opsChatModeSel');
+    if (modeSel) {
+      modeSel.value = mode;
+    }
+    setOpsModeDescription(mode);
+    setOpsFeedback(`Операции активны для чата ${chat}.`, 'var(--text-secondary)');
+  } catch (e) {
+    setOpsFeedback(`Не удалось прочитать режим чата: ${e.message || e}`, '#ef4444');
+  }
+}
+
+async function applyChatModeFromOps() {
+  const chat = selectedChatIdForOps();
+  if (!chat) {
+    setOpsFeedback('Сначала выберите конкретный чат.', '#f59e0b');
+    return;
+  }
+  const modeSel = document.getElementById('opsChatModeSel');
+  const mode = String((modeSel && modeSel.value) || 'default');
+  const btn = document.getElementById('applyChatModeBtn');
+  if (btn) btn.disabled = true;
+  try {
+    const body = await requestJson('/api/chat-mode', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({chat_id: chat, mode}),
+    });
+    setOpsModeDescription(mode);
+    setOpsFeedback(`Режим обновлён: ${body.label || mode}`, '#10b981');
+  } catch (e) {
+    setOpsFeedback(`Ошибка применения режима: ${e.message || e}`, '#ef4444');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function resetPoliticalCountFromOps() {
+  const chat = selectedChatIdForOps();
+  if (!chat) {
+    setOpsFeedback('Сначала выберите конкретный чат.', '#f59e0b');
+    return;
+  }
+  const btn = document.getElementById('resetPoliticalBtn');
+  if (btn) btn.disabled = true;
+  try {
+    const body = await requestJson('/api/reset-political-count', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({chat_id: chat}),
+    });
+    setOpsFeedback(body.message || 'Сброс запланирован.', '#10b981');
+  } catch (e) {
+    setOpsFeedback(`Ошибка сброса: ${e.message || e}`, '#ef4444');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function buildPortraitFromOps() {
+  const userInput = document.getElementById('portraitUserIdInput');
+  const rawUserId = String((userInput && userInput.value) || '').trim();
+  const uid = Number(rawUserId);
+  if (!rawUserId || !Number.isFinite(uid) || uid <= 0) {
+    setOpsFeedback('Укажите корректный User ID.', '#f59e0b');
+    return;
+  }
+  const chat = selectedChatIdForOps() || 'all';
+  const btn = document.getElementById('buildPortraitBtn');
+  if (btn) btn.disabled = true;
+  try {
+    const body = await requestJson('/api/portrait-from-storage', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({user_id: Math.trunc(uid), chat_id: chat}),
+    });
+    setOpsFeedback(`Портрет собран. Сообщений обработано: ${Number(body.messages_count || 0)}.`, '#10b981');
+  } catch (e) {
+    setOpsFeedback(`Ошибка портрета: ${e.message || e}`, '#ef4444');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function openUserProfileFromOps() {
+  const userInput = document.getElementById('portraitUserIdInput');
+  const rawUserId = String((userInput && userInput.value) || '').trim();
+  const uid = Number(rawUserId);
+  if (!rawUserId || !Number.isFinite(uid) || uid <= 0) {
+    setOpsFeedback('Укажите корректный User ID.', '#f59e0b');
+    return;
+  }
+  const chat = selectedChatIdForOps() || 'all';
+  window.location.href = userProfileUrl(String(Math.trunc(uid)), chat);
+}
+
+async function refreshDigestFromOps() {
+  const chat = selectedChatIdForOps();
+  const out = document.getElementById('opsDigestPreview');
+  if (!chat) {
+    setOpsFeedback('Сначала выберите конкретный чат.', '#f59e0b');
+    return;
+  }
+  const btn = document.getElementById('refreshDigestBtn');
+  if (btn) btn.disabled = true;
+  if (out) out.innerHTML = '<span style="color:var(--text-secondary);">Обновляю дайджест…</span>';
+  try {
+    const body = await requestJson(`/api/chat/${encodeURIComponent(chat)}/digest-preview`);
+    if (out) out.innerHTML = body.digest || 'Данных пока недостаточно для дайджеста.';
+    setOpsFeedback('Дайджест обновлён.', '#10b981');
+  } catch (e) {
+    if (out) out.innerHTML = `<span style="color:#ef4444;">${esc(e.message || e)}</span>`;
+    setOpsFeedback(`Ошибка дайджеста: ${e.message || e}`, '#ef4444');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function refreshAnalysisFromOps(withAi) {
+  const chat = selectedChatIdForOps();
+  const out = document.getElementById('opsAnalysisPreview');
+  if (!chat) {
+    setOpsFeedback('Сначала выберите конкретный чат.', '#f59e0b');
+    return;
+  }
+  const btn = document.getElementById(withAi ? 'refreshAnalysisAiBtn' : 'refreshAnalysisBtn');
+  if (btn) btn.disabled = true;
+  if (out) out.innerHTML = `<span style="color:var(--text-secondary);">${withAi ? 'Создаю AI-портрет чата…' : 'Обновляю анализ…'}</span>`;
+  try {
+    const body = await requestJson(`/api/chat/${encodeURIComponent(chat)}/analysis?period=7&ai=${withAi ? '1' : '0'}`);
+    if (out) out.innerHTML = body.brief || 'Данных пока недостаточно для анализа.';
+    setOpsFeedback(withAi ? 'AI-портрет чата обновлён.' : 'Анализ чата обновлён.', '#10b981');
+  } catch (e) {
+    if (out) out.innerHTML = `<span style="color:#ef4444;">${esc(e.message || e)}</span>`;
+    setOpsFeedback(`Ошибка анализа: ${e.message || e}`, '#ef4444');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function restartBotFromOps() {
+  const btn = document.getElementById('restartBotBtn');
+  if (btn) btn.disabled = true;
+  try {
+    const resp = await fetch('/restart-bot', { method: 'POST' });
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`);
+    }
+    setOpsFeedback('Запрос на перезапуск отправлен. Ждём подтверждение…', '#f59e0b');
+    for (let i = 0; i < 45; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const st = await requestJson('/api/restart-status');
+      if (st.restarted) {
+        setOpsFeedback('Бот успешно перезапущен.', '#10b981');
+        return;
+      }
+    }
+    setOpsFeedback('Перезапуск не подтверждён за ожидаемое время.', '#f59e0b');
+  } catch (e) {
+    setOpsFeedback(`Ошибка перезапуска: ${e.message || e}`, '#ef4444');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 document.getElementById('loadGraphBtn').addEventListener('click', () => {
@@ -780,55 +1134,65 @@ function handleAutoToggle() {
   setLiveStatus('disabled', '#9ca3af');
 }
 
-document.getElementById('runChurnBtn').addEventListener('click', async () => {
-  const chat = document.getElementById('chatSel').value;
-  const btn = document.getElementById('runChurnBtn');
-  btn.disabled = true;
-  const old = btn.textContent;
-  btn.textContent = 'Считаю...';
-  try {
-    await fetch('/api/churn/run', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({chat_id: chat, days: 30}),
-    });
-    await loadInsights(chat);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = old;
-  }
-});
-
 document.getElementById('reloadStorageBtn').addEventListener('click', () => {
   loadStorageStatus().catch(() => {
     document.getElementById('storageStatus').textContent = 'Ошибка загрузки статуса storage.';
   });
 });
 
-document.getElementById('decisionList').addEventListener('click', async (evt) => {
-  const btn = evt.target && evt.target.closest ? evt.target.closest('button[data-did][data-fb]') : null;
-  if (!btn) return;
-  const eventId = btn.getAttribute('data-did') || '';
-  const feedback = btn.getAttribute('data-fb') || 'neutral';
+document.getElementById('applyChatModeBtn').addEventListener('click', () => {
+  applyChatModeFromOps().catch(() => {});
+});
+document.getElementById('resetPoliticalBtn').addEventListener('click', () => {
+  resetPoliticalCountFromOps().catch(() => {});
+});
+document.getElementById('buildPortraitBtn').addEventListener('click', () => {
+  buildPortraitFromOps().catch(() => {});
+});
+document.getElementById('openUserProfileBtn').addEventListener('click', () => {
+  openUserProfileFromOps();
+});
+document.getElementById('refreshDigestBtn').addEventListener('click', () => {
+  refreshDigestFromOps().catch(() => {});
+});
+document.getElementById('refreshAnalysisBtn').addEventListener('click', () => {
+  refreshAnalysisFromOps(false).catch(() => {});
+});
+document.getElementById('refreshAnalysisAiBtn').addEventListener('click', () => {
+  refreshAnalysisFromOps(true).catch(() => {});
+});
+document.getElementById('restartBotBtn').addEventListener('click', () => {
+  restartBotFromOps().catch(() => {});
+});
+document.getElementById('opsChatModeSel').addEventListener('change', () => {
+  const modeSel = document.getElementById('opsChatModeSel');
+  setOpsModeDescription(modeSel ? modeSel.value : '');
+});
+for (const tabBtn of Array.from(document.querySelectorAll('.tab-btn'))) {
+  tabBtn.addEventListener('click', () => {
+    const next = String(tabBtn.getAttribute('data-tab') || 'graph-view');
+    setGraphTab(next);
+    if (next === 'graph-lab') {
+      loadGraphLab().catch(() => {});
+    }
+  });
+}
+document.getElementById('labApplyFilters').addEventListener('click', () => {
+  applyGraphLabFilters().catch(() => {});
+});
+document.getElementById('labPredictConflicts').addEventListener('click', () => {
   const chat = document.getElementById('chatSel').value;
-  btn.disabled = true;
-  const old = btn.textContent;
-  btn.textContent = '...';
-  try {
-    await submitDecisionFeedback(eventId, feedback);
-    await Promise.allSettled([loadDecisions(chat), loadDecisionQuality(chat), loadLearningSummary(chat)]);
-  } catch (_e) {
-    setLiveStatus('feedback error', '#ef4444');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = old;
-  }
+  loadConflictPrediction(chat, currentLabFilters()).catch(() => {});
 });
 
 document.getElementById('chatSel').addEventListener('change', () => {
   _graphVersion = '';
   loadAndRender().catch(() => {});
   restartRealtime();
+  syncOpsState().catch(() => {});
+  if (_activeGraphTab === 'graph-lab') {
+    loadGraphLab().catch(() => {});
+  }
 });
 document.getElementById('modeSel').addEventListener('change', () => {
   renderGraphFromState();
@@ -843,8 +1207,10 @@ document.getElementById('analyticsPanelSel').addEventListener('change', () => {
   loadAdminPanel(chat).catch(() => {});
 });
 
+setGraphTab('graph-view');
 loadAndRender().catch(() => {});
 restartRealtime();
+syncOpsState().catch(() => {});
 window.addEventListener('beforeunload', () => {
   stopRealtime();
 });

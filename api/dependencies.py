@@ -17,7 +17,7 @@ security = HTTPBearer(auto_error=False)
 
 
 def _admin_token() -> str:
-    return str(os.getenv("ADMIN_TOKEN", "change-me-in-production")).strip()
+    return str(os.getenv("ADMIN_TOKEN", "")).strip()
 
 
 async def get_db_session() -> AsyncIterator[AsyncSession]:

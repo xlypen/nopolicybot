@@ -6,12 +6,21 @@ from db.engine import get_db
 from db.repositories.edge_repo import EdgeRepository
 from db.repositories.message_repo import MessageRepository
 from db.repositories.user_repo import UserRepository
-from services.storage_cutover import get_storage_mode
+from services.storage_cutover import get_storage_mode, storage_db_writes_enabled
+
+_CHAT_ID_BITS = 32
+_MESSAGE_ID_BITS = 31
+_CHAT_ID_MASK = (1 << _CHAT_ID_BITS) - 1
+_MESSAGE_ID_MASK = (1 << _MESSAGE_ID_BITS) - 1
 
 
 def _combined_telegram_id(chat_id: int, message_id: int) -> int:
     # Keep uniqueness across chats even though Telegram message_id is per-chat.
-    return ((int(chat_id) & 0xFFFFFFFF) << 32) | (int(message_id) & 0xFFFFFFFF)
+    # The value must fit signed 64-bit INTEGER (SQLite/PostgreSQL BIGINT).
+    # 32 bits (chat) + 31 bits (message) = 63 bits max.
+    chat_part = int(chat_id) & _CHAT_ID_MASK
+    message_part = int(message_id) & _MESSAGE_ID_MASK
+    return (chat_part << _MESSAGE_ID_BITS) | message_part
 
 
 def _sentiment_to_score(sentiment: str | None) -> float | None:
@@ -40,7 +49,7 @@ async def ingest_message_event(
     is_political: bool = False,
 ) -> bool:
     mode = get_storage_mode()
-    if mode == "json":
+    if not storage_db_writes_enabled(mode):
         return False
     if not int(user_id):
         return False
@@ -64,17 +73,18 @@ async def ingest_message_event(
 
         telegram_id = _combined_telegram_id(int(chat_id), int(message_id))
         try:
-            await msg_repo.add(
-                telegram_id=telegram_id,
-                chat_id=int(chat_id),
-                user_id=int(user_id),
-                text=(text or "")[:2000],
-                media_type=(media_type or "text")[:80],
-                replied_to=int(replied_to_user_id) if replied_to_user_id else None,
-                sent_at=sent_at,
-                tone_score=tone_score,
-                risk_flags=(["politics"] if is_political else []),
-            )
+            async with session.begin_nested():
+                await msg_repo.add(
+                    telegram_id=telegram_id,
+                    chat_id=int(chat_id),
+                    user_id=int(user_id),
+                    text=(text or "")[:2000],
+                    media_type=(media_type or "text")[:80],
+                    replied_to=int(replied_to_user_id) if replied_to_user_id else None,
+                    sent_at=sent_at,
+                    tone_score=tone_score,
+                    risk_flags=(["politics"] if is_political else []),
+                )
         except Exception:
             # Duplicate telegram_id or transient write issue should not block bot path.
             pass

@@ -6,7 +6,12 @@ from datetime import date, timedelta
 import user_stats
 from db.engine import get_db
 from db.repositories.message_repo import MessageRepository
-from services.storage_cutover import get_storage_mode
+from services.storage_cutover import (
+    get_storage_mode,
+    storage_db_only_mode,
+    storage_db_reads_enabled,
+    storage_json_fallback_enabled,
+)
 from services.tone_analyzer import analyze_tone_context
 
 
@@ -32,19 +37,25 @@ async def _daily_activity_db(chat_id: int, days: int = 30) -> tuple[list[dict], 
 
 def _daily_activity(chat_id: int | None = None, days: int = 30) -> tuple[list[dict], list[str]]:
     mode = get_storage_mode()
-    if chat_id is not None and mode in {"db", "hybrid"}:
+    if chat_id is not None and storage_db_reads_enabled(mode):
         try:
             out, texts = asyncio.run(_daily_activity_db(chat_id=int(chat_id), days=days))
             has_data = any(int(x.get("count", 0) or 0) > 0 for x in out)
-            if has_data or mode == "db":
+            if has_data or storage_db_only_mode(mode):
                 return out, texts
         except Exception:
-            if mode == "db":
+            if storage_db_only_mode(mode):
                 today = date.today()
                 return (
                     [{"date": (today - timedelta(days=days - i - 1)).isoformat(), "count": 0} for i in range(days)],
                     [],
                 )
+    if chat_id is not None and storage_db_reads_enabled(mode) and not storage_json_fallback_enabled(mode):
+        today = date.today()
+        return (
+            [{"date": (today - timedelta(days=days - i - 1)).isoformat(), "count": 0} for i in range(days)],
+            [],
+        )
 
     data = user_stats._load()
     users = data.get("users", {}) or {}

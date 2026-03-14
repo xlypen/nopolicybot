@@ -29,6 +29,9 @@ run_step "Full test suite" \
 run_step "Smoke checks" \
   "$PYTHON_BIN" scripts/smoke_checks.py
 
+run_step "SLO gate (docs/slo.md)" \
+  "$PYTHON_BIN" scripts/check_slo_gate.py --slo-file docs/slo.md
+
 run_step "Deploy script dry-run (staging)" \
   bash scripts/deploy_release.sh --target staging --dry-run
 

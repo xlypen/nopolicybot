@@ -165,6 +165,51 @@ async def churn_detection_task(bot, logger) -> None:
             await asyncio.sleep(60)
 
 
+async def storage_parity_monitor_task(logger) -> None:
+    """
+    Periodically compares JSON and DB counts and writes parity diffs to data/parity_diff.log.
+    """
+    await asyncio.sleep(90)
+    while True:
+        try:
+            from services.storage_cutover import run_parity_check_once
+
+            interval = max(60, int(os.getenv("PARITY_CHECK_INTERVAL_SEC", "300") or 300))
+            loop = asyncio.get_event_loop()
+            payload = await loop.run_in_executor(None, run_parity_check_once)
+            if bool((payload or {}).get("critical")):
+                logger.warning(
+                    "Storage parity critical drift: keys=%s delta=%s",
+                    payload.get("critical_keys"),
+                    payload.get("delta_db_minus_json"),
+                )
+            await asyncio.sleep(interval)
+        except Exception as e:
+            logger.warning("Storage parity monitor error: %s", e)
+            await asyncio.sleep(120)
+
+
+async def data_retention_task(logger) -> None:
+    """
+    Periodically deletes raw messages older than MESSAGE_RETENTION_DAYS.
+    """
+    await asyncio.sleep(240)
+    while True:
+        try:
+            from services.data_privacy import run_retention_once
+
+            retention_days = max(7, int(os.getenv("MESSAGE_RETENTION_DAYS", "90") or 90))
+            interval = max(600, int(os.getenv("RETENTION_CHECK_INTERVAL_SEC", "21600") or 21600))
+            result = await run_retention_once(days=retention_days)
+            total_removed = int((result or {}).get("total_removed_messages", 0) or 0)
+            if total_removed > 0:
+                logger.info("Data retention cleanup removed %s raw messages (days=%s)", total_removed, retention_days)
+            await asyncio.sleep(interval)
+        except Exception as e:
+            logger.warning("Data retention task error: %s", e)
+            await asyncio.sleep(300)
+
+
 def process_portrait_images_due() -> int:
     """
     Обновляет картинки портретов пользователей, у которых прошло больше 7 дней с последней генерации.

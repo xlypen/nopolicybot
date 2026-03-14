@@ -34,7 +34,13 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
       - name: Run tests
-        run: pytest -q
+        run: pytest -q --cov --cov-report=term --cov-report=xml --cov-fail-under=46
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
 
   smoke:
     needs: test

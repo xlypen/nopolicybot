@@ -12,22 +12,26 @@ from db.models import Edge, Message, User
 
 
 _MODE_PATH = Path(__file__).resolve().parent.parent / "data" / "storage_mode.json"
-_ALLOWED_MODES = {"json", "hybrid", "db"}
+_ALLOWED_MODES = {"json", "dual", "db_first", "db_only"}
 
 
 def _effective_storage_mode() -> str:
+    aliases = {"hybrid": "dual", "db": "db_only", "database": "db_only"}
+
+    def _norm(src: str) -> str:
+        raw = str(src or "").strip().lower()
+        normalized = aliases.get(raw, raw)
+        if normalized in _ALLOWED_MODES:
+            return normalized
+        return "dual"
+
     if _MODE_PATH.exists():
         try:
             payload = json.loads(_MODE_PATH.read_text(encoding="utf-8"))
-            mode = str(payload.get("mode", "")).strip().lower()
-            if mode in _ALLOWED_MODES:
-                return mode
+            return _norm(str(payload.get("mode", "")).strip().lower())
         except Exception:
             pass
-    env_mode = (os.getenv("STORAGE_PRIMARY") or "hybrid").strip().lower()
-    if env_mode in _ALLOWED_MODES:
-        return env_mode
-    return "hybrid"
+    return _norm((os.getenv("STORAGE_MODE") or os.getenv("STORAGE_PRIMARY") or "dual").strip().lower())
 
 
 def _json_counts() -> dict:

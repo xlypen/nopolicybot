@@ -2,19 +2,77 @@
 {% block title %}Мой профиль — Участник{% endblock %}
 {% block head_extra %}
 <style>
-.participant-header { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
-.participant-portrait { max-width: 160px; max-height: 200px; border-radius: 8px; border: 1px solid var(--border-card); }
-.participant-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 0.5rem; }
-.participant-stat { background: var(--bg-input); padding: 0.5rem; border-radius: 6px; font-size: 0.9rem; }
+.participant-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 1rem;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%);
+  border: 1px solid var(--border-card);
+}
+.participant-portrait {
+  max-width: 160px;
+  max-height: 200px;
+  border-radius: 8px;
+  border: 1px solid var(--border-card);
+  box-shadow: var(--shadow-sm);
+}
+.participant-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 0.5rem;
+}
+.participant-stat {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  padding: 0.5rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
 .connections-list { list-style: none; padding: 0; margin: 0; }
-.connections-list li { padding: 0.6rem; margin-bottom: 0.5rem; background: var(--bg-input); border-radius: 8px; }
-.connections-list .peer-name { font-weight: bold; }
+.connections-list li {
+  padding: 0.75rem;
+  margin-bottom: 0.6rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+}
+.connections-list .peer-name { font-weight: 700; color: var(--text-primary); }
 .connections-list .meta { font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem; }
-.me-bookmark { margin-top: 1rem; padding: 0.75rem; background: var(--bg-input); border-radius: 8px; font-size: 0.9rem; word-break: break-all; }
-.me-graph-wrap { margin-top: 1.2rem; padding: 0.8rem; background: var(--bg-input); border-radius: 10px; }
-.me-graph-head { display: flex; gap: 0.6rem; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 0.6rem; }
+.me-bookmark {
+  margin-top: 1rem;
+  padding: 0.85rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  word-break: break-all;
+}
+.me-graph-wrap {
+  margin-top: 1.2rem;
+  padding: 0.9rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+}
+.me-graph-head {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+}
 .me-graph-controls { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
-.me-graph-root { min-height: 420px; border: 1px solid var(--border-card); border-radius: 10px; overflow: auto; }
+.me-graph-root {
+  min-height: 420px;
+  border: 1px solid var(--border-card);
+  background: var(--bg-tertiary);
+  border-radius: 10px;
+  overflow: auto;
+}
 </style>
 {% endblock %}
 {% block body %}

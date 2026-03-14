@@ -69,6 +69,8 @@
 
 **Цель:** убрать deprecation debt в FastAPI lifecycle.
 
+**Статус:** Выполнено. `api/main.py` использует `@asynccontextmanager` lifespan (init_db, start/stop_realtime_worker). Нет `@app.on_event` в кодовой базе.
+
 - `[ПРОВЕРИТЬ]` Найти все `@app.on_event("startup")` и `@app.on_event("shutdown")` в `api/main.py` и routers
 - `[ПРОВЕРИТЬ]` Прочитать текущие startup-задачи: что инициализируется, в каком порядке
 - `[ВЫПОЛНИТЬ]` Заменить на `@asynccontextmanager` lifespan pattern:

@@ -144,6 +144,31 @@ def test_fastapi_rate_limit_contract(monkeypatch):
         assert second.status_code == 429
 
 
+def test_fastapi_admin_dashboard_contract():
+    headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/admin/dashboard?chat_id=all&days=30", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert "dashboard" in body
+
+
+def test_fastapi_admin_at_risk_action_contract():
+    headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v2/admin/at-risk-action",
+            json={"action": "clear_flag", "user_id": 42, "chat_id": "all"},
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert body.get("action") == "clear_flag"
+        assert body.get("user_id") == 42
+
+
 def test_fastapi_user_data_delete_contract(monkeypatch):
     from services import data_privacy
 

@@ -545,6 +545,20 @@ def api_v2_graph_proxy(subpath: str):
     return Response(body, status=status, mimetype="application/json")
 
 
+@app.route("/api/v2/admin/<path:subpath>", methods=["GET", "POST"])
+@login_required
+def api_v2_admin_proxy(subpath: str):
+    """Прокси admin API в FastAPI v2 (сессия админа проверена)."""
+    path = f"/api/v2/admin/{subpath}"
+    data = None
+    if request.method == "POST" and request.is_json:
+        data = request.get_data()
+    body, status = _proxy_to_api_v2(path, method=request.method, data=data)
+    if isinstance(body, dict):
+        return jsonify(body), status
+    return Response(body, status=status, mimetype="application/json")
+
+
 @app.route("/api/monitoring/metrics")
 @login_required
 def api_monitoring_metrics():

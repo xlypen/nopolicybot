@@ -884,7 +884,7 @@ function reasonCodeLabel(code) {
 }
 
 async function performAtRiskAction(userId, action, chat) {
-  const body = await requestJson('/api/admin/at-risk-action', {
+  const body = await requestJson('/api/v2/admin/at-risk-action', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
@@ -1067,7 +1067,7 @@ async function loadAdminHealth(chat) {
   if (!main || !topics) return;
   main.textContent = 'Загрузка...';
   topics.textContent = '';
-  const r = await fetch(`/api/admin/dashboard?chat_id=${encodeURIComponent(chat)}&days=30`);
+  const r = await fetch(`/api/v2/admin/dashboard?chat_id=${encodeURIComponent(chat)}&days=30`);
   const b = await r.json();
   const d = (b && b.dashboard) || {};
   const targets = d.targets || {};
@@ -1126,7 +1126,7 @@ async function loadAdminCommunity(chat) {
   if (!main || !rows) return;
   main.textContent = 'Загрузка...';
   rows.innerHTML = '';
-  const r = await fetch(`/api/admin/community-structure?chat_id=${encodeURIComponent(chat)}&period=30d&limit=1200`);
+  const r = await fetch(`/api/v2/admin/community-structure?chat_id=${encodeURIComponent(chat)}&period=30d&limit=1200`);
   const b = await r.json();
   const d = (b && b.community) || {};
   main.innerHTML = `
@@ -1148,7 +1148,7 @@ async function loadAdminLeaderboard(chat) {
   if (!body || !metricSel) return;
   const metric = String(metricSel.value || 'engagement');
   body.innerHTML = '<tr><td colspan="4" style="padding:6px;color:var(--text-secondary);">Загрузка...</td></tr>';
-  const r = await fetch(`/api/admin/leaderboard?chat_id=${encodeURIComponent(chat)}&metric=${encodeURIComponent(metric)}&limit=12&days=30`);
+  const r = await fetch(`/api/v2/admin/leaderboard?chat_id=${encodeURIComponent(chat)}&metric=${encodeURIComponent(metric)}&limit=12&days=30`);
   const b = await r.json();
   const users = (((b || {}).leaderboard || {}).users) || [];
   if (!users.length) {
@@ -1183,7 +1183,9 @@ async function loadAdminPanel(chat) {
   if (!sel || !body) return;
   const view = String(sel.value || 'at-risk-users');
   body.textContent = 'Загрузка...';
-  const endpoint = `/api/admin/${encodeURIComponent(view)}?chat_id=${encodeURIComponent(chat)}&period_days=30&lookback_days=30&horizon_days=7&limit=12`;
+  const endpoint = view === 'at-risk-users'
+    ? `/api/v2/admin/at-risk-users?chat_id=${encodeURIComponent(chat)}&days=30&limit=12&threshold=0.6`
+    : `/api/admin/${encodeURIComponent(view)}?chat_id=${encodeURIComponent(chat)}&period_days=30&lookback_days=30&horizon_days=7&limit=12`;
   const r = await fetch(endpoint);
   const b = await r.json();
   if (!b || !b.ok) {

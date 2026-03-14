@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from config.validate_secrets import validate_secrets
 from api.dependencies import require_auth
+from api.routers.admin import router as admin_router
 from api.routers.graph import router as graph_router
 from api.routers.health import router as health_router
 from api.routers.realtime import router as realtime_router
@@ -243,4 +244,5 @@ async def erase_user_data(user_id: int = Path(..., ge=1), _auth=Depends(require_
 
 app.include_router(health_router, prefix="/api/v2", tags=["health"])
 app.include_router(graph_router, prefix="/api/v2/graph", tags=["graph"])
+app.include_router(admin_router, prefix="/api/v2/admin", tags=["admin"])
 app.include_router(realtime_router, prefix="/api/v2/realtime", tags=["realtime"])

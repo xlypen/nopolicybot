@@ -143,6 +143,22 @@ def test_api_v2_graph_proxy_contract(monkeypatch):
         assert body["graph_version"] == "abc123"
 
 
+def test_api_v2_admin_proxy_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    fake_dashboard = {"ok": True, "dashboard": {"chat_id": "all", "health_score": 0.8}}
+
+    def _fake_proxy(path, method="GET", data=None):
+        return fake_dashboard, 200
+
+    monkeypatch.setattr(admin_app, "_proxy_to_api_v2", _fake_proxy)
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/v2/admin/dashboard?chat_id=all&days=30")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["dashboard"] == fake_dashboard["dashboard"]
+
+
 def test_api_chat_graph_lab_contract(monkeypatch):
     _disable_auth(monkeypatch)
     from services import graph_api

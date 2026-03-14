@@ -112,6 +112,8 @@
 
 **Цель:** устранить риск queue saturation и добавить горизонтальное масштабирование.
 
+**Статус:** Выполнено. BroadcastManager: slow_warn_threshold=0.8, graceful disconnect 1008 при overflow, ws_queue_utilization в Prometheus, Redis Pub/Sub при REDIS_URL.
+
 - `[ПРОВЕРИТЬ]` Прочитать `api/` — найти broadcast manager, текущий queue_size=64 и heartbeat логику
 - `[ВЫПОЛНИТЬ]` Добавить slow client detection: если очередь клиента заполнена > 80% — отправить warning frame
 - `[ВЫПОЛНИТЬ]` Добавить graceful disconnect при overflow: закрыть соединение с кодом 1008 (policy violation), залогировать

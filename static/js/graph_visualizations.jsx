@@ -395,6 +395,8 @@
     svg.appendChild(labelGroup);
     root.appendChild(svg);
 
+    const meta = (graph && graph.meta) || {};
+    const communityLabels = meta.community_labels || {};
     const points = [];
     comms.forEach((cid, ci) => {
       const ga = (ci / Math.max(1, comms.length)) * Math.PI * 2;
@@ -409,13 +411,14 @@
           cid,
         });
       });
+      const labelText = (communityLabels[cid] && String(communityLabels[cid]).trim()) || `сообщество ${cid}`;
       const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
       t.setAttribute("x", String(gcx));
       t.setAttribute("y", String(gcy - 68));
       t.setAttribute("text-anchor", "middle");
       t.setAttribute("fill", "#b6cae6");
       t.setAttribute("font-size", "12");
-      t.textContent = `сообщество ${cid}`;
+      t.textContent = labelText;
       labelGroup.appendChild(t);
     });
     appendProgressive(root, epoch, nodeGroup, points, 220, (p) => {

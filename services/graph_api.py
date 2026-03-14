@@ -80,6 +80,27 @@ def _downsample_large_graph(nodes: list[dict], edges: list[dict], max_nodes: int
     }
 
 
+def _build_community_labels(nodes: list[dict]) -> dict[str, str]:
+    """Строит человекочитаемые подписи сообществ по узлам: топ по влиянию + размер."""
+    by_comm: dict[str, list[dict]] = defaultdict(list)
+    for n in nodes or []:
+        cid = str(int(n.get("community_id", 0) or 0))
+        by_comm[cid].append(n)
+    labels: dict[str, str] = {}
+    for cid, members in by_comm.items():
+        if not members:
+            labels[cid] = f"Сообщество {cid}"
+            continue
+        top = max(members, key=lambda x: float(x.get("influence_score", 0.0) or 0.0))
+        name = (top.get("label") or str(top.get("id", "")) or "").strip() or "?"
+        size = len(members)
+        if size == 1:
+            labels[cid] = f"Участник {name}"
+        else:
+            labels[cid] = f"вокруг {name} ({size} чел.)"
+    return labels
+
+
 def _fallback_graph_analytics(node_ids: list[int], edges: list[dict]) -> dict:
     node_sorted = sorted({int(x) for x in (node_ids or []) if int(x) != 0})
     degree = defaultdict(int)
@@ -244,10 +265,14 @@ def _build_payload_from_rows(chat_id, rows, names, period: str = "all", ego_user
                 "influence_score": round(influence, 6),
                 "centrality": round(centrality, 6),
                 "community_id": int(comm.get(uid, 0)),
-                "community_label": f"Комьюнити {int(comm.get(uid, 0))}",
+                "community_label": "",  # заполним ниже из _build_community_labels
                 "tier": tier,
             }
         )
+    community_labels = _build_community_labels(nodes)
+    for n in nodes:
+        cid = str(int(n.get("community_id", 0)))
+        n["community_label"] = community_labels.get(cid, f"Комьюнити {cid}")
     node_comm = {int(n["id"]): int(n.get("community_id", 0)) for n in nodes}
     for e in edges:
         ca = node_comm.get(int(e["source"]), -1)
@@ -280,7 +305,7 @@ def _build_payload_from_rows(chat_id, rows, names, period: str = "all", ego_user
             "communities_algo": comm_algo,
             "communities_modularity": float(comm_stats.get("modularity", 0.0)),
             "communities_levels": int(comm_stats.get("levels", 1)),
-            "community_labels": {str(int(n.get("community_id", 0))): str(n.get("community_label", "")) for n in nodes},
+            "community_labels": community_labels,
             "graph_engine": "networkx" if comm_algo.startswith("networkx") else "builtin",
             "downsampled": bool(ds_meta.get("applied", False)),
             "downsample_meta": ds_meta,

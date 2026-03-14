@@ -92,6 +92,11 @@ async def stop_realtime_worker() -> None:
             await task
         except BaseException:
             pass
+    await _broadcast_manager.shutdown()
+
+
+async def get_realtime_stats_snapshot() -> dict:
+    return await _broadcast_manager.stats()
 
 
 @router.get("/stats")
@@ -100,8 +105,14 @@ async def realtime_stats(_auth=Depends(require_auth)):
 
 
 @router.websocket("/ws/{chat_id}")
-async def websocket_endpoint(ws: WebSocket, chat_id: int):
-    client = await _broadcast_manager.connect(ws, int(chat_id))
+async def websocket_endpoint(ws: WebSocket, chat_id: str):
+    try:
+        chat_id_int = int(str(chat_id).strip())
+    except Exception:
+        await ws.close(code=1008, reason="invalid_chat_id")
+        return
+
+    client = await _broadcast_manager.connect(ws, chat_id_int)
     try:
         while True:
             raw = await ws.receive_text()
@@ -109,7 +120,7 @@ async def websocket_endpoint(ws: WebSocket, chat_id: int):
             if text.lower() == "ping":
                 await _broadcast_manager.enqueue_personal(
                     client,
-                    {"type": "pong", "chat_id": int(chat_id), "ts": _utc_now()},
+                    {"type": "pong", "chat_id": int(chat_id_int), "ts": _utc_now()},
                 )
                 continue
             try:
@@ -119,7 +130,7 @@ async def websocket_endpoint(ws: WebSocket, chat_id: int):
             if str(msg.get("type", "")).lower() == "ping":
                 await _broadcast_manager.enqueue_personal(
                     client,
-                    {"type": "pong", "chat_id": int(chat_id), "ts": _utc_now()},
+                    {"type": "pong", "chat_id": int(chat_id_int), "ts": _utc_now()},
                 )
     except WebSocketDisconnect:
         pass

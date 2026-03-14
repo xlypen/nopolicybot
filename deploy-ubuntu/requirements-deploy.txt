@@ -3,7 +3,11 @@ aiogram>=3.13.0
 openai>=1.40.0
 ddgs>=9.0.0
 python-dotenv>=1.0.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+websockets>=16.0
 flask>=3.0.0
+flask-cors>=6.0.2
 gunicorn>=21.0.0
 # Голосовые (опционально, можно закомментировать)
 faster-whisper>=1.0.0

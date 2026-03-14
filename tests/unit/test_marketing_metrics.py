@@ -20,6 +20,9 @@ def isolated_metrics_store(tmp_path, monkeypatch):
             303: {"pagerank": 0.45, "reach": 0.4},
         },
     )
+    # A5: allow JSON writes in tests (db_only would skip)
+    from services import storage_cutover
+    monkeypatch.setattr(storage_cutover, "storage_json_writes_enabled", lambda: True)
     return data_file
 
 

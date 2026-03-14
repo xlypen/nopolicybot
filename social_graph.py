@@ -39,6 +39,9 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
+    from services.storage_cutover import storage_json_writes_enabled
+    if not storage_json_writes_enabled():
+        return
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(data, ensure_ascii=False, indent=2)

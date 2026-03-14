@@ -56,6 +56,11 @@ def storage_db_only_mode(mode: str | None = None) -> bool:
     return _normalize_mode(mode or get_storage_mode()) == "db_only"
 
 
+def storage_json_writes_enabled(mode: str | None = None) -> bool:
+    """When db_only, JSON writes are disabled (DB is source of truth)."""
+    return not storage_db_only_mode(mode)
+
+
 def get_storage_mode() -> str:
     if _MODE_PATH.exists():
         try:

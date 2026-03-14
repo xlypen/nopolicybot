@@ -46,6 +46,9 @@ def _load_data() -> dict:
 
 
 def _save_data(data: dict) -> None:
+    from services.storage_cutover import storage_json_writes_enabled
+    if not storage_json_writes_enabled():
+        return
     _DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(data, ensure_ascii=False, indent=2)
     with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", dir=_DATA_PATH.parent) as tmp:

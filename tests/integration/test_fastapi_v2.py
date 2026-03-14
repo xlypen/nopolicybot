@@ -219,3 +219,82 @@ def test_fastapi_user_data_delete_contract(monkeypatch):
         body = resp.json()
         assert body["ok"] is True
         assert body["result"]["user_id"] == 42
+
+
+def test_fastapi_metrics_user_contract():
+    headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/metrics/user/1?chat_id=all&days=30", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert "metrics" in body
+
+
+def test_fastapi_metrics_chat_health_contract():
+    headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/metrics/chat/-1001758892482/health?days=30", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert "health" in body
+
+
+def test_fastapi_portrait_building_status_contract():
+    headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/portrait/portrait-building-status", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "building" in body or "building_user_ids" in body
+
+
+def test_fastapi_settings_contract():
+    headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/settings", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert "settings" in body
+
+
+def test_fastapi_chat_mode_contract():
+    headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/chat-mode?chat_id=-1001758892482", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert "mode" in body
+
+
+def test_fastapi_admin_log_tail_contract():
+    headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/admin/log-tail?lines=20&source=telegram-bot.service", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert "lines" in body
+
+
+def test_fastapi_admin_prompts_contract():
+    headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/admin/prompts", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert "prompts" in body
+
+
+def test_fastapi_admin_topic_policies_contract():
+    headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/admin/topic-policies", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert "policies" in body

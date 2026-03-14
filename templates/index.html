@@ -142,13 +142,13 @@ function buildPortrait(uid, chatId, btn){
 var result=document.getElementById('result-'+uid);
 result.textContent='Анализирую…';result.style.color='';
 btn.disabled=true;
-apiFetch('{{ url_for("api_portrait_from_storage") }}',{method:'POST',body:{user_id:uid,chat_id:chatId||'all'}})
+apiFetch('/api/v2/portrait/portrait-from-storage',{method:'POST',body:{user_id:uid,chat_id:chatId||'all'}})
 .then(function(d){result.textContent='Готово!';result.className='text-sm text-success';setTimeout(function(){location.reload()},1500)})
 .catch(function(e){result.textContent=e.message||'Ошибка';result.className='text-sm text-danger';btn.disabled=false});
 }
 {% if portrait_building_user_ids %}
 (function poll(){
-fetch('{{ url_for("api_portrait_building_status") }}').then(function(r){return r.json()}).then(function(d){
+fetch('/api/v2/portrait/portrait-building-status').then(function(r){return r.json()}).then(function(d){
 var building=d.building_user_ids||[];
 {% for uid,u in users %}
 if(!building.includes('{{ uid }}') && document.getElementById('result-{{ uid }}') && document.getElementById('result-{{ uid }}').textContent.indexOf('Анализирую')>=0){

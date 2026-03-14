@@ -505,6 +505,26 @@ def health():
     return jsonify({"status": "ok", "service": "flask-admin"})
 
 
+def _portrait_status_from_api(user_id: str, kind: str) -> bool:
+    """Получить статус портрета из API v2 (для рендера страниц)."""
+    token = str(os.getenv("ADMIN_TOKEN", "")).strip()
+    if not token:
+        return False
+    port = int(os.getenv("API_PORT", "8001"))
+    if kind == "building":
+        url = f"http://127.0.0.1:{port}/api/v2/portrait/portrait-building-status?user_id={user_id}"
+    else:
+        url = f"http://127.0.0.1:{port}/api/v2/portrait/user/{user_id}/portrait-image-status"
+    try:
+        req = urllib.request.Request(url)
+        req.add_header("Authorization", f"Bearer {token}")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        return bool(body.get("building" if kind == "building" else "generating"))
+    except Exception:
+        return False
+
+
 def _proxy_to_api_v2(path: str, method: str = "GET", data: bytes | None = None) -> tuple[dict | bytes, int]:
     """Проксирует запрос в FastAPI v2 с Bearer-токеном. Возвращает (body, status_code)."""
     token = str(os.getenv("ADMIN_TOKEN", "")).strip()
@@ -590,6 +610,47 @@ def api_v2_predictive_proxy(subpath: str):
 def api_v2_storage_proxy(subpath: str):
     """Прокси storage API в FastAPI v2."""
     path = f"/api/v2/storage/{subpath}"
+    data = None
+    if request.method == "POST" and request.is_json:
+        data = request.get_data()
+    body, status = _proxy_to_api_v2(path, method=request.method, data=data)
+    if isinstance(body, dict):
+        return jsonify(body), status
+    return Response(body, status=status, mimetype="application/json")
+
+
+@app.route("/api/v2/metrics/<path:subpath>", methods=["GET"])
+@login_required
+def api_v2_metrics_proxy(subpath: str):
+    """Прокси metrics API (user, chat health) в FastAPI v2."""
+    path = f"/api/v2/metrics/{subpath}"
+    body, status = _proxy_to_api_v2(path)
+    if isinstance(body, dict):
+        return jsonify(body), status
+    return Response(body, status=status, mimetype="application/json")
+
+
+@app.route("/api/v2/portrait/<path:subpath>", methods=["GET", "POST"])
+@login_required
+def api_v2_portrait_proxy(subpath: str):
+    """Прокси portrait API в FastAPI v2."""
+    path = f"/api/v2/portrait/{subpath}"
+    data = None
+    if request.method == "POST" and request.is_json:
+        data = request.get_data()
+    body, status = _proxy_to_api_v2(path, method=request.method, data=data)
+    if isinstance(body, dict):
+        return jsonify(body), status
+    return Response(body, status=status, mimetype="application/json")
+
+
+@app.route("/api/v2/settings", methods=["GET", "POST"])
+@app.route("/api/v2/chat-mode", methods=["GET", "POST"])
+@app.route("/api/v2/reset-political-count", methods=["POST"])
+@login_required
+def api_v2_settings_proxy():
+    """Прокси settings/chat-mode/reset-political-count в FastAPI v2."""
+    path = request.path
     data = None
     if request.method == "POST" and request.is_json:
         data = request.get_data()

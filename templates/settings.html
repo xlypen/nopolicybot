@@ -268,7 +268,7 @@ if (_pcBtn) {
     var sp = document.getElementById('portrait-clear-result');
     _pcBtn.disabled = true;
     sp.textContent = '...';
-    apiFetch('{{ url_for("api_portrait_clear_cache") }}', {method:'POST', body:{}})
+    apiFetch('/api/v2/portrait/portrait-clear-cache', {method:'POST', body:{}})
       .then(function(d) { sp.textContent = d.cleared ? 'Очищено' : 'Пусто'; sp.style.color = '#4ade80'; })
       .catch(function(e) { sp.textContent = e.message || 'Ошибка'; sp.style.color = '#e94560'; })
       .finally(function() { _pcBtn.disabled = false; });

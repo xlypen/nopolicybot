@@ -1346,7 +1346,7 @@ async function syncOpsState() {
   }
   setOpsDisabled(false);
   try {
-    const body = await requestJson(`/api/chat-mode?chat_id=${encodeURIComponent(chat)}`);
+    const body = await requestJson(`/api/v2/chat-mode?chat_id=${encodeURIComponent(chat)}`);
     const mode = String(body.mode || 'default');
     const modeSel = document.getElementById('opsChatModeSel');
     if (modeSel) {
@@ -1370,7 +1370,7 @@ async function applyChatModeFromOps() {
   const btn = document.getElementById('applyChatModeBtn');
   if (btn) btn.disabled = true;
   try {
-    const body = await requestJson('/api/chat-mode', {
+    const body = await requestJson('/api/v2/chat-mode', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({chat_id: chat, mode}),
@@ -1424,7 +1424,7 @@ async function buildPortraitFromOps() {
   const btn = document.getElementById('buildPortraitBtn');
   if (btn) btn.disabled = true;
   try {
-    const body = await requestJson('/api/portrait-from-storage', {
+    const body = await requestJson('/api/v2/portrait/portrait-from-storage', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({user_id: Math.trunc(uid), chat_id: chat}),
@@ -1531,7 +1531,7 @@ async function classifyUnknownUsers() {
   const chatSel = document.getElementById('chatSel');
   const chat = String((chatSel && chatSel.value) || 'all');
   try {
-    const body = await requestJson('/api/portrait-classify-unknown', {
+    const body = await requestJson('/api/v2/portrait/portrait-classify-unknown', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ chat_id: chat }),

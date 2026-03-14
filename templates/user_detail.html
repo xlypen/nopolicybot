@@ -359,7 +359,7 @@ var btn=document.getElementById('btn-portrait');
 var out=document.getElementById('portrait-result');
 btn.disabled=true;
 out.innerHTML='Анализирую… (1–2 мин)';
-apiFetch('{{ url_for("api_portrait_from_storage") }}',{method:'POST',body:{user_id:'{{ user_id }}',chat_id:'{{ chat_id or "all" }}'}})
+apiFetch('/api/v2/portrait/portrait-from-storage',{method:'POST',body:{user_id:'{{ user_id }}',chat_id:'{{ chat_id or "all" }}'}})
 .then(function(d){out.innerHTML='<span class="text-success">Готово! <a href="">Обновить страницу</a></span>';setTimeout(function(){location.reload()},2000)})
 .catch(function(e){out.innerHTML='<span class="text-danger">'+(e.message||'Ошибка')+'</span>';btn.disabled=false});
 }
@@ -370,7 +370,7 @@ var sel=document.getElementById('portrait-provider');
 var provider=(sel&&sel.value)||'';
 btn.disabled=true;
 out.innerHTML='Генерирую… (30–60 сек)';
-apiFetch('{{ url_for("api_portrait_image_generate", user_id=user_id) }}',{method:'POST',body:provider?{provider:provider}:{}})
+apiFetch('/api/v2/portrait/user/{{ user_id }}/portrait-image',{method:'POST',body:provider?{provider:provider}:{}})
 .then(function(d){out.innerHTML='<span class="text-success">Готово! <a href="">Обновить страницу</a></span>';setTimeout(function(){location.reload()},2000)})
 .catch(function(e){out.innerHTML='<span class="text-danger">'+(e.message||'Ошибка')+'</span>';btn.disabled=false});
 }
@@ -378,26 +378,19 @@ function clearPortraitCache(){
 var btn=document.getElementById('btn-portrait-clear-cache');
 if(!btn)return;
 btn.disabled=true;
-apiFetch('{{ url_for("api_portrait_clear_cache") }}',{method:'POST',body:{}})
+apiFetch('/api/v2/portrait/portrait-clear-cache',{method:'POST',body:{}})
 .then(function(d){btn.disabled=false;if(d&&d.cleared)alert('Кеш модели портретов очищен');})
 .catch(function(e){btn.disabled=false;alert(e.message||'Ошибка');});
 }
-{% if is_portrait_building %}
-(function poll(){
-fetch('{{ url_for("api_portrait_building_status") }}?user_id={{ user_id }}').then(function(r){return r.json()}).then(function(d){
-if(!d.building){location.reload();}
-else setTimeout(poll,2000);
-});
+(function pollPortraitStatus(){
+fetch('/api/v2/portrait/portrait-building-status?user_id={{ user_id }}').then(function(r){return r.json()}).then(function(d){
+if(d.building){setTimeout(pollPortraitStatus,2000);return;}
+fetch('/api/v2/portrait/user/{{ user_id }}/portrait-image-status').then(function(r2){return r2.json()}).then(function(d2){
+if(d2.generating){setTimeout(pollPortraitStatus,3000);return;}
+location.reload();
+}).catch(function(){setTimeout(pollPortraitStatus,3000);});
+}).catch(function(){});
 })();
-{% endif %}
-{% if is_portrait_image_generating %}
-(function poll(){
-fetch('{{ url_for("api_portrait_image_status", user_id=user_id) }}').then(function(r){return r.json()}).then(function(d){
-if(!d.generating){location.reload();}
-else setTimeout(poll,3000);
-}).catch(function(){setTimeout(poll,3000);});
-})();
-{% endif %}
 function clearArchive(chatId, btn){
 if(!confirm(chatId==='all'?'Очистить весь архив?':'Очистить архив этого чата?'))return;
 btn.disabled=true;

@@ -13,9 +13,12 @@ from api.dependencies import require_auth
 from api.routers.admin import router as admin_router
 from api.routers.graph import router as graph_router
 from api.routers.health import router as health_router
+from api.routers.metrics import router as metrics_router
+from api.routers.portrait import router as portrait_router
 from api.routers.predictive import router as predictive_router
 from api.routers.recommendations import router as recommendations_router
 from api.routers.realtime import router as realtime_router
+from api.routers.settings import router as settings_router
 from api.routers.storage import router as storage_router
 from api.routers.realtime import get_realtime_stats_snapshot, start_realtime_worker, stop_realtime_worker
 from db.engine import init_db
@@ -248,7 +251,10 @@ async def erase_user_data(user_id: int = Path(..., ge=1), _auth=Depends(require_
 app.include_router(health_router, prefix="/api/v2", tags=["health"])
 app.include_router(graph_router, prefix="/api/v2/graph", tags=["graph"])
 app.include_router(admin_router, prefix="/api/v2/admin", tags=["admin"])
+app.include_router(metrics_router, prefix="/api/v2/metrics", tags=["metrics"])
+app.include_router(portrait_router, prefix="/api/v2/portrait", tags=["portrait"])
 app.include_router(recommendations_router, prefix="/api/v2/recommendations", tags=["recommendations"])
 app.include_router(predictive_router, prefix="/api/v2/predictive", tags=["predictive"])
+app.include_router(settings_router, prefix="/api/v2", tags=["settings"])
 app.include_router(storage_router, prefix="/api/v2/storage", tags=["storage"])
 app.include_router(realtime_router, prefix="/api/v2/realtime", tags=["realtime"])

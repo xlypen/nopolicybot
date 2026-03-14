@@ -52,7 +52,7 @@
   </div>
 
   <script>
-  fetch('/api/log-tail?lines=120').then(r => r.json()).then(body => {
+  fetch('/api/v2/admin/log-tail?lines=120').then(r => r.json()).then(body => {
     const lines = (body && body.lines) || [];
     document.getElementById('logsOut').textContent = lines.join('\n');
   }).catch((e) => {

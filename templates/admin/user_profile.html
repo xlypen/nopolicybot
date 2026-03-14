@@ -166,7 +166,7 @@
     if (!box) return;
     box.textContent = "Загрузка метрик…";
     try {
-      const resp = await fetch("/api/metrics/user/" + encodeURIComponent(String(USER_ID)) + "?chat_id=" + encodeURIComponent(String(CHAT_ID)) + "&days=30", { cache: "no-store" });
+      const resp = await fetch("/api/v2/metrics/user/" + encodeURIComponent(String(USER_ID)) + "?chat_id=" + encodeURIComponent(String(CHAT_ID)) + "&days=30", { cache: "no-store" });
       const body = await resp.json();
       if (!resp.ok || !body || !body.ok) {
         throw new Error((body && body.error) || ("HTTP " + resp.status));
@@ -211,7 +211,7 @@
     if (btn) btn.disabled = true;
     setProfileFeedback("Собираю портрет…", "#f59e0b");
     try {
-      const resp = await fetch("/api/portrait-from-storage", {
+      const resp = await fetch("/api/v2/portrait/portrait-from-storage", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({ user_id: Number(USER_ID), chat_id: String(CHAT_ID) }),

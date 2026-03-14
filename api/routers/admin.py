@@ -1,6 +1,8 @@
-"""Admin dashboard API — dashboard, community-structure, leaderboard, at-risk."""
+"""Admin dashboard API — dashboard, community-structure, leaderboard, at-risk, log-tail, prompts, topic-policies."""
 
 import asyncio
+import subprocess
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Query
@@ -127,3 +129,98 @@ async def post_at_risk_action(
         "chat_id": chat_id,
         "queued": action == "dm",
     }
+
+
+@router.get("/log-tail")
+async def get_log_tail(
+    lines: int = Query(default=120, ge=20, le=500),
+    source: str = Query(default="telegram-bot.service"),
+    _auth=Depends(require_auth),
+):
+    if source.endswith(".service"):
+        allowed = {"telegram-bot.service", "telegram-bot-admin.service", "telegram-bot-api.service"}
+        if source not in allowed:
+            source = "telegram-bot.service"
+        try:
+            cp = await asyncio.to_thread(
+                subprocess.run,
+                ["journalctl", "-u", source, "-n", str(lines), "--no-pager", "-o", "cat"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            content = (cp.stdout or "").splitlines()
+        except Exception:
+            content = []
+        return {"ok": True, "lines": content[-lines:], "source": source, "kind": "systemd"}
+    path = Path(source)
+    if not path.exists():
+        return {"ok": True, "lines": [], "source": str(path), "kind": "file"}
+    try:
+        content = await asyncio.to_thread(path.read_text, encoding="utf-8")
+        lines_list = content.splitlines()
+    except Exception:
+        lines_list = []
+    return {"ok": True, "lines": lines_list[-lines:], "source": str(path), "kind": "file"}
+
+
+@router.get("/prompts")
+async def get_prompts(_auth=Depends(require_auth)):
+    from ai.prompts import get_all_prompts
+
+    return {"ok": True, "prompts": await asyncio.to_thread(get_all_prompts)}
+
+
+@router.post("/prompts")
+async def post_prompts(body: dict = Body(default_factory=dict), _auth=Depends(require_auth)):
+    from ai.prompts import get_all_prompts, set_prompt
+
+    name = str(body.get("name") or "").strip()
+    value = str(body.get("value") or "")
+    if not name:
+        return {"ok": False, "error": "name is required"}
+    await asyncio.to_thread(set_prompt, name, value)
+    return {"ok": True, "prompts": await asyncio.to_thread(get_all_prompts)}
+
+
+@router.delete("/prompts")
+async def delete_prompts(body: dict = Body(default_factory=dict), _auth=Depends(require_auth)):
+    from ai.prompts import get_all_prompts, reset_prompts
+
+    names = body.get("names")
+    names_list = [str(x) for x in names if str(x).strip()] if isinstance(names, list) else None
+    prompts = await asyncio.to_thread(reset_prompts, names_list)
+    return {"ok": True, "prompts": prompts}
+
+
+@router.get("/topic-policies")
+async def get_topic_policies(_auth=Depends(require_auth)):
+    from services.topic_policies import get_primary_topic, get_topic_policies
+
+    primary = await asyncio.to_thread(get_primary_topic)
+    policies = await asyncio.to_thread(get_topic_policies)
+    return {"ok": True, "primary_topic": primary, "policies": policies}
+
+
+@router.post("/topic-policies")
+async def post_topic_policies(body: dict = Body(default_factory=dict), _auth=Depends(require_auth)):
+    from services.topic_policies import get_primary_topic, get_topic_policies, set_primary_topic, set_topic_policy
+
+    primary_topic = body.get("primary_topic")
+    if primary_topic is not None:
+        await asyncio.to_thread(set_primary_topic, str(primary_topic))
+    name = str(body.get("name") or "").strip().lower()
+    patch = body.get("patch")
+    if name and isinstance(patch, dict):
+        await asyncio.to_thread(set_topic_policy, name, patch)
+    return {"ok": True, "primary_topic": await asyncio.to_thread(get_primary_topic), "policies": await asyncio.to_thread(get_topic_policies)}
+
+
+@router.delete("/topic-policies")
+async def delete_topic_policies(body: dict = Body(default_factory=dict), _auth=Depends(require_auth)):
+    from services.topic_policies import get_primary_topic, get_topic_policies, reset_topic_policies
+
+    names = body.get("names")
+    names_list = [str(x) for x in names] if isinstance(names, list) else None
+    policies = await asyncio.to_thread(reset_topic_policies, names_list)
+    return {"ok": True, "primary_topic": await asyncio.to_thread(get_primary_topic), "policies": policies}

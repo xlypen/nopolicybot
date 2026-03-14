@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import os
 import sys
 from pathlib import Path
@@ -30,6 +31,18 @@ def main() -> int:
         body = r.get_json() or {}
         if body.get("status") != "ok":
             raise RuntimeError("Flask health payload invalid")
+
+        # A2: 10 concurrent requests (simulates multi-worker load)
+        def _one_request():
+            with admin_app.app.test_client() as c:
+                resp = c.get("/health")
+                return resp.status_code == 200 and (resp.get_json() or {}).get("status") == "ok"
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
+            futures = [ex.submit(_one_request) for _ in range(10)]
+            results = [f.result() for f in concurrent.futures.as_completed(futures)]
+        if not all(results):
+            raise RuntimeError("Flask health: not all 10 concurrent requests passed")
 
     with TestClient(fastapi_app) as api_client:
         r = api_client.get("/api/v2/health")

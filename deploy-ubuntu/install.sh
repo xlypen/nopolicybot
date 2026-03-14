@@ -123,7 +123,7 @@ User=nopolicybot
 Group=nopolicybot
 WorkingDirectory=$PROJECT_DIR
 Environment=PATH=$PROJECT_DIR/venv/bin
-ExecStart=/bin/bash -lc 'CPU="$$(nproc 2>/dev/null || echo 1)"; W="$$((2 * CPU + 1))"; if [ "$$W" -lt 3 ]; then W=3; fi; exec $PROJECT_DIR/venv/bin/gunicorn -w "$$W" -b 127.0.0.1:5000 --timeout 30 --keep-alive 5 admin_app:app'
+ExecStart=/bin/bash -lc 'CPU="$$(nproc 2>/dev/null || echo 1)"; W="$$((2 * CPU + 1))"; if [ "$$W" -lt 3 ]; then W=3; fi; exec $PROJECT_DIR/venv/bin/gunicorn -w "$$W" -k gevent --worker-connections 50 -b 127.0.0.1:5000 --timeout 30 --keep-alive 5 --max-requests 1000 --max-requests-jitter 100 admin_app:app'
 NoNewPrivileges=true
 PrivateTmp=true
 ReadWritePaths=$PROJECT_DIR/data

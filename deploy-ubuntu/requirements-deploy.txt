@@ -8,6 +8,6 @@ uvicorn>=0.30.0
 websockets>=16.0
 flask>=3.0.0
 flask-cors>=6.0.2
-gunicorn>=21.0.0
+gunicorn[gevent]>=21.0.0
 # Голосовые (опционально, можно закомментировать)
 faster-whisper>=1.0.0

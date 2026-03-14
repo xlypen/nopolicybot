@@ -55,5 +55,7 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
+      - name: SLO gate (docs/slo.md)
+        run: python scripts/check_slo_gate.py --slo-file docs/slo.md
       - name: Run smoke checks
         run: python scripts/smoke_checks.py

@@ -697,7 +697,7 @@ async function loadAndRender() {
   const chat = document.getElementById('chatSel').value;
   const root = document.getElementById('modernGraphRoot');
   root.textContent = 'Загрузка данных...';
-  const resp = await fetch(`/api/chat/${encodeURIComponent(chat)}/graph?period=7d`);
+  const resp = await fetch(`/api/v2/graph/${encodeURIComponent(chat)}?period=7d`);
   const body = await resp.json();
   _graphState = (body && body.graph) || {nodes: [], edges: [], meta: {}};
   _graphVersion = String((body && body.graph_version) || '');
@@ -788,9 +788,9 @@ async function fetchAndApplyDelta() {
     if (_graphVersion) {
       q.set('since', _graphVersion);
     }
-    const resp = await fetch(`/api/chat/${encodeURIComponent(chat)}/graph-delta?${q.toString()}`, { cache: 'no-store' });
+    const resp = await fetch(`/api/v2/graph/${encodeURIComponent(chat)}/delta?${q.toString()}`, { cache: 'no-store' });
     const body = await resp.json();
-    if (!body || !body.ok) {
+    if (!body || body.ok === false) {
       return;
     }
     if (!body.changed) {

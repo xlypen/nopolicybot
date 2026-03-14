@@ -4,16 +4,45 @@ import json
 
 from fastapi import APIRouter, Depends, Query
 
-from api.dependencies import get_edge_repo, get_user_repo, require_auth
-from services.graph_api import build_payload
+from api.dependencies import require_auth
+from services.graph_api import build_graph_payload
 
 router = APIRouter()
 _GRAPH_HISTORY: dict[str, dict] = {}
 _GRAPH_HISTORY_LOCK = asyncio.Lock()
 
 
-def _scope(chat_id: int, period: int) -> str:
-    return f"chat={int(chat_id)}|period={int(period)}"
+def _parse_chat_id(chat_id: str) -> int | None:
+    raw = str(chat_id or "").strip().lower()
+    if raw in ("all", ""):
+        return None
+    if raw.lstrip("-").isdigit():
+        return int(raw)
+    return None
+
+
+def _parse_period(period: str | int) -> int:
+    if isinstance(period, int) and 1 <= period <= 90:
+        return period
+    raw = str(period or "7").strip().lower()
+    if raw in ("24h", "1"):
+        return 1
+    if raw in ("30d", "30"):
+        return 30
+    if raw in ("7d", "7"):
+        return 7
+    try:
+        n = int(raw.replace("d", ""))
+        return max(1, min(90, n))
+    except ValueError:
+        return 7
+
+
+def _scope(chat_id: int | None, period: int, ego_user: int | None, limit: int | None) -> str:
+    c = "all" if chat_id is None else int(chat_id)
+    e = ego_user or 0
+    l = limit or 0
+    return f"chat={c}|period={period}|ego={e}|limit={l}"
 
 
 def _edge_id(edge: dict) -> str:
@@ -98,32 +127,46 @@ async def _history_set(scope: str, version: str, graph: dict) -> None:
         }
 
 
+def _get_graph_payload_compat(chat_id: int | None, period: str, ego_user: int | None, limit: int | None) -> dict:
+    """Sync wrapper for build_graph_payload (storage modes, JSON fallback)."""
+    return build_graph_payload(chat_id, period=period, ego_user=ego_user, limit=limit)
+
+
 @router.get("/{chat_id}")
 async def get_graph(
-    chat_id: int,
-    period: int = Query(default=7, ge=1, le=90),
-    edge_repo=Depends(get_edge_repo),
-    user_repo=Depends(get_user_repo),
+    chat_id: str,
+    period: str | int = Query(default="7d"),
+    ego_user: int | None = Query(default=None),
+    limit: int | None = Query(default=None),
     _auth=Depends(require_auth),
 ):
-    graph = await build_payload(chat_id, edge_repo, user_repo, period=period)
+    cid = _parse_chat_id(chat_id)
+    period_str = str(period).strip().lower() if isinstance(period, str) else f"{int(period)}d"
+    graph = await asyncio.to_thread(
+        _get_graph_payload_compat, cid, period_str, ego_user, limit
+    )
     version = _graph_version(graph)
-    await _history_set(_scope(chat_id, period), version, graph)
-    return {"graph": graph, "graph_version": version}
+    scope = _scope(cid, _parse_period(period), ego_user, limit)
+    await _history_set(scope, version, graph)
+    return {"ok": True, "graph": graph, "graph_version": version}
 
 
 @router.get("/{chat_id}/delta")
 async def get_graph_delta(
-    chat_id: int,
-    period: int = Query(default=7, ge=1, le=90),
+    chat_id: str,
+    period: str | int = Query(default="7d"),
     since: str = Query(default=""),
-    edge_repo=Depends(get_edge_repo),
-    user_repo=Depends(get_user_repo),
+    ego_user: int | None = Query(default=None),
+    limit: int | None = Query(default=None),
     _auth=Depends(require_auth),
 ):
-    graph = await build_payload(chat_id, edge_repo, user_repo, period=period)
+    cid = _parse_chat_id(chat_id)
+    period_str = str(period).strip().lower() if isinstance(period, str) else f"{int(period)}d"
+    graph = await asyncio.to_thread(
+        _get_graph_payload_compat, cid, period_str, ego_user, limit
+    )
     version = _graph_version(graph)
-    scope = _scope(chat_id, period)
+    scope = _scope(cid, _parse_period(period), ego_user, limit)
     history = await _history_get(scope)
     latest = history.get("latest") if isinstance(history, dict) else None
     prev = history.get("prev") if isinstance(history, dict) else None
@@ -139,6 +182,7 @@ async def get_graph_delta(
     if since and since == version:
         await _history_set(scope, version, graph)
         return {
+            "ok": True,
             "changed": False,
             "graph_version": version,
             "delta": {
@@ -153,4 +197,9 @@ async def get_graph_delta(
 
     patch = _graph_delta(prev_graph, graph)
     await _history_set(scope, version, graph)
-    return {"changed": bool(patch.get("changed")), "graph_version": version, "delta": patch.get("delta") or {}}
+    return {
+        "ok": True,
+        "changed": bool(patch.get("changed")),
+        "graph_version": version,
+        "delta": patch.get("delta") or {},
+    }

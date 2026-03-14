@@ -148,7 +148,7 @@
   async function loadUserGraph() {
     setGraphStatus("Загрузка графа…", false);
     try {
-      const resp = await fetch("/api/chat/" + encodeURIComponent(String(CHAT_ID)) + "/graph?period=7d&ego_user=" + encodeURIComponent(String(USER_ID)) + "&limit=220", { cache: "no-store" });
+      const resp = await fetch("/api/v2/graph/" + encodeURIComponent(String(CHAT_ID)) + "?period=7d&ego_user=" + encodeURIComponent(String(USER_ID)) + "&limit=220", { cache: "no-store" });
       const body = await resp.json();
       if (!resp.ok || !body || !body.ok) {
         throw new Error((body && body.error) || ("HTTP " + resp.status));

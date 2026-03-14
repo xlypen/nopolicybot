@@ -38,7 +38,7 @@ def test_admin_route_defaults_to_modern_dashboard(monkeypatch):
         resp = client.get("/admin")
         assert resp.status_code == 200
         html = resp.get_data(as_text=True)
-        assert "Modern Dashboard" in html
+        assert "Панель мониторинга" in html or "Modern Dashboard" in html
         assert "/admin-legacy" in html
 
 
@@ -124,6 +124,23 @@ def test_api_chat_graph_contract(monkeypatch):
         body = resp.get_json()
         assert body["ok"] is True
         assert "graph" in body
+
+
+def test_api_v2_graph_proxy_contract(monkeypatch):
+    _disable_auth(monkeypatch)
+    fake_response = {"ok": True, "graph": {"nodes": [], "edges": [], "meta": {}}, "graph_version": "abc123"}
+
+    def _fake_proxy(path, method="GET", data=None):
+        return fake_response, 200
+
+    monkeypatch.setattr(admin_app, "_proxy_to_api_v2", _fake_proxy)
+    with admin_app.app.test_client() as client:
+        resp = client.get("/api/v2/graph/all?period=7d")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["graph"] == fake_response["graph"]
+        assert body["graph_version"] == "abc123"
 
 
 def test_api_chat_graph_lab_contract(monkeypatch):

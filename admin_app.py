@@ -505,6 +505,46 @@ def health():
     return jsonify({"status": "ok", "service": "flask-admin"})
 
 
+def _proxy_to_api_v2(path: str, method: str = "GET", data: bytes | None = None) -> tuple[dict | bytes, int]:
+    """Проксирует запрос в FastAPI v2 с Bearer-токеном. Возвращает (body, status_code)."""
+    token = str(os.getenv("ADMIN_TOKEN", "")).strip()
+    if not token:
+        return {"ok": False, "error": "ADMIN_TOKEN not configured"}, 503
+    port = int(os.getenv("API_PORT", "8001"))
+    url = f"http://127.0.0.1:{port}{path}"
+    if request.query_string:
+        url += "?" + request.query_string.decode("utf-8")
+    req = urllib.request.Request(url, method=method, data=data)
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read()
+            try:
+                return json.loads(body.decode("utf-8")), resp.status
+            except json.JSONDecodeError:
+                return body, resp.status
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read().decode("utf-8"))
+        except Exception:
+            body = {"ok": False, "error": str(e)}
+        return body, e.code
+    except OSError as e:
+        return {"ok": False, "error": str(e)}, 502
+
+
+@app.route("/api/v2/graph/<path:subpath>", methods=["GET"])
+@login_required
+def api_v2_graph_proxy(subpath: str):
+    """Прокси graph API в FastAPI v2 (сессия админа проверена)."""
+    path = f"/api/v2/graph/{subpath}"
+    body, status = _proxy_to_api_v2(path)
+    if isinstance(body, dict):
+        return jsonify(body), status
+    return Response(body, status=status, mimetype="application/json")
+
+
 @app.route("/api/monitoring/metrics")
 @login_required
 def api_monitoring_metrics():

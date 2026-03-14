@@ -1,13 +1,18 @@
 import os
 
+import pytest
 from fastapi.testclient import TestClient
 
 import api.main as api_main
 from api.main import app
 
 TEST_ADMIN_TOKEN = "test-admin-token-abcdefghijklmnopqrstuvwxyz"
-os.environ.setdefault("ADMIN_TOKEN", TEST_ADMIN_TOKEN)
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./data/bot.db")
+
+
+@pytest.fixture(autouse=True)
+def _set_admin_token(monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", TEST_ADMIN_TOKEN)
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///./data/bot.db")
 
 
 def test_fastapi_v2_health():
@@ -54,18 +59,31 @@ def test_fastapi_graph_delta_unauthorized():
 def test_fastapi_graph_delta_contract_authorized():
     headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
     with TestClient(app) as client:
-        first = client.get("/api/v2/graph/1?period=7", headers=headers)
+        first = client.get("/api/v2/graph/1?period=7d", headers=headers)
         assert first.status_code == 200
         first_body = first.json()
+        assert first_body.get("ok") is True
         assert "graph" in first_body
         version = str(first_body.get("graph_version") or "")
         assert version
 
-        second = client.get(f"/api/v2/graph/1/delta?period=7&since={version}", headers=headers)
+        second = client.get(f"/api/v2/graph/1/delta?period=7d&since={version}", headers=headers)
         assert second.status_code == 200
         second_body = second.json()
+        assert second_body.get("ok") is True
         assert second_body["changed"] is False
         assert "delta" in second_body
+
+
+def test_fastapi_graph_chat_all_and_ego():
+    headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/graph/all?period=7d&ego_user=1&limit=100", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert "graph" in body
+        assert "graph_version" in body
 
 
 def test_fastapi_metrics_contract_authorized():

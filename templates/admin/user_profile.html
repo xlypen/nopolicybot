@@ -12,16 +12,32 @@
 </style>
 {% endblock %}
 {% block body %}
+<!-- СЕЛЕКТОР ЧАТА — ПЕРВЫМ, ВСЕГДА ВИДЕН -->
+<div id="profileChatSelectorBar" style="background:var(--bg-secondary);padding:12px 1.5rem;margin-bottom:1.5rem;border-radius:12px;border:1px solid var(--border-card);">
+  <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;max-width:1400px;margin:0 auto;">
+    <span style="font-weight:600;font-size:0.95rem;color:var(--text-secondary);">Чат для просмотра:</span>
+    <select id="profileChatSel" onchange="window.location.href='{{ url_for('admin_user_profile', user_id=user_id) }}?chat='+encodeURIComponent(this.value)" style="min-width:220px;padding:8px 12px;font-size:0.95rem;font-weight:600;border:1px solid var(--border-input);border-radius:8px;background:var(--bg-tertiary);color:var(--text-primary);cursor:pointer;">
+      <option value="all" {% if chat_id == 'all' or not chat_id %}selected{% endif %}>Все чаты</option>
+      {% for c in chats %}
+      <option value="{{ c.chat_id }}" {% if chat_id|string == (c.chat_id|string) %}selected{% endif %}>{{ c.title or c.chat_id }}</option>
+      {% endfor %}
+    </select>
+    <span style="font-size:0.85rem;color:var(--text-tertiary);">Данные профиля зависят от выбранного чата</span>
+  </div>
+</div>
+
 <div class="hero">
   <div class="header" style="margin-bottom: 6px;">
     <h1>Профиль пользователя</h1>
     <div class="actions">
-      <a class="btn btn-secondary" href="{{ url_for('admin_modern') }}">← Dashboard</a>
+      <a class="btn btn-secondary" href="{{ url_for('admin_modern') }}{% if chat_id %}?chat={{ chat_id }}{% endif %}">← Dashboard</a>
       <a class="btn btn-secondary" href="{{ url_for('user_detail', user_id=user_id, chat=chat_id) }}">Legacy detail</a>
       <a class="btn btn-secondary" href="{{ url_for('logout') }}">Выйти</a>
     </div>
   </div>
-  <div class="meta-line">ID: {{ user_id }} · Чат: {{ chat_id }} · Ранг: {{ rank_labels.get(u.get('rank'), u.get('rank')) }} · Тон: {{ effective_tone }}</div>
+  <div class="row" style="align-items:center;gap:1rem;flex-wrap:wrap;">
+    <span class="meta-line">ID: {{ user_id }} · Ранг: {{ rank_labels.get(u.get('rank'), u.get('rank')) }} · Тон: {{ effective_tone }}</span>
+  </div>
 </div>
 
 <div class="cards">
@@ -63,12 +79,12 @@
 
 <div class="card">
   <div class="title">Психологический портрет</div>
-  <div class="portrait-box">{{ u.get('portrait', 'Портрет пока не сформирован.') }}</div>
+  <div class="portrait-box" id="portraitBox"></div>
 </div>
 
 <div class="card" id="personalityCard">
   <div class="title">Структурированный профиль личности (OCEAN)</div>
-  <div class="row" style="margin-bottom:8px;">
+  <div class="row" style="margin-bottom:8px;flex-wrap:wrap;gap:8px;align-items:center;">
     <button class="btn btn-secondary" id="buildPersonalityBtn">Собрать структурированный портрет</button>
     <span id="personalityStatus" class="meta-line"></span>
   </div>
@@ -80,6 +96,7 @@
         <div id="darkTriadBars"></div>
       </div>
       <div id="driftTimeline" class="muted-box" style="margin-top:0.5rem;"></div>
+      <div id="driftChartWrap" style="display:none;margin-top:0.5rem;"><canvas id="driftHistoryChart" height="180"></canvas></div>
       <div style="margin-top:0.5rem;">
         <span id="reliabilityBadge" class="meta-line"></span>
         <a href="#" id="compareLink" class="btn btn-sm btn-secondary" style="margin-left:0.5rem;">Сравнить с другим</a>
@@ -120,6 +137,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/marked@15.0.0/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="{{ url_for('static', filename='js/graph_webgl_viz.js') }}"></script>
 <script src="{{ url_for('static', filename='js/graph_render_pipeline.js') }}"></script>
@@ -128,6 +146,13 @@
 (function () {
   const USER_ID = {{ user_id|tojson }};
   const CHAT_ID = {{ chat_id|tojson }};
+  const _rawPortrait = {{ u.get('portrait', 'Портрет пока не сформирован.')|tojson }};
+  const portraitBox = document.getElementById('portraitBox');
+  if (portraitBox && typeof marked !== 'undefined') {
+    portraitBox.innerHTML = marked.parse(String(_rawPortrait));
+  } else if (portraitBox) {
+    portraitBox.textContent = _rawPortrait;
+  }
   let graphData = {nodes: [], edges: [], meta: {}};
 
   function esc(text) {
@@ -268,8 +293,13 @@
     opts = opts || {};
     opts.headers = opts.headers || {};
     opts.headers["Content-Type"] = opts.headers["Content-Type"] || "application/json";
+    opts.credentials = opts.credentials || "same-origin";
     return fetch(url, opts).then(function (r) {
-      if (!r.ok) throw new Error("HTTP " + r.status);
+      if (!r.ok) {
+        var err = new Error("HTTP " + r.status);
+        err.status = r.status;
+        throw err;
+      }
       return r.json();
     });
   }
@@ -281,8 +311,9 @@
     if (loading) loading.style.display = "block";
     if (charts) charts.style.display = "none";
     if (empty) empty.style.display = "none";
+    var chatParam = (String(CHAT_ID).toLowerCase() === "all") ? "0" : String(CHAT_ID);
     try {
-      const body = await apiFetch("/api/v2/personality/user/" + encodeURIComponent(String(USER_ID)) + "?chat_id=" + encodeURIComponent(String(CHAT_ID)));
+      const body = await apiFetch("/api/v2/personality/user/" + encodeURIComponent(String(USER_ID)) + "?chat_id=" + encodeURIComponent(chatParam));
       if (!body.ok || !body.profile) {
         if (loading) loading.style.display = "none";
         if (empty) { empty.style.display = "block"; empty.textContent = "Нет данных. Нажмите «Собрать структурированный портрет»."; }
@@ -327,7 +358,14 @@
       loadVerify(profile);
     } catch (e) {
       if (loading) loading.style.display = "none";
-      if (empty) { empty.style.display = "block"; empty.innerHTML = "<span style='color:#ef4444;'>" + esc(e.message || e) + "</span>"; }
+      if (empty) {
+        empty.style.display = "block";
+        var msg = e.message || String(e);
+        if (e.status === 404) {
+          msg = "Портрет не найден. Нажмите «Собрать структурированный портрет».";
+        }
+        empty.innerHTML = "<span style='color:" + (e.status === 404 ? "var(--text-secondary)" : "#ef4444") + "'>" + esc(msg) + "</span>";
+      }
     }
   }
 
@@ -335,7 +373,8 @@
     const el = document.getElementById("reliabilityBadge");
     if (!el) return;
     try {
-      const body = await apiFetch("/api/v2/personality/user/" + encodeURIComponent(String(USER_ID)) + "/verify?chat_id=" + encodeURIComponent(String(CHAT_ID)));
+      var chatParam = (String(CHAT_ID).toLowerCase() === "all") ? "0" : String(CHAT_ID);
+      const body = await apiFetch("/api/v2/personality/user/" + encodeURIComponent(String(USER_ID)) + "/verify?chat_id=" + encodeURIComponent(chatParam));
       if (!body.ok || !body.verification) return;
       const v = body.verification;
       const badge = v.reliability_badge === "high" ? "🟢" : v.reliability_badge === "medium" ? "🟡" : "⚪";
@@ -345,11 +384,14 @@
     }
   }
 
+  let driftChart = null;
+
   async function loadDrift() {
     const el = document.getElementById("driftTimeline");
     if (!el) return;
     try {
-      const body = await apiFetch("/api/v2/personality/user/" + encodeURIComponent(String(USER_ID)) + "/drift?chat_id=" + encodeURIComponent(String(CHAT_ID)));
+      var chatParam = (String(CHAT_ID).toLowerCase() === "all") ? "0" : String(CHAT_ID);
+      const body = await apiFetch("/api/v2/personality/user/" + encodeURIComponent(String(USER_ID)) + "/drift?chat_id=" + encodeURIComponent(chatParam));
       if (!body.ok || !body.drift) {
         el.textContent = "Дрейф: недостаточно истории (нужно ≥2 профиля)";
         return;
@@ -359,9 +401,71 @@
     } catch (e) {
       el.textContent = "Дрейф: " + (e.message || e);
     }
+    loadDriftHistory();
+  }
+
+  async function loadDriftHistory() {
+    var chatParam = (String(CHAT_ID).toLowerCase() === "all") ? "0" : String(CHAT_ID);
+    var wrap = document.getElementById("driftChartWrap");
+    try {
+      var body = await apiFetch("/api/v2/personality/user/" + encodeURIComponent(String(USER_ID)) + "/drift-history?chat_id=" + encodeURIComponent(chatParam));
+      if (!body.ok || !Array.isArray(body.points) || body.points.length < 3) return;
+      var pts = body.points;
+      var labels = pts.map(function (p) { return p.date || ""; });
+      var scores = pts.map(function (p) { return Number(p.drift_score || 0); });
+      var alertIdxs = [];
+      pts.forEach(function (p, i) { if (p.alert) alertIdxs.push(i); });
+
+      if (wrap) wrap.style.display = "block";
+      var ctx = document.getElementById("driftHistoryChart");
+      if (!ctx || !window.Chart) return;
+      if (driftChart) driftChart.destroy();
+
+      var pointColors = scores.map(function (s, i) {
+        return alertIdxs.indexOf(i) >= 0 ? "#ef4444" : "rgb(59,130,246)";
+      });
+
+      driftChart = new Chart(ctx.getContext("2d"), {
+        type: "line",
+        data: {
+          labels: labels,
+          datasets: [{
+            label: "Drift score",
+            data: scores,
+            fill: true,
+            backgroundColor: "rgba(59,130,246,0.1)",
+            borderColor: "rgb(59,130,246)",
+            pointBackgroundColor: pointColors,
+            pointRadius: 5,
+            tension: 0.3
+          }]
+        },
+        options: {
+          scales: {
+            y: { min: 0, max: Math.max(0.5, Math.ceil(Math.max.apply(null, scores) * 10) / 10 + 0.1), title: { display: true, text: "Score" } },
+            x: { title: { display: true, text: "Дата" } }
+          },
+          plugins: {
+            annotation: undefined,
+            tooltip: {
+              callbacks: {
+                afterLabel: function (ctx) {
+                  var p = pts[ctx.dataIndex];
+                  if (p && p.alert_reason) return p.alert_reason;
+                  return "";
+                }
+              }
+            }
+          }
+        }
+      });
+    } catch (e) {
+      if (wrap) wrap.style.display = "none";
+    }
   }
 
   async function buildPersonality() {
+    var chatParam = (String(CHAT_ID).toLowerCase() === "all") ? "0" : String(CHAT_ID);
     const btn = document.getElementById("buildPersonalityBtn");
     const status = document.getElementById("personalityStatus");
     if (btn) btn.disabled = true;
@@ -369,7 +473,7 @@
     try {
       const body = await apiFetch("/api/v2/personality/build", {
         method: "POST",
-        body: JSON.stringify({ user_id: Number(USER_ID), chat_id: String(CHAT_ID) })
+        body: JSON.stringify({ user_id: Number(USER_ID), chat_id: chatParam === "0" ? "all" : String(CHAT_ID) })
       });
       if (!body.ok) throw new Error(body.error || "Ошибка");
       if (status) status.textContent = "Готово. Обновляю…";

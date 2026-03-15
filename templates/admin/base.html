@@ -5,14 +5,56 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}Nopolicybot Admin{% endblock %}</title>
   <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}?v=4">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/dark-mode.css') }}?v=4">
+  <script>
+    (function(){
+      var stored = localStorage.getItem('darkMode');
+      var isDark;
+      if (stored !== null) {
+        isDark = stored === 'true';
+      } else {
+        isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      }
+      if (isDark) document.documentElement.classList.add('dark-mode');
+    })();
+  </script>
   {% block head_extra %}{% endblock %}
 </head>
 <body class="admin-shell">
+  <nav id="adminNav" style="height:48px;display:flex;align-items:center;width:100%;font-family:inherit;">
+    <div style="max-width:1400px;margin:0 auto;width:100%;padding:0 24px;display:flex;align-items:center;gap:24px;">
+      <a href="/admin-modern" style="color:#fff;text-decoration:none;font-weight:600;font-size:14px;">Dashboard</a>
+      <a href="/admin/personality/clusters" style="color:#fff;text-decoration:none;font-weight:500;font-size:14px;">Кластеры</a>
+      <a href="/admin/personality/compare" style="color:#fff;text-decoration:none;font-weight:500;font-size:14px;">Сравнение</a>
+      <a href="/settings" style="color:#fff;text-decoration:none;font-weight:500;font-size:14px;">Настройки</a>
+      <a href="/logout" style="color:#fff;text-decoration:none;font-weight:500;font-size:14px;margin-left:auto;">Выйти</a>
+      <button id="darkModeToggle" type="button" style="background:none;border:1px solid rgba(255,255,255,0.3);color:#fff;padding:4px 10px;border-radius:6px;cursor:pointer;font-size:0.85rem;line-height:1;">T</button>
+    </div>
+  </nav>
   <div class="admin-wrap">
+    {% block breadcrumbs %}{% endblock %}
     {% block body %}{% endblock %}
   </div>
   <script src="{{ url_for('static', filename='js/admin-common.js') }}"></script>
+  <script>
+  (function(){
+    var btn = document.getElementById('darkModeToggle');
+    function applyTheme() {
+      var isDark = document.documentElement.classList.contains('dark-mode');
+      btn.textContent = isDark ? '\u2600\uFE0F' : '\uD83C\uDF19';
+      var nav = document.getElementById('adminNav');
+      if (nav) nav.style.background = isDark ? '#151929' : '#6366F1';
+    }
+    applyTheme();
+    btn.addEventListener('click', function() {
+      document.documentElement.classList.toggle('dark-mode');
+      var isDark = document.documentElement.classList.contains('dark-mode');
+      localStorage.setItem('darkMode', isDark ? 'true' : 'false');
+      applyTheme();
+    });
+  })();
+  </script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

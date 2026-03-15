@@ -18,7 +18,22 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
       - name: Static compile check
-        run: python -m compileall -q api services tests scripts admin_app.py bot.py
+        run: python -m compileall -q api services tests scripts admin_app.py bot.py utils
+      - name: Check routing map updated
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+            [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] && BASE="HEAD~1"
+          fi
+          ROUTES_CHANGED=$(git diff --name-only $BASE..HEAD 2>/dev/null | grep -cE "(admin_app\.py|api/routers|api/main\.py)" || echo "0")
+          MAP_CHANGED=$(git diff --name-only $BASE..HEAD 2>/dev/null | grep -c "docs/routing_map.md" || echo "0")
+          if [ "$ROUTES_CHANGED" -gt "0" ] && [ "$MAP_CHANGED" -eq "0" ]; then
+            echo "ERROR: Route files changed but docs/routing_map.md not updated"
+            echo "See docs/new_endpoint_checklist.md"
+            exit 1
+          fi
 
   test:
     needs: quality

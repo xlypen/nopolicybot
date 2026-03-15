@@ -248,6 +248,40 @@ for (var k = 0; k < _sTabs.length; k++) {
   })(_sTabs[k]);
 }
 _sShow('moderation');
+
+var _searchInput = document.getElementById('settings-search');
+var _searchActive = false;
+_searchInput.addEventListener('input', function() {
+  var q = this.value.trim().toLowerCase();
+  _searchActive = !!q;
+  if (!_searchActive) {
+    // restore tab view
+    for (var i = 0; i < _sPanels.length; i++) {
+      _sPanels[i].style.display = '';
+    }
+    var activeTab = document.querySelector('.section-tab.active');
+    _sShow(activeTab ? activeTab.getAttribute('data-section') : 'moderation');
+    var allRows = document.querySelectorAll('.setting-row');
+    for (var r = 0; r < allRows.length; r++) allRows[r].style.display = '';
+    var allCards = document.querySelectorAll('.settings-panel .card');
+    for (var c = 0; c < allCards.length; c++) allCards[c].style.display = '';
+    return;
+  }
+  // show all panels, filter rows
+  for (var i = 0; i < _sPanels.length; i++) _sPanels[i].style.display = 'block';
+  var cards = document.querySelectorAll('.settings-panel .card');
+  for (var ci = 0; ci < cards.length; ci++) {
+    var rows = cards[ci].querySelectorAll('.setting-row');
+    var anyVisible = false;
+    for (var ri = 0; ri < rows.length; ri++) {
+      var text = rows[ri].textContent.toLowerCase();
+      var match = text.includes(q);
+      rows[ri].style.display = match ? '' : 'none';
+      if (match) anyVisible = true;
+    }
+    cards[ci].style.display = anyVisible ? '' : 'none';
+  }
+});
 </script>
 <script>
 var _fcBtn = document.getElementById('btn-factcheck-clear-cache');

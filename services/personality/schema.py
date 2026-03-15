@@ -79,6 +79,14 @@ class PersonalityDrift(BaseModel):
     alert_reason: str = ""
 
 
+class ContextProfile(BaseModel):
+    """Mini-profile for a single topic (P-5)."""
+
+    messages_count: int = 0
+    ocean: dict[str, float] = Field(default_factory=dict)  # subset of OCEAN
+    conflict_tendency: float = Field(ge=0, le=1, default=0.5)
+
+
 class PersonalityProfile(BaseModel):
     """Structured personality profile — target schema from P-1."""
 
@@ -99,3 +107,4 @@ class PersonalityProfile(BaseModel):
     summary: str = ""
 
     ensemble_stats: EnsembleStats | None = None
+    context_profiles: dict[str, ContextProfile] = Field(default_factory=dict)

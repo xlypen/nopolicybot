@@ -10,6 +10,7 @@ from pathlib import Path
 from ai.client import get_client
 from openai import APIError, RateLimitError
 
+from services.personality.contextual import enrich_profile_with_context
 from services.personality.schema import PersonalityProfile
 
 logger = logging.getLogger(__name__)
@@ -155,7 +156,7 @@ def build_structured_profile_from_messages(
             data.setdefault("confidence", min(0.9, 0.5 + len(messages) / 500 * 0.2))
 
             profile = PersonalityProfile.model_validate(data)
-            return profile
+            return enrich_profile_with_context(profile, messages)
 
         except json.JSONDecodeError as e:
             last_error = f"Invalid JSON: {e}"

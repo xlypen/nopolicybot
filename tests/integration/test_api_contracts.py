@@ -79,7 +79,7 @@ def test_api_chat_mode_get_contract(monkeypatch):
     def _fake_proxy(path, method="GET", data=None):
         return fake_response, 200
 
-    monkeypatch.setattr(admin_app, "_proxy_to_api_v2", _fake_proxy)
+    monkeypatch.setattr(admin_app, "proxy_to_fastapi", _fake_proxy)
     with admin_app.app.test_client() as client:
         resp = client.get("/api/chat-mode?chat_id=123")
         assert resp.status_code == 200
@@ -96,7 +96,7 @@ def test_api_chat_mode_post_contract(monkeypatch):
     def _fake_proxy(path, method="GET", data=None):
         return fake_response, 200
 
-    monkeypatch.setattr(admin_app, "_proxy_to_api_v2", _fake_proxy)
+    monkeypatch.setattr(admin_app, "proxy_to_fastapi", _fake_proxy)
     with admin_app.app.test_client() as client:
         resp = client.post("/api/chat-mode", json={"chat_id": 123, "mode": "active"})
         assert resp.status_code == 200
@@ -139,7 +139,7 @@ def test_api_v2_graph_proxy_contract(monkeypatch):
     def _fake_proxy(path, method="GET", data=None):
         return fake_response, 200
 
-    monkeypatch.setattr(admin_app, "_proxy_to_api_v2", _fake_proxy)
+    monkeypatch.setattr(admin_app, "proxy_to_fastapi", _fake_proxy)
     with admin_app.app.test_client() as client:
         resp = client.get("/api/v2/graph/all?period=7d")
         assert resp.status_code == 200
@@ -156,7 +156,7 @@ def test_api_v2_admin_proxy_contract(monkeypatch):
     def _fake_proxy(path, method="GET", data=None):
         return fake_dashboard, 200
 
-    monkeypatch.setattr(admin_app, "_proxy_to_api_v2", _fake_proxy)
+    monkeypatch.setattr(admin_app, "proxy_to_fastapi", _fake_proxy)
     with admin_app.app.test_client() as client:
         resp = client.get("/api/v2/admin/dashboard?chat_id=all&days=30")
         assert resp.status_code == 200
@@ -281,7 +281,7 @@ def test_api_metrics_chat_health_contract(monkeypatch):
     def _fake_proxy(path, method="GET", data=None):
         return fake_response, 200
 
-    monkeypatch.setattr(admin_app, "_proxy_to_api_v2", _fake_proxy)
+    monkeypatch.setattr(admin_app, "proxy_to_fastapi", _fake_proxy)
     with admin_app.app.test_client() as client:
         resp = client.get("/api/metrics/chat/100/health?days=30")
         assert resp.status_code == 200
@@ -771,7 +771,7 @@ def test_api_portrait_classify_unknown_contract(monkeypatch):
     def _fake_proxy(path, method="GET", data=None):
         return fake_response, 200
 
-    monkeypatch.setattr(admin_app, "_proxy_to_api_v2", _fake_proxy)
+    monkeypatch.setattr(admin_app, "proxy_to_fastapi", _fake_proxy)
     with admin_app.app.test_client() as client:
         resp = client.post("/api/portrait-classify-unknown", json={"chat_id": 123})
         assert resp.status_code == 200

@@ -373,5 +373,8 @@ def test_fastapi_personality_build_contract():
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert body.get("ok") is False
-        assert "chat_id" in (body.get("error") or "").lower() or "all" in (body.get("error") or "").lower()
+        assert "ok" in body
+        # chat_id="all" теперь поддерживается (агрегат по всем чатам)
+        # ok=False при пустом архиве, ok=True при успешной сборке
+        if not body.get("ok"):
+            assert "error" in body

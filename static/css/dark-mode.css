@@ -1,0 +1,194 @@
+/* Dark mode overrides — loaded after admin.css */
+html.dark-mode {
+  --primary: #818CF8;
+  --primary-light: #A5B4FC;
+  --primary-dark: #6366F1;
+  --bg-primary: #0C0F1A;
+  --bg-secondary: #151929;
+  --bg-tertiary: #1C2035;
+  --bg-hover: #252A40;
+  --text-primary: #E2E8F0;
+  --text-secondary: #94A3B8;
+  --text-tertiary: #64748B;
+  --text-light: #475569;
+  --border: #2A3050;
+  --border-light: #1E2340;
+  --border-card: #2A3050;
+  --border-input: #3B4268;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.3);
+  --shadow-md: 0 4px 8px rgba(0,0,0,0.35);
+  --shadow-lg: 0 10px 30px rgba(0,0,0,0.5);
+  --bg-body: #0C0F1A;
+  --bg-card: #1C2035;
+  --bg-input: #151929;
+  --color-link: #A5B4FC;
+  --color-danger: #f87171;
+  --color-warn: #FBBF24;
+  --color-success: #34D399;
+}
+
+html.dark-mode body {
+  background: #0C0F1A;
+  color: #E2E8F0;
+}
+
+html.dark-mode .admin-shell {
+  background: #0C0F1A;
+}
+
+html.dark-mode .card,
+html.dark-mode .cards .card {
+  background: #1C2035;
+  border-color: #2A3050;
+}
+
+html.dark-mode .card:hover,
+html.dark-mode .cards .card:hover {
+  border-color: #818CF8;
+}
+
+html.dark-mode .card .title {
+  border-bottom-color: #2A3050;
+}
+
+html.dark-mode input,
+html.dark-mode select,
+html.dark-mode textarea {
+  background: #151929;
+  border-color: #3B4268;
+  color: #E2E8F0;
+}
+
+html.dark-mode input:focus,
+html.dark-mode select:focus,
+html.dark-mode textarea:focus {
+  border-color: #818CF8;
+  box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.15);
+  background: #1C2035;
+}
+
+html.dark-mode table thead {
+  background: #151929;
+}
+
+html.dark-mode table tbody tr {
+  border-bottom-color: #1E2340;
+}
+
+html.dark-mode table tbody tr:hover {
+  background: #252A40;
+}
+
+html.dark-mode table th {
+  color: #94A3B8;
+}
+
+html.dark-mode .btn-secondary {
+  background: #151929;
+  border-color: #2A3050;
+  color: #E2E8F0;
+  box-shadow: none;
+}
+
+html.dark-mode .btn-secondary:hover {
+  background: #252A40;
+  border-color: #818CF8;
+  color: #818CF8;
+}
+
+html.dark-mode .btn-danger-outline {
+  background: transparent;
+  color: #f87171;
+  border-color: #f87171;
+}
+
+html.dark-mode .toast {
+  background: #1C2035;
+  border-color: #2A3050;
+  color: #E2E8F0;
+}
+
+html.dark-mode .graph-node-panel,
+html.dark-mode .muted-box,
+html.dark-mode .graph-lab-box {
+  background: #151929;
+  border-color: #2A3050;
+}
+
+html.dark-mode .graph-lab-controls {
+  border-right-color: #2A3050;
+}
+
+html.dark-mode .graph-tab-switcher {
+  border-bottom-color: #2A3050;
+}
+
+html.dark-mode .tab-btn {
+  color: #94A3B8;
+}
+
+html.dark-mode .tab-btn:hover {
+  color: #E2E8F0;
+}
+
+html.dark-mode .tab-btn.active {
+  color: #818CF8;
+  border-bottom-color: #818CF8;
+}
+
+html.dark-mode a {
+  color: #A5B4FC;
+}
+
+html.dark-mode a:hover {
+  color: #C7D2FE;
+}
+
+html.dark-mode .topic-tag {
+  background: #151929;
+  border-color: #2A3050;
+  color: #E2E8F0;
+}
+
+html.dark-mode .rank-warning {
+  background: #1C1508;
+  border-color: #92400e;
+  color: #FBBF24;
+}
+
+html.dark-mode .rank-warning-critical {
+  background: #1C0808;
+  border-color: #991b1b;
+  color: #f87171;
+}
+
+html.dark-mode .portrait-box {
+  color: #E2E8F0;
+}
+
+html.dark-mode .portrait-box h2,
+html.dark-mode .portrait-box h3 {
+  color: #A5B4FC;
+}
+
+html.dark-mode .skeleton {
+  background: linear-gradient(90deg, #151929 25%, #252A40 50%, #151929 75%);
+  background-size: 200% 100%;
+}
+
+html.dark-mode .modal-box {
+  background: #1C2035;
+  color: #E2E8F0;
+}
+
+html.dark-mode ::-webkit-scrollbar-thumb {
+  background: #3B4268;
+}
+
+html.dark-mode ::-webkit-scrollbar-thumb:hover {
+  background: #64748B;
+}
+
+html.dark-mode nav {
+  background: #151929 !important;
+}

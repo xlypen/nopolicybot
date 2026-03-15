@@ -1239,7 +1239,7 @@ var payload={
   social_graph_realtime_interval_sec: Number(document.getElementById('sg-live-interval').value||90),
   social_graph_realtime_min_new_messages: Number(document.getElementById('sg-live-min-new').value||1)
 };
-fetch('{{ url_for("api_settings") }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+fetch('/api/v2/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
 .then(function(r){return r.json();})
 .then(function(d){
   if(d.ok){out.textContent='сохранено'; out.style.color='#4ade80'; setTimeout(function(){location.reload();}, 500);}

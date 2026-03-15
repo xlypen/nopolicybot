@@ -15,16 +15,31 @@
   <div class="title">Выберите двух пользователей</div>
   <div class="row" style="gap:1rem;flex-wrap:wrap;align-items:flex-end;">
     <div>
-      <label for="userA" class="meta-line">User A (ID)</label>
-      <input type="number" id="userA" value="{{ user_id_a }}" placeholder="ID пользователя" style="width:120px;padding:6px;">
+      <label for="userA" class="meta-line">Пользователь A</label>
+      <select id="userA" style="min-width:200px;padding:6px;">
+        <option value="">— выберите —</option>
+        {% for u in users %}
+        <option value="{{ u.id }}" {% if user_id_a == u.id %}selected{% endif %}>{{ u.name }} ({{ u.id }})</option>
+        {% endfor %}
+      </select>
     </div>
     <div>
-      <label for="userB" class="meta-line">User B (ID)</label>
-      <input type="number" id="userB" placeholder="ID пользователя" style="width:120px;padding:6px;">
+      <label for="userB" class="meta-line">Пользователь B</label>
+      <select id="userB" style="min-width:200px;padding:6px;">
+        <option value="">— выберите —</option>
+        {% for u in users %}
+        <option value="{{ u.id }}" {% if user_id_b == u.id %}selected{% endif %}>{{ u.name }} ({{ u.id }})</option>
+        {% endfor %}
+      </select>
     </div>
     <div>
-      <label for="chatId" class="meta-line">Chat ID</label>
-      <input type="text" id="chatId" value="{{ chat_id }}" placeholder="all или ID чата" style="width:100px;padding:6px;">
+      <label for="chatId" class="meta-line">Чат</label>
+      <select id="chatId" style="min-width:180px;padding:6px;">
+        <option value="all" {% if chat_id == 'all' or not chat_id %}selected{% endif %}>Все чаты</option>
+        {% for c in chats %}
+        <option value="{{ c.chat_id }}" {% if chat_id|string == (c.chat_id|string) %}selected{% endif %}>{{ c.title or c.chat_id }}</option>
+        {% endfor %}
+      </select>
     </div>
     <button class="btn btn-secondary" id="compareBtn">Сравнить</button>
   </div>
@@ -37,54 +52,123 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
 (function () {
+  var radarChart = null;
+  var OCEAN_KEYS = ["openness", "conscientiousness", "extraversion", "agreeableness", "neuroticism"];
+  var OCEAN_LABELS = ["Открытость", "Добросовестность", "Экстраверсия", "Доброжелательность", "Нейротизм"];
+
   function esc(t) { return String(t || "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"); }
   function apiFetch(url, opts) {
     opts = opts || {};
     opts.headers = opts.headers || {};
     opts.headers["Content-Type"] = opts.headers["Content-Type"] || "application/json";
+    opts.credentials = opts.credentials || "same-origin";
     return fetch(url, opts).then(function (r) {
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.json();
     });
   }
 
+  function renderRadar(canvasId, nameA, oceanA, nameB, oceanB) {
+    var ctx = document.getElementById(canvasId);
+    if (!ctx) return;
+    if (radarChart) { radarChart.destroy(); radarChart = null; }
+    var valuesA = OCEAN_KEYS.map(function (k) { return (oceanA[k] || 0) * 100; });
+    var valuesB = OCEAN_KEYS.map(function (k) { return (oceanB[k] || 0) * 100; });
+    radarChart = new Chart(ctx, {
+      type: "radar",
+      data: {
+        labels: OCEAN_LABELS,
+        datasets: [
+          {
+            label: nameA,
+            data: valuesA,
+            borderColor: "rgba(59,130,246,0.9)",
+            backgroundColor: "rgba(59,130,246,0.15)",
+            pointBackgroundColor: "rgba(59,130,246,1)",
+            borderWidth: 2
+          },
+          {
+            label: nameB,
+            data: valuesB,
+            borderColor: "rgba(249,115,22,0.9)",
+            backgroundColor: "rgba(249,115,22,0.15)",
+            pointBackgroundColor: "rgba(249,115,22,1)",
+            borderWidth: 2
+          }
+        ]
+      },
+      options: {
+        responsive: false,
+        scales: {
+          r: {
+            beginAtZero: true,
+            max: 100,
+            ticks: { stepSize: 20, backdropColor: "transparent" },
+            pointLabels: { font: { size: 12 } }
+          }
+        },
+        plugins: {
+          legend: { position: "bottom", labels: { padding: 16 } }
+        }
+      }
+    });
+  }
+
   document.getElementById("compareBtn").addEventListener("click", function () {
-    const ua = document.getElementById("userA").value.trim();
-    const ub = document.getElementById("userB").value.trim();
-    const chat = document.getElementById("chatId").value.trim() || "all";
+    var ua = document.getElementById("userA").value.trim();
+    var ub = document.getElementById("userB").value.trim();
+    var chat = document.getElementById("chatId").value.trim() || "all";
     if (!ua || !ub) {
-      alert("Укажите оба user ID");
+      alert("Выберите обоих пользователей");
       return;
     }
-    const btn = this;
+    if (ua === ub) {
+      alert("Выберите разных пользователей");
+      return;
+    }
+    var btn = this;
     btn.disabled = true;
     apiFetch("/api/v2/personality/compare", {
       method: "POST",
-      body: JSON.stringify({ user_id_a: parseInt(ua, 10), user_id_b: parseInt(ub, 10), chat_id: chat })
+      body: JSON.stringify({ user_id_a: parseInt(ua, 10), user_id_b: parseInt(ub, 10), chat_id: chat === "all" ? "all" : parseInt(chat, 10) })
     }).then(function (body) {
-      btn.disabled = false;
       if (!body.ok) throw new Error(body.error || "Ошибка");
-      const c = body.comparison || {};
-      const html = [
+      var c = body.comparison || {};
+      var chatParam = encodeURIComponent(chat);
+      var html = [
+        '<div style="text-align:center;margin-bottom:12px;"><canvas id="compareRadar" width="350" height="300"></canvas></div>',
         "<p><strong>" + esc(c.username_a || c.user_id_a) + "</strong> vs <strong>" + esc(c.username_b || c.user_id_b) + "</strong></p>",
         "<p>Схожесть: <strong>" + Number(c.similarity_score || 0).toFixed(2) + "</strong> (1 = идентичны)</p>",
         "<p class='meta-line'>Наиболее похожие: " + (c.most_similar_dimensions || []).join(", ") + "</p>",
         "<p class='meta-line'>Наиболее разные: " + (c.most_different_dimensions || []).join(", ") + "</p>",
         "<table style='margin-top:8px;'><tr><th>Измерение</th><th>Δ (B − A)</th></tr>",
         Object.entries(c.ocean_deltas || {}).map(function (kv) {
-          const label = { openness: "Открытость", conscientiousness: "Добросовестность", extraversion: "Экстраверсия", agreeableness: "Доброжелательность", neuroticism: "Нейротизм" }[kv[0]] || kv[0];
+          var label = { openness: "Открытость", conscientiousness: "Добросовестность", extraversion: "Экстраверсия", agreeableness: "Доброжелательность", neuroticism: "Нейротизм" }[kv[0]] || kv[0];
           return "<tr><td>" + esc(label) + "</td><td>" + Number(kv[1]).toFixed(3) + "</td></tr>";
         }).join(""),
         "</table>"
       ].join("");
       document.getElementById("compareContent").innerHTML = html;
       document.getElementById("compareResult").style.display = "block";
+
+      var nameA = c.username_a || c.user_id_a || ua;
+      var nameB = c.username_b || c.user_id_b || ub;
+      return Promise.all([
+        apiFetch("/api/v2/personality/user/" + encodeURIComponent(ua) + "?chat_id=" + chatParam),
+        apiFetch("/api/v2/personality/user/" + encodeURIComponent(ub) + "?chat_id=" + chatParam)
+      ]).then(function (profiles) {
+        var oceanA = (profiles[0].profile && profiles[0].profile.ocean) || {};
+        var oceanB = (profiles[1].profile && profiles[1].profile.ocean) || {};
+        renderRadar("compareRadar", nameA, oceanA, nameB, oceanB);
+      });
     }).catch(function (e) {
-      btn.disabled = false;
       document.getElementById("compareContent").innerHTML = "<span style='color:#ef4444;'>" + esc(e.message || e) + "</span>";
       document.getElementById("compareResult").style.display = "block";
+    }).finally(function () {
+      btn.disabled = false;
     });
   });
 })();

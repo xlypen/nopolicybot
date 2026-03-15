@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from statistics import mean, stdev
 
 from services.personality.builder import build_structured_profile_from_messages
+from services.personality.contextual import enrich_profile_with_context
 from services.personality.model_config import get_ensemble_models
 from services.personality.schema import (
     OCEAN_KEYS,
@@ -160,7 +161,7 @@ def build_ensemble_profile(
     final_confidence = base_confidence * agreement_score
 
     base = profiles[0]
-    return PersonalityProfile(
+    profile = PersonalityProfile(
         user_id=str(user_id),
         username=username or str(user_id),
         generated_at=base.generated_at or "",
@@ -180,3 +181,4 @@ def build_ensemble_profile(
             low_agreement_dimensions=low_agreement,
         ),
     )
+    return enrich_profile_with_context(profile, messages)

@@ -67,6 +67,7 @@ from services.schedulers import (
 )
 from services.marketing_metrics import record_message_event, record_signal_event
 from services.decision_engine import DecisionEngine, append_decision_event
+from services.personality.auto_build import check_and_trigger_build
 from db.engine import init_db
 from services.db_ingest import ingest_message_event
 from services.topic_policies import get_topic_label, resolve_topic_trigger
@@ -447,6 +448,7 @@ def add_to_history(
     CHAT_HISTORY[chat_id].append((user_name, text))
     if user_id is not None and text.strip():
         user_stats.record_chat_message(user_id, text, display_name or user_name, chat_id=chat_id, chat_title=chat_title)
+        check_and_trigger_build(user_id, chat_id)
 
 
 FRIENDLY_KEYWORDS = [

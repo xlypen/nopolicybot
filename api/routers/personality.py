@@ -11,7 +11,7 @@ from services.personality.comparison import (
     cluster_community,
     compare_two,
 )
-from services.personality.drift import calculate_drift
+from services.personality.drift import calculate_drift, calculate_drift_sync
 from services.personality.storage import (
     get_latest_profile,
     get_profile_history,
@@ -22,15 +22,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 router = APIRouter()
 
 
+def _parse_chat_id(raw: int | str) -> int:
+    """Parse chat_id: 'all' or 0 -> 0 (все чаты), иначе int."""
+    if raw == 0 or str(raw).strip().lower() == "all":
+        return 0
+    return int(raw)
+
+
 @router.get("/user/{user_id}")
 async def get_personality_profile(
     user_id: int = Path(..., ge=1),
-    chat_id: int = Query(..., description="Chat ID (required)"),
+    chat_id: int | str = Query(..., description="Chat ID or 'all' for aggregate"),
     session: AsyncSession = Depends(get_db_session),
     _auth=Depends(require_auth),
 ):
     """Get latest personality profile for user in chat."""
-    profile = await get_latest_profile(session, user_id, chat_id)
+    cid = _parse_chat_id(chat_id)
+    profile = await get_latest_profile(session, user_id, cid)
     if not profile:
         return {"ok": False, "error": "Profile not found", "profile": None}
     return {"ok": True, "profile": profile.model_dump(mode="json")}
@@ -39,17 +47,18 @@ async def get_personality_profile(
 @router.get("/user/{user_id}/history")
 async def get_personality_history(
     user_id: int = Path(..., ge=1),
-    chat_id: int = Query(..., description="Chat ID"),
+    chat_id: int | str = Query(..., description="Chat ID or 'all'"),
     limit: int = Query(default=10, ge=1, le=50),
     session: AsyncSession = Depends(get_db_session),
     _auth=Depends(require_auth),
 ):
     """Get profile history for drift analysis."""
-    profiles = await get_profile_history(session, user_id, chat_id, limit=limit)
+    cid = _parse_chat_id(chat_id)
+    profiles = await get_profile_history(session, user_id, cid, limit=limit)
     return {
         "ok": True,
         "user_id": user_id,
-        "chat_id": chat_id,
+        "chat_id": cid,
         "profiles": [p.model_dump(mode="json") for p in profiles],
     }
 
@@ -57,7 +66,7 @@ async def get_personality_history(
 @router.get("/user/{user_id}/verify")
 async def get_personality_verify(
     user_id: int = Path(..., ge=1),
-    chat_id: int = Query(..., description="Chat ID"),
+    chat_id: int | str = Query(..., description="Chat ID or 'all'"),
     session: AsyncSession = Depends(get_db_session),
     _auth=Depends(require_auth),
 ):
@@ -72,12 +81,13 @@ async def get_personality_verify(
     from services.marketing_metrics import get_user_metrics
     from user_stats import get_user_messages_archive
 
-    profile = await get_latest_profile(session, user_id, chat_id)
+    cid = _parse_chat_id(chat_id)
+    profile = await get_latest_profile(session, user_id, cid)
     if not profile:
         return {"ok": False, "error": "Profile not found", "verification": None}
 
-    messages = await asyncio.to_thread(get_user_messages_archive, user_id, chat_id)
-    metrics = await asyncio.to_thread(get_user_metrics, user_id, chat_id=chat_id, days=30)
+    messages = await asyncio.to_thread(get_user_messages_archive, user_id, None if cid == 0 else cid)
+    metrics = await asyncio.to_thread(get_user_metrics, user_id, chat_id=None if cid == 0 else cid, days=30)
 
     behavior = compute_behavioral_signals(messages, metrics)
     verification: VerificationResult = verify_profile(profile, behavior)
@@ -101,15 +111,53 @@ async def get_personality_verify(
 @router.get("/user/{user_id}/drift")
 async def get_personality_drift(
     user_id: int = Path(..., ge=1),
-    chat_id: int = Query(..., description="Chat ID"),
+    chat_id: int | str = Query(..., description="Chat ID or 'all'"),
     session: AsyncSession = Depends(get_db_session),
     _auth=Depends(require_auth),
 ):
     """Get drift between latest two profiles."""
-    drift = await calculate_drift(session, user_id, chat_id, emit_alert=False)
+    cid = _parse_chat_id(chat_id)
+    drift = await calculate_drift(session, user_id, cid, emit_alert=False)
     if not drift:
         return {"ok": False, "error": "Need at least 2 profiles for drift", "drift": None}
     return {"ok": True, "drift": drift.model_dump()}
+
+
+@router.get("/user/{user_id}/drift-history")
+async def get_drift_history(
+    user_id: int = Path(..., ge=1),
+    chat_id: int | str = Query(..., description="Chat ID or 'all'"),
+    days: int = Query(default=90, ge=7, le=365),
+    session: AsyncSession = Depends(get_db_session),
+    _auth=Depends(require_auth),
+):
+    """Return drift score timeline from profile history."""
+    cid = _parse_chat_id(chat_id)
+    profiles = await get_profile_history(session, user_id, cid, limit=20)
+    if len(profiles) < 2:
+        return {"ok": True, "user_id": user_id, "chat_id": cid, "points": []}
+
+    # Profiles come newest-first; reverse to chronological order for pairing
+    profiles_chrono = list(reversed(profiles))
+    points = []
+    for i in range(1, len(profiles_chrono)):
+        prev, curr = profiles_chrono[i - 1], profiles_chrono[i]
+        drift = calculate_drift_sync(
+            [curr, prev],
+            user_id=str(user_id),
+            chat_id=str(cid),
+        )
+        if drift is None:
+            continue
+        points.append({
+            "date": curr.generated_at[:10] if curr.generated_at else "",
+            "drift_score": drift.drift_score,
+            "significant_changes": drift.significant_changes,
+            "alert": drift.alert,
+            "alert_reason": drift.alert_reason,
+        })
+
+    return {"ok": True, "user_id": user_id, "chat_id": cid, "points": points}
 
 
 @router.post("/compare")
@@ -170,17 +218,22 @@ async def post_build_profile(
     from user_stats import get_user, get_user_messages_archive
 
     uid = body.get("user_id")
-    chat_id = body.get("chat_id")
-    if uid is None or chat_id is None:
+    chat_id_raw = body.get("chat_id")
+    if uid is None or chat_id_raw is None:
         return {"ok": False, "error": "Need user_id, chat_id"}
-    if str(chat_id).strip().lower() == "all":
-        return {"ok": False, "error": "For build, specify a concrete chat_id (not 'all')"}
     try:
-        uid, chat_id = int(uid), int(chat_id)
+        uid = int(uid)
     except (TypeError, ValueError):
-        return {"ok": False, "error": "Invalid user_id or chat_id"}
+        return {"ok": False, "error": "Invalid user_id"}
+    if str(chat_id_raw).strip().lower() == "all":
+        chat_id = 0  # 0 = все чаты
+    else:
+        try:
+            chat_id = int(chat_id_raw)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Invalid chat_id"}
 
-    messages = await asyncio.to_thread(get_user_messages_archive, uid, chat_id)
+    messages = await asyncio.to_thread(get_user_messages_archive, uid, None if chat_id == 0 else chat_id)
     if not messages:
         return {"ok": False, "error": "No messages in archive"}
 

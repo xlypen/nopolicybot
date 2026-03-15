@@ -175,7 +175,7 @@ if(modeSelect){
     var val=modeSelect.value;
     updateDesc();
     if(val==='custom')return;
-    apiFetch('{{ url_for("api_chat_mode") }}',{method:'POST',body:{chat_id:{{ current_chat|tojson }},mode:val}})
+    apiFetch('/api/v2/chat-mode',{method:'POST',body:{chat_id:{{ current_chat|tojson }},mode:val}})
     .then(function(){lastApplied=val;showFeedback('✓ Применено',true);})
     .catch(function(e){modeSelect.value=lastApplied;updateDesc();showFeedback(e.message||'Ошибка',false);});
   });
@@ -183,7 +183,7 @@ if(modeSelect){
 document.getElementById('btn-reset-political').onclick=function(){
 var btn=this, span=document.getElementById('reset-result');
 btn.disabled=true; span.textContent='…';
-apiFetch('{{ url_for("api_reset_political_count") }}',{method:'POST',body:{chat_id:'{{ current_chat }}'}})
+apiFetch('/api/v2/reset-political-count',{method:'POST',body:{chat_id:'{{ current_chat }}'}})
 .then(function(){span.textContent='Готово.';span.className='text-sm text-success';btn.disabled=false})
 .catch(function(e){span.textContent=e.message||'Ошибка';span.className='text-sm text-danger';btn.disabled=false});
 };

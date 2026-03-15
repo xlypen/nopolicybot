@@ -8,6 +8,7 @@ uvicorn>=0.30.0
 websockets>=16.0
 python-dotenv>=1.0.0
 flask>=3.0.0
+bcrypt>=4.0.0
 flask-cors>=6.0.2
 flask-caching>=2.0.0
 networkx

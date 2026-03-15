@@ -94,15 +94,26 @@ async def get_db_counts_async() -> dict:
 
 
 def _safe_db_counts() -> tuple[dict, str | None]:
+    """Get DB counts from sync or async context. When event loop is running, run in thread to avoid nesting."""
     try:
-        asyncio.get_running_loop()
-        return {"users": 0, "messages": 0, "edges": 0, "chats": 0}, "running_event_loop"
+        loop = asyncio.get_running_loop()
     except RuntimeError:
-        pass
-    try:
-        return asyncio.run(_db_counts()), None
-    except Exception as e:
-        return {"users": 0, "messages": 0, "edges": 0, "chats": 0}, str(e)
+        loop = None
+
+    def _run_db_counts() -> tuple[dict, str | None]:
+        try:
+            counts = asyncio.run(_db_counts())
+            return counts, None
+        except Exception as e:
+            return {"users": 0, "messages": 0, "edges": 0, "chats": 0}, str(e)
+
+    if loop is not None:
+        # In async context: run in thread to avoid "cannot run event loop while another is running"
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_run_db_counts)
+            return future.result(timeout=15)
+    return _run_db_counts()
 
 
 def export_snapshot(*args, **kwargs) -> dict:

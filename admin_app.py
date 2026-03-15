@@ -27,6 +27,8 @@ MODE_CHANGES_LOG = Path(__file__).resolve().parent / "mode_changes.log"
 
 from flask import Flask, Response, g, jsonify, redirect, render_template, request, session, url_for
 from flask_cors import CORS
+
+from utils.fastapi_proxy import proxy_response, proxy_to_fastapi
 from dotenv import load_dotenv
 from config.validate_secrets import validate_secrets
 from routes.social_graph_routes import register_social_graph_routes
@@ -101,13 +103,57 @@ def _origin_allowed(origin: str) -> bool:
 
 
 app = Flask(__name__)
-app.secret_key = os.getenv("ADMIN_SECRET_KEY", "")
+_secret_key = os.getenv("ADMIN_SECRET_KEY", "").strip()
+if not _secret_key:
+    _secret_key_file = Path(__file__).resolve().parent / "data" / ".flask_secret_key"
+    if _secret_key_file.is_file():
+        _secret_key = _secret_key_file.read_text(encoding="utf-8").strip()
+    if not _secret_key:
+        _secret_key = secrets.token_hex(32)
+        _secret_key_file.parent.mkdir(parents=True, exist_ok=True)
+        _secret_key_file.write_text(_secret_key, encoding="utf-8")
+        logger.info("Generated new ADMIN_SECRET_KEY → data/.flask_secret_key")
+app.secret_key = _secret_key
 CORS(app, resources={r"/api/*": {"origins": _allowed_origins()}}, allow_headers=["*"], methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 mimetypes.add_type("text/javascript", ".jsx")
 USERS_JSON = Path(__file__).resolve().parent / "user_stats.json"
 # Пароль админа: из переменной окружения или из файла (задаётся один раз через страницу /login)
 _ADMIN_PASSWORD_ENV = (os.getenv("ADMIN_PASSWORD") or "").strip()
 ADMIN_PASSWORD_FILE = Path(__file__).resolve().parent / "data" / "admin_password.txt"
+
+try:
+    import bcrypt as _bcrypt
+except ImportError:
+    _bcrypt = None
+
+
+def _hash_password(plain: str) -> str:
+    if _bcrypt:
+        return _bcrypt.hashpw(plain.encode("utf-8"), _bcrypt.gensalt()).decode("utf-8")
+    return plain
+
+
+def _check_password(plain: str, stored: str) -> bool:
+    if _bcrypt and stored.startswith("$2"):
+        return _bcrypt.checkpw(plain.encode("utf-8"), stored.encode("utf-8"))
+    return hmac.compare_digest(plain, stored)
+
+
+def _migrate_plaintext_password():
+    """One-time migration: hash plaintext password file if it exists and is not already hashed."""
+    if not ADMIN_PASSWORD_FILE.is_file() or not _bcrypt:
+        return
+    try:
+        stored = ADMIN_PASSWORD_FILE.read_text(encoding="utf-8").strip()
+        if stored and not stored.startswith("$2"):
+            hashed = _hash_password(stored)
+            ADMIN_PASSWORD_FILE.write_text(hashed, encoding="utf-8")
+            logger.info("Migrated admin password to bcrypt hash")
+    except Exception as e:
+        logger.warning("Password migration failed: %s", e)
+
+
+_migrate_plaintext_password()
 
 
 def _get_admin_password() -> str:
@@ -233,6 +279,14 @@ def _monitoring_after_request(response):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: https://api.telegram.org; "
+        "connect-src 'self' ws: wss:;",
+    )
     if bool(request.is_secure):
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response
@@ -538,58 +592,21 @@ def _portrait_building_ids_from_api() -> list[str]:
         return []
 
 
-def _proxy_to_api_v2(path: str, method: str = "GET", data: bytes | None = None) -> tuple[dict | bytes, int]:
-    """Проксирует запрос в FastAPI v2 с Bearer-токеном. Возвращает (body, status_code)."""
-    token = str(os.getenv("ADMIN_TOKEN", "")).strip()
-    if not token:
-        return {"ok": False, "error": "ADMIN_TOKEN not configured"}, 503
-    port = int(os.getenv("API_PORT", "8001"))
-    url = f"http://127.0.0.1:{port}{path}"
-    if request.query_string:
-        url += "?" + request.query_string.decode("utf-8")
-    req = urllib.request.Request(url, method=method, data=data)
-    req.add_header("Authorization", f"Bearer {token}")
-    req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = resp.read()
-            try:
-                return json.loads(body.decode("utf-8")), resp.status
-            except json.JSONDecodeError:
-                return body, resp.status
-    except urllib.error.HTTPError as e:
-        try:
-            body = json.loads(e.read().decode("utf-8"))
-        except Exception:
-            body = {"ok": False, "error": str(e)}
-        return body, e.code
-    except OSError as e:
-        return {"ok": False, "error": str(e)}, 502
-
-
 @app.route("/api/v2/graph/<path:subpath>", methods=["GET"])
 @login_required
 def api_v2_graph_proxy(subpath: str):
     """Прокси graph API в FastAPI v2 (сессия админа проверена)."""
-    path = f"/api/v2/graph/{subpath}"
-    body, status = _proxy_to_api_v2(path)
-    if isinstance(body, dict):
-        return jsonify(body), status
-    return Response(body, status=status, mimetype="application/json")
+    body, status = proxy_to_fastapi(f"/api/v2/graph/{subpath}")
+    return proxy_response(body, status)
 
 
 @app.route("/api/v2/admin/<path:subpath>", methods=["GET", "POST"])
 @login_required
 def api_v2_admin_proxy(subpath: str):
     """Прокси admin API в FastAPI v2 (сессия админа проверена)."""
-    path = f"/api/v2/admin/{subpath}"
-    data = None
-    if request.method == "POST" and request.is_json:
-        data = request.get_data()
-    body, status = _proxy_to_api_v2(path, method=request.method, data=data)
-    if isinstance(body, dict):
-        return jsonify(body), status
-    return Response(body, status=status, mimetype="application/json")
+    data = request.get_data() if request.method == "POST" and request.is_json else None
+    body, status = proxy_to_fastapi(f"/api/v2/admin/{subpath}", method=request.method, data=data)
+    return proxy_response(body, status)
 
 
 @app.route("/api/v2/recommendations", methods=["GET"])
@@ -598,77 +615,52 @@ def api_v2_admin_proxy(subpath: str):
 def api_v2_recommendations_proxy(subpath: str = ""):
     """Прокси recommendations API в FastAPI v2."""
     path = f"/api/v2/recommendations/{subpath}".rstrip("/") if subpath else "/api/v2/recommendations"
-    data = None
-    if request.method == "POST" and request.is_json:
-        data = request.get_data()
-    body, status = _proxy_to_api_v2(path, method=request.method, data=data)
-    if isinstance(body, dict):
-        return jsonify(body), status
-    return Response(body, status=status, mimetype="application/json")
+    data = request.get_data() if request.method == "POST" and request.is_json else None
+    body, status = proxy_to_fastapi(path, method=request.method, data=data)
+    return proxy_response(body, status)
 
 
 @app.route("/api/v2/predictive/<path:subpath>", methods=["GET"])
 @login_required
 def api_v2_predictive_proxy(subpath: str):
     """Прокси predictive API в FastAPI v2."""
-    path = f"/api/v2/predictive/{subpath}"
-    body, status = _proxy_to_api_v2(path)
-    if isinstance(body, dict):
-        return jsonify(body), status
-    return Response(body, status=status, mimetype="application/json")
+    body, status = proxy_to_fastapi(f"/api/v2/predictive/{subpath}")
+    return proxy_response(body, status)
 
 
 @app.route("/api/v2/storage/<path:subpath>", methods=["GET", "POST"])
 @login_required
 def api_v2_storage_proxy(subpath: str):
     """Прокси storage API в FastAPI v2."""
-    path = f"/api/v2/storage/{subpath}"
-    data = None
-    if request.method == "POST" and request.is_json:
-        data = request.get_data()
-    body, status = _proxy_to_api_v2(path, method=request.method, data=data)
-    if isinstance(body, dict):
-        return jsonify(body), status
-    return Response(body, status=status, mimetype="application/json")
+    data = request.get_data() if request.method == "POST" and request.is_json else None
+    body, status = proxy_to_fastapi(f"/api/v2/storage/{subpath}", method=request.method, data=data)
+    return proxy_response(body, status)
 
 
 @app.route("/api/v2/metrics/<path:subpath>", methods=["GET"])
 @login_required
 def api_v2_metrics_proxy(subpath: str):
     """Прокси metrics API (user, chat health) в FastAPI v2."""
-    path = f"/api/v2/metrics/{subpath}"
-    body, status = _proxy_to_api_v2(path)
-    if isinstance(body, dict):
-        return jsonify(body), status
-    return Response(body, status=status, mimetype="application/json")
+    body, status = proxy_to_fastapi(f"/api/v2/metrics/{subpath}")
+    return proxy_response(body, status)
 
 
 @app.route("/api/v2/personality/<path:subpath>", methods=["GET", "POST"])
 @login_required
 def api_v2_personality_proxy(subpath: str):
     """Прокси personality API в FastAPI v2."""
-    path = f"/api/v2/personality/{subpath}"
-    data = None
-    if request.method == "POST" and request.is_json:
-        data = request.get_data()
-    body, status = _proxy_to_api_v2(path, method=request.method, data=data)
-    if isinstance(body, dict):
-        return jsonify(body), status
-    return Response(body, status=status, mimetype="application/json")
+    data = request.get_data() if request.method == "POST" and request.is_json else None
+    body, status = proxy_to_fastapi(f"/api/v2/personality/{subpath}", method=request.method, data=data)
+    return proxy_response(body, status)
 
 
 @app.route("/api/v2/portrait/<path:subpath>", methods=["GET", "POST"])
 @login_required
 def api_v2_portrait_proxy(subpath: str):
     """Прокси portrait API в FastAPI v2."""
-    path = f"/api/v2/portrait/{subpath}"
-    data = None
-    if request.method == "POST" and request.is_json:
-        data = request.get_data()
-    body, status = _proxy_to_api_v2(path, method=request.method, data=data)
-    if isinstance(body, dict):
-        return jsonify(body), status
-    return Response(body, status=status, mimetype="application/json")
+    data = request.get_data() if request.method == "POST" and request.is_json else None
+    body, status = proxy_to_fastapi(f"/api/v2/portrait/{subpath}", method=request.method, data=data)
+    return proxy_response(body, status)
 
 
 @app.route("/api/v2/settings", methods=["GET", "POST"])
@@ -677,14 +669,9 @@ def api_v2_portrait_proxy(subpath: str):
 @login_required
 def api_v2_settings_proxy():
     """Прокси settings/chat-mode/reset-political-count в FastAPI v2."""
-    path = request.path
-    data = None
-    if request.method == "POST" and request.is_json:
-        data = request.get_data()
-    body, status = _proxy_to_api_v2(path, method=request.method, data=data)
-    if isinstance(body, dict):
-        return jsonify(body), status
-    return Response(body, status=status, mimetype="application/json")
+    data = request.get_data() if request.method == "POST" and request.is_json else None
+    body, status = proxy_to_fastapi(request.path, method=request.method, data=data)
+    return proxy_response(body, status)
 
 
 @app.route("/api/monitoring/metrics")
@@ -734,7 +721,7 @@ def login():
             if len(new_pw) >= 6:
                 try:
                     ADMIN_PASSWORD_FILE.parent.mkdir(parents=True, exist_ok=True)
-                    ADMIN_PASSWORD_FILE.write_text(new_pw, encoding="utf-8")
+                    ADMIN_PASSWORD_FILE.write_text(_hash_password(new_pw), encoding="utf-8")
                     session["admin_logged_in"] = True
                     session.pop("login_csrf_token", None)
                     return redirect(url_for("admin"))
@@ -748,12 +735,20 @@ def login():
         return render_template("login.html", set_password=True, error=error, csrf_token=csrf_token), status
 
     if request.method == "POST":
-        if request.form.get("password") == pw:
+        entered = (request.form.get("password") or "").strip()
+        if _check_password(entered, pw):
             session["admin_logged_in"] = True
             session.pop("login_csrf_token", None)
+            session.pop("_login_attempts", None)
             return redirect(url_for("admin"))
-        error = "Неверный пароль."
-        status = 401
+        attempts = session.get("_login_attempts", 0) + 1
+        session["_login_attempts"] = attempts
+        if attempts >= 5:
+            error = "Слишком много попыток. Подождите и попробуйте снова."
+            status = 429
+        else:
+            error = "Неверный пароль."
+            status = 401
     return render_template("login.html", set_password=False, error=error, csrf_token=csrf_token), status
 
 
@@ -850,15 +845,61 @@ def admin_user_profile(user_id):
         return "Пользователь не найден", 404
 
     from services.portrait_image import PORTRAIT_IMAGES_DIR
+    from user_stats import get_chats, get_user_archive_by_chat
     portrait_path = PORTRAIT_IMAGES_DIR / f"{uid}.png"
     portrait_exists = portrait_path.exists()
     my_connections, _my_chat_ids = _collect_user_connections(user_id=uid, chat_id=chat_int, limit=25)
+
+    # Чаты: из get_chats() + чаты пользователя из архива (если get_chats пуст)
+    data = _load_users()
+    chats_data = (data or {}).get("chats") or {}
+    chats_list = get_chats() or []
+    if not chats_list:
+        archive_by_chat = get_user_archive_by_chat(uid)
+        for cid in sorted(archive_by_chat.keys(), key=lambda x: (x == "unknown", str(x))):
+            if cid == "unknown":
+                continue
+            c = chats_data.get(str(cid), {})
+            try:
+                cid_int = int(cid)
+            except (ValueError, TypeError):
+                cid_int = cid
+            chats_list.append({"chat_id": cid_int, "title": c.get("title") or str(cid)})
+    # Fallback: если всё ещё пусто — взять все чаты из data.chats
+    if not chats_list and chats_data:
+        for cid, c in chats_data.items():
+            if str(cid).strip() and str(cid) != "unknown":
+                try:
+                    cid_int = int(cid)
+                except (ValueError, TypeError):
+                    continue
+                chats_list.append({"chat_id": cid_int, "title": c.get("title") or str(cid)})
+    else:
+        # Добавить чаты из архива пользователя, которых нет в get_chats
+        archive_by_chat = get_user_archive_by_chat(uid)
+        existing_ids = {str(c["chat_id"]) for c in chats_list}
+        for cid in archive_by_chat:
+            if cid != "unknown" and cid not in existing_ids:
+                c = chats_data.get(str(cid), {})
+                try:
+                    cid_int = int(cid)
+                except (ValueError, TypeError):
+                    cid_int = cid
+                chats_list.append({"chat_id": cid_int, "title": c.get("title") or str(cid)})
+
+    # Всегда добавить текущий chat_id из URL (при переходе из рейтинга и т.д.)
+    if chat_id and chat_id != "all" and str(chat_id).lstrip("-").isdigit():
+        existing_ids = {str(c["chat_id"]) for c in chats_list}
+        if str(chat_id) not in existing_ids:
+            c = chats_data.get(str(chat_id), {})
+            chats_list.append({"chat_id": int(chat_id), "title": c.get("title") or str(chat_id)})
 
     return render_template(
         "admin/user_profile.html",
         user_id=str(uid),
         u=u,
         chat_id=chat_id,
+        chats=chats_list,
         rank_labels=RANK_LABELS,
         effective_tone=_get_effective_tone(u),
         my_connections=my_connections,
@@ -871,20 +912,32 @@ def admin_user_profile(user_id):
 @login_required
 def admin_personality_clusters():
     """Карта кластеров по личности (P-7)."""
+    from user_stats import get_chats
     chat_id = request.args.get("chat_id", "all")
-    return render_template("admin/personality_clusters.html", chat_id=chat_id)
+    return render_template("admin/personality_clusters.html", chat_id=chat_id, chats=get_chats())
 
 
 @app.route("/admin/personality/compare")
 @login_required
 def admin_personality_compare():
     """Карточка сравнения двух пользователей (P-7)."""
+    from user_stats import get_chats
     user_id_a = request.args.get("user_id_a", "")
+    user_id_b = request.args.get("user_id_b", "")
     chat_id = request.args.get("chat_id", "all")
+    data = _load_users()
+    users_raw = data.get("users", {}) or {}
+    users_list = sorted(
+        [{"id": uid, "name": u.get("display_name") or uid} for uid, u in users_raw.items()],
+        key=lambda x: x["name"].lower(),
+    )
     return render_template(
         "admin/personality_compare.html",
         user_id_a=user_id_a,
+        user_id_b=user_id_b,
         chat_id=chat_id,
+        users=users_list,
+        chats=get_chats(),
     )
 
 
@@ -1164,7 +1217,7 @@ def settings():
 def api_settings():
     """Legacy proxy -> /api/v2/settings."""
     path = "/api/v2/settings"
-    body, status = _proxy_to_api_v2(path, method=request.method, data=request.get_data() if request.method == "POST" else None)
+    body, status = proxy_to_fastapi(path, method=request.method, data=request.get_data() if request.method == "POST" else None)
     return (jsonify(body), status) if isinstance(body, dict) else (Response(body, status=status, mimetype="application/json"), status)
 
 
@@ -1175,7 +1228,7 @@ def api_chat_mode():
     path = "/api/v2/chat-mode"
     if request.method == "GET" and request.query_string:
         path += "?" + request.query_string.decode("utf-8")
-    body, status = _proxy_to_api_v2(path, method=request.method, data=request.get_data() if request.method == "POST" else None)
+    body, status = proxy_to_fastapi(path, method=request.method, data=request.get_data() if request.method == "POST" else None)
     return (jsonify(body), status) if isinstance(body, dict) else (Response(body, status=status, mimetype="application/json"), status)
 
 
@@ -1420,7 +1473,7 @@ def chat_analysis_page(chat_id):
 @login_required
 def api_portrait_from_storage():
     """Legacy proxy -> /api/v2/portrait/portrait-from-storage."""
-    body, status = _proxy_to_api_v2("/api/v2/portrait/portrait-from-storage", method="POST", data=request.get_data())
+    body, status = proxy_to_fastapi("/api/v2/portrait/portrait-from-storage", method="POST", data=request.get_data())
     return (jsonify(body), status) if isinstance(body, dict) else (Response(body, status=status, mimetype="application/json"), status)
 
 
@@ -1428,7 +1481,7 @@ def api_portrait_from_storage():
 @login_required
 def api_portrait_classify_unknown():
     """Legacy proxy -> /api/v2/portrait/portrait-classify-unknown."""
-    body, status = _proxy_to_api_v2("/api/v2/portrait/portrait-classify-unknown", method="POST", data=request.get_data())
+    body, status = proxy_to_fastapi("/api/v2/portrait/portrait-classify-unknown", method="POST", data=request.get_data())
     return (jsonify(body), status) if isinstance(body, dict) else (Response(body, status=status, mimetype="application/json"), status)
 
 
@@ -2169,7 +2222,7 @@ def api_metrics_user(user_id: str):
     path = f"/api/v2/metrics/user/{user_id}"
     if request.query_string:
         path += "?" + request.query_string.decode("utf-8")
-    body, status = _proxy_to_api_v2(path)
+    body, status = proxy_to_fastapi(path)
     return (jsonify(body), status) if isinstance(body, dict) else (Response(body, status=status, mimetype="application/json"), status)
 
 
@@ -2180,7 +2233,7 @@ def api_metrics_chat_health(chat_id: str):
     path = f"/api/v2/metrics/chat/{chat_id}/health"
     if request.query_string:
         path += "?" + request.query_string.decode("utf-8")
-    body, status = _proxy_to_api_v2(path)
+    body, status = proxy_to_fastapi(path)
     return (jsonify(body), status) if isinstance(body, dict) else (Response(body, status=status, mimetype="application/json"), status)
 
 
@@ -2728,7 +2781,7 @@ def api_log_tail():
     path = "/api/v2/admin/log-tail"
     if request.query_string:
         path += "?" + request.query_string.decode("utf-8")
-    body, status = _proxy_to_api_v2(path)
+    body, status = proxy_to_fastapi(path)
     return (jsonify(body), status) if isinstance(body, dict) else (Response(body, status=status, mimetype="application/json"), status)
 
 
@@ -2737,7 +2790,7 @@ def api_log_tail():
 def api_prompts():
     """Legacy proxy -> /api/v2/admin/prompts."""
     path = "/api/v2/admin/prompts"
-    body, status = _proxy_to_api_v2(path, method=request.method, data=request.get_data() if request.method != "GET" else None)
+    body, status = proxy_to_fastapi(path, method=request.method, data=request.get_data() if request.method != "GET" else None)
     return (jsonify(body), status) if isinstance(body, dict) else (Response(body, status=status, mimetype="application/json"), status)
 
 
@@ -2746,7 +2799,7 @@ def api_prompts():
 def api_topic_policies():
     """Legacy proxy -> /api/v2/admin/topic-policies."""
     path = "/api/v2/admin/topic-policies"
-    body, status = _proxy_to_api_v2(path, method=request.method, data=request.get_data() if request.method != "GET" else None)
+    body, status = proxy_to_fastapi(path, method=request.method, data=request.get_data() if request.method != "GET" else None)
     return (jsonify(body), status) if isinstance(body, dict) else (Response(body, status=status, mimetype="application/json"), status)
 
 

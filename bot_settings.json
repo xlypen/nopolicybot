@@ -89,6 +89,15 @@
   "content_digest_send_enabled": false,
   "content_digest_interval_hours": 24,
   "content_digest_chat_id": 0,
+  "primary_moderation_topic": "politics",
+  "retention_auto_dm_enabled": false,
+  "retention_auto_dm_interval_sec": 3600,
+  "retention_auto_dm_limit_per_run": 3,
+  "retention_auto_dm_min_churn_risk": 0.72,
+  "retention_auto_dm_cooldown_hours": 24,
+  "retention_auto_dm_text": "Мы давно тебя не видели. Заходи в чат, нам важна твоя точка зрения.",
+  "churn_detection_enabled": true,
+  "churn_check_interval_sec": 3600,
   "factcheck_enabled": false,
   "factcheck_min_interval_sec": 300,
   "factcheck_max_text_len": 500,
@@ -99,6 +108,16 @@
       "reactions_1_5_mode": "reaction_only",
       "style_active_frequency": "every_other",
       "style_beast_frequency": "every_other",
+      "min_context_lines": 5,
+      "min_context_lines_1_5": 1
+    },
+    "chat_123": {
+      "msgs_before_react": 3,
+      "reactions_political_1_5": true,
+      "reactions_1_5_mode": "random",
+      "style_active_frequency": "every",
+      "style_beast_frequency": "every",
+      "moderation_force_style": "active",
       "min_context_lines": 5,
       "min_context_lines_1_5": 1
     }

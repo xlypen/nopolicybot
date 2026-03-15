@@ -233,6 +233,9 @@
         <option value="churn">отток</option>
       </select>
     </div>
+    <div style="margin-bottom:8px;">
+      <input type="text" id="leaderboardSearch" placeholder="Поиск по имени..." style="width:100%;padding:6px 10px;border:1px solid var(--border-input);border-radius:6px;">
+    </div>
     <div style="overflow:auto;max-height:260px;">
       <table style="width:100%;border-collapse:collapse;">
         <thead>
@@ -1140,7 +1143,12 @@ async function loadAdminCommunity(chat) {
     rows.innerHTML = '<li>Связующие участники не найдены.</li>';
     return;
   }
-  rows.innerHTML = bridge.slice(0, 8).map((u) => `<li>${esc(u.username || u.user_id)} · ${fmt(u.betweenness, 3)}</li>`).join('');
+  rows.innerHTML = bridge.slice(0, 8).map((u) => {
+    const uid = Number(u.user_id || 0);
+    const name = esc(u.username || u.user_id);
+    const link = Number.isFinite(uid) ? `<a href="${userProfileUrl(uid, chat)}">${name}</a>` : name;
+    return `<li>${link} · ${fmt(u.betweenness, 3)}</li>`;
+  }).join('');
 }
 
 async function loadAdminLeaderboard(chat) {
@@ -1685,6 +1693,14 @@ document.getElementById('labPredictConflicts').addEventListener('click', () => {
 });
 
 document.getElementById('chatSel').addEventListener('change', () => {
+  const chat = document.getElementById('chatSel').value;
+  const url = new URL(window.location.href);
+  if (chat && chat !== 'all') {
+    url.searchParams.set('chat', chat);
+  } else {
+    url.searchParams.delete('chat');
+  }
+  window.history.replaceState({}, '', url.toString());
   _selectedGraphNodeId = null;
   _selectedGraphNodeSnapshot = null;
   renderGraphNodePanel(null);
@@ -1704,10 +1720,35 @@ document.getElementById('leaderboardMetricSel').addEventListener('change', () =>
   const chat = document.getElementById('chatSel').value;
   loadAdminLeaderboard(chat).catch(() => {});
 });
+document.getElementById('leaderboardSearch').addEventListener('input', function() {
+  const q = this.value.trim().toLowerCase();
+  const rows = document.querySelectorAll('#leaderboardRows tr');
+  for (const row of rows) {
+    const text = row.textContent.toLowerCase();
+    row.style.display = (!q || text.includes(q)) ? '' : 'none';
+  }
+});
 document.getElementById('analyticsPanelSel').addEventListener('change', () => {
   const chat = document.getElementById('chatSel').value;
   loadAdminPanel(chat).catch(() => {});
 });
+
+// Восстановить выбранный чат из URL (?chat=...) при переходе из профиля
+(function () {
+  const params = new URLSearchParams(window.location.search);
+  const chatFromUrl = params.get('chat');
+  if (chatFromUrl) {
+    const chatSel = document.getElementById('chatSel');
+    if (chatSel) {
+      let opt = Array.from(chatSel.options || []).find(o => String(o.value) === String(chatFromUrl));
+      if (!opt && chatFromUrl !== 'all') {
+        opt = new Option(chatFromUrl, chatFromUrl, false, true);
+        chatSel.add(opt);
+      }
+      if (opt) chatSel.value = chatFromUrl;
+    }
+  }
+})();
 
 setGraphTab('graph-view');
 loadAndRender().catch(() => {});

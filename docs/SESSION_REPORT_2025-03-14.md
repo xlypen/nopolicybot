@@ -42,9 +42,13 @@
 
 ---
 
-## Не исправлено (по желанию)
+## Исправлено: интеграционные тесты
 
-- Три падающих интеграционных теста в `tests/integration/test_api_contracts.py`: chat_mode, metrics chat_health, portrait classify
+- `test_api_chat_mode_get_contract`, `test_api_chat_mode_post_contract`
+- `test_api_metrics_chat_health_contract`
+- `test_api_portrait_classify_unknown_contract`
+
+**Причина:** Legacy-маршруты проксируют в FastAPI v2; тесты мокали сервисы, но вызывался прокси. **Решение:** мокать `_proxy_to_api_v2` вместо bot_settings/marketing_metrics/user_stats.
 
 ---
 

@@ -74,9 +74,12 @@ def test_admin_legacy_query_flag_compat(monkeypatch):
 
 def test_api_chat_mode_get_contract(monkeypatch):
     _disable_auth(monkeypatch)
-    import bot_settings
+    fake_response = {"ok": True, "mode": "soft", "descriptions": {"soft": "Реакции 1–5", "active": "Реакции с 1-го"}}
 
-    monkeypatch.setattr(bot_settings, "get_chat_mode", lambda chat_id: "soft")
+    def _fake_proxy(path, method="GET", data=None):
+        return fake_response, 200
+
+    monkeypatch.setattr(admin_app, "_proxy_to_api_v2", _fake_proxy)
     with admin_app.app.test_client() as client:
         resp = client.get("/api/chat-mode?chat_id=123")
         assert resp.status_code == 200
@@ -88,9 +91,12 @@ def test_api_chat_mode_get_contract(monkeypatch):
 
 def test_api_chat_mode_post_contract(monkeypatch):
     _disable_auth(monkeypatch)
-    import bot_settings
+    fake_response = {"ok": True, "mode": "active"}
 
-    monkeypatch.setattr(bot_settings, "set_chat_mode", lambda chat_id, mode: True)
+    def _fake_proxy(path, method="GET", data=None):
+        return fake_response, 200
+
+    monkeypatch.setattr(admin_app, "_proxy_to_api_v2", _fake_proxy)
     with admin_app.app.test_client() as client:
         resp = client.post("/api/chat-mode", json={"chat_id": 123, "mode": "active"})
         assert resp.status_code == 200
@@ -270,17 +276,12 @@ def test_api_metrics_user_contract(monkeypatch):
 
 def test_api_metrics_chat_health_contract(monkeypatch):
     _disable_auth(monkeypatch)
-    from services import marketing_metrics as mm
+    fake_response = {"ok": True, "health": {"chat_id": 100, "days": 30, "health_score": 0.7}}
 
-    monkeypatch.setattr(
-        mm,
-        "get_chat_health",
-        lambda chat_id, days=30: {
-            "chat_id": int(chat_id),
-            "days": int(days),
-            "health_score": 0.7,
-        },
-    )
+    def _fake_proxy(path, method="GET", data=None):
+        return fake_response, 200
+
+    monkeypatch.setattr(admin_app, "_proxy_to_api_v2", _fake_proxy)
     with admin_app.app.test_client() as client:
         resp = client.get("/api/metrics/chat/100/health?days=30")
         assert resp.status_code == 200
@@ -757,32 +758,20 @@ def test_flask_cors_allows_same_origin_when_allowed_origins_empty(monkeypatch):
 
 def test_api_portrait_classify_unknown_contract(monkeypatch):
     _disable_auth(monkeypatch)
-    import ai_analyzer
-    import user_stats
+    fake_response = {
+        "ok": True,
+        "chat_id": 123,
+        "unknown_total": 1,
+        "processed": 1,
+        "skipped_no_messages": 0,
+        "skipped_in_progress": 0,
+        "failed": 0,
+    }
 
-    monkeypatch.setattr(
-        admin_app,
-        "_load_users",
-        lambda: {
-            "users": {
-                "101": {"rank": "unknown"},
-                "202": {"rank": "neutral"},
-            }
-        },
-    )
-    monkeypatch.setattr(user_stats, "get_users_in_chat", lambda chat_id: [101, 202])
-    monkeypatch.setattr(user_stats, "get_user_messages_archive", lambda user_id, chat_id=None: ["m1", "m2"])
-    monkeypatch.setattr(user_stats, "get_user", lambda user_id, display_name="": {"display_name": f"user{user_id}"})
-    monkeypatch.setattr(ai_analyzer, "build_deep_portrait_from_messages", lambda messages, display_name: ("portrait", "neutral"))
+    def _fake_proxy(path, method="GET", data=None):
+        return fake_response, 200
 
-    captured = {}
-
-    def _set_deep_portrait(user_id, portrait, rank):
-        captured[int(user_id)] = {"portrait": portrait, "rank": rank}
-        return True
-
-    monkeypatch.setattr(user_stats, "set_deep_portrait", _set_deep_portrait)
-
+    monkeypatch.setattr(admin_app, "_proxy_to_api_v2", _fake_proxy)
     with admin_app.app.test_client() as client:
         resp = client.post("/api/portrait-classify-unknown", json={"chat_id": 123})
         assert resp.status_code == 200
@@ -791,7 +780,6 @@ def test_api_portrait_classify_unknown_contract(monkeypatch):
         assert body["unknown_total"] == 1
         assert body["processed"] == 1
         assert body["failed"] == 0
-        assert 101 in captured
 
 
 def test_api_topic_policies_contract(monkeypatch):

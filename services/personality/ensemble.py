@@ -8,6 +8,7 @@ from statistics import mean, stdev
 from services.personality.builder import build_structured_profile_from_messages
 from services.personality.model_config import get_ensemble_models
 from services.personality.schema import (
+    OCEAN_KEYS,
     CommunicationProfile,
     DarkTriad,
     DarkTriadTrait,
@@ -19,8 +20,6 @@ from services.personality.schema import (
 )
 
 logger = logging.getLogger(__name__)
-
-OCEAN_KEYS = ["openness", "conscientiousness", "extraversion", "agreeableness", "neuroticism"]
 LOW_AGREEMENT_THRESHOLD = 0.25
 
 

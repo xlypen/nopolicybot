@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+OCEAN_KEYS = ["openness", "conscientiousness", "extraversion", "agreeableness", "neuroticism"]
+
 
 class OceanTraits(BaseModel):
     """Big Five (OCEAN) — float 0.0–1.0."""
@@ -62,6 +64,19 @@ class EnsembleStats(BaseModel):
     models_used: list[str] = Field(default_factory=list)
     agreement_score: float = Field(ge=0, le=1, default=0.0)
     low_agreement_dimensions: list[str] = Field(default_factory=list)
+
+
+class PersonalityDrift(BaseModel):
+    """Drift between two personality profiles (P-4)."""
+
+    user_id: str = ""
+    chat_id: str = ""
+    period: str = ""
+    deltas: dict[str, float] = Field(default_factory=dict)
+    significant_changes: list[str] = Field(default_factory=list)
+    drift_score: float = Field(ge=0, le=1, default=0.0)
+    alert: bool = False
+    alert_reason: str = ""
 
 
 class PersonalityProfile(BaseModel):

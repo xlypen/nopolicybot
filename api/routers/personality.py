@@ -1,5 +1,7 @@
 """Personality API — profile, history, drift, compare, clusters (P-6)."""
 
+import asyncio
+
 from fastapi import APIRouter, Body, Depends, Path, Query
 
 from api.dependencies import get_db_session, require_auth
@@ -107,6 +109,54 @@ async def post_compare(
             "most_different_dimensions": result.most_different_dimensions,
         },
     }
+
+
+@router.post("/build")
+async def post_build_profile(
+    body: dict = Body(default_factory=dict),
+    session: AsyncSession = Depends(get_db_session),
+    _auth=Depends(require_auth),
+):
+    """
+    Build and save structured personality profile from messages.
+    Body: { "user_id": int, "chat_id": int }
+    """
+    from services.personality.ensemble import build_ensemble_profile
+    from services.personality.storage import save_profile
+    from user_stats import get_user, get_user_messages_archive
+
+    uid = body.get("user_id")
+    chat_id = body.get("chat_id")
+    if uid is None or chat_id is None:
+        return {"ok": False, "error": "Need user_id, chat_id"}
+    if str(chat_id).strip().lower() == "all":
+        return {"ok": False, "error": "For build, specify a concrete chat_id (not 'all')"}
+    try:
+        uid, chat_id = int(uid), int(chat_id)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "Invalid user_id or chat_id"}
+
+    messages = await asyncio.to_thread(get_user_messages_archive, uid, chat_id)
+    if not messages:
+        return {"ok": False, "error": "No messages in archive"}
+
+    u = await asyncio.to_thread(get_user, uid)
+    username = str(u.get("display_name") or uid)
+
+    profile = await asyncio.to_thread(
+        build_ensemble_profile,
+        messages=messages,
+        user_id=uid,
+        username=username,
+        period_days=30,
+        chat_description="Telegram chat",
+    )
+    if not profile:
+        return {"ok": False, "error": "Profile build failed"}
+
+    await save_profile(session, uid, chat_id, profile)
+    await session.commit()
+    return {"ok": True, "messages_analyzed": len(messages), "profile": profile.model_dump(mode="json")}
 
 
 @router.get("/community/{chat_id}/clusters")

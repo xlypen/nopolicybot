@@ -66,6 +66,26 @@
   <div class="portrait-box">{{ u.get('portrait', 'Портрет пока не сформирован.') }}</div>
 </div>
 
+<div class="card" id="personalityCard">
+  <div class="title">Структурированный профиль личности (OCEAN)</div>
+  <div class="row" style="margin-bottom:8px;">
+    <button class="btn btn-secondary" id="buildPersonalityBtn">Собрать структурированный портрет</button>
+    <span id="personalityStatus" class="meta-line"></span>
+  </div>
+  <div id="personalityContent">
+    <div id="personalityLoading" class="meta-line">Загрузка…</div>
+    <div id="personalityCharts" style="display:none;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem;">
+        <div><canvas id="oceanRadarChart" width="280" height="240"></canvas></div>
+        <div id="darkTriadBars"></div>
+      </div>
+      <div id="driftTimeline" class="muted-box" style="margin-top:0.5rem;"></div>
+      <div style="margin-top:0.5rem;"><a href="#" id="compareLink" class="btn btn-sm btn-secondary">Сравнить с другим пользователем</a></div>
+    </div>
+    <div id="personalityEmpty" style="display:none;" class="meta-line">Нет данных. Нажмите «Собрать структурированный портрет».</div>
+  </div>
+</div>
+
 <div class="card">
   <div class="title">Личный граф (ego)</div>
   <div class="row">
@@ -97,6 +117,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="{{ url_for('static', filename='js/graph_webgl_viz.js') }}"></script>
 <script src="{{ url_for('static', filename='js/graph_render_pipeline.js') }}"></script>
 <script type="module" src="{{ url_for('static', filename='js/graph_visualizations.jsx') }}"></script>
@@ -237,6 +258,114 @@
   document.getElementById("buildPortraitBtn").addEventListener("click", function () {
     buildPortrait().catch(function () {});
   });
+
+  let oceanChart = null;
+
+  function apiFetch(url, opts) {
+    opts = opts || {};
+    opts.headers = opts.headers || {};
+    opts.headers["Content-Type"] = opts.headers["Content-Type"] || "application/json";
+    return fetch(url, opts).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    });
+  }
+
+  async function loadPersonality() {
+    const loading = document.getElementById("personalityLoading");
+    const charts = document.getElementById("personalityCharts");
+    const empty = document.getElementById("personalityEmpty");
+    if (loading) loading.style.display = "block";
+    if (charts) charts.style.display = "none";
+    if (empty) empty.style.display = "none";
+    try {
+      const body = await apiFetch("/api/v2/personality/user/" + encodeURIComponent(String(USER_ID)) + "?chat_id=" + encodeURIComponent(String(CHAT_ID)));
+      if (!body.ok || !body.profile) {
+        if (loading) loading.style.display = "none";
+        if (empty) { empty.style.display = "block"; empty.textContent = "Нет данных. Нажмите «Собрать структурированный портрет»."; }
+        return;
+      }
+      const profile = body.profile;
+      if (loading) loading.style.display = "none";
+      if (charts) charts.style.display = "block";
+
+      const ocean = profile.ocean || {};
+      const labels = ["Открытость", "Добросовестность", "Экстраверсия", "Доброжелательность", "Нейротизм"];
+      const keys = ["openness", "conscientiousness", "extraversion", "agreeableness", "neuroticism"];
+      const values = keys.map(function (k) { return Number(ocean[k] || 0.5) * 100; });
+
+      const ctx = document.getElementById("oceanRadarChart");
+      if (ctx && window.Chart) {
+        if (oceanChart) oceanChart.destroy();
+        oceanChart = new Chart(ctx.getContext("2d"), {
+          type: "radar",
+          data: {
+            labels: labels,
+            datasets: [{ label: "OCEAN", data: values, fill: true, backgroundColor: "rgba(59,130,246,0.2)", borderColor: "rgb(59,130,246)", pointBackgroundColor: "rgb(59,130,246)" }]
+          },
+          options: { scales: { r: { min: 0, max: 100 } } }
+        });
+      }
+
+      const dt = profile.dark_triad || {};
+      const dtHtml = ["narcissism", "machiavellianism", "psychopathy"].map(function (k) {
+        const t = dt[k] || {};
+        const score = Number(t.score || 0) * 100;
+        const label = k === "narcissism" ? "Нарциссизм" : k === "machiavellianism" ? "Макиавеллизм" : "Психопатия";
+        return "<div style='margin-bottom:6px;'><div class='meta-line' style='margin-bottom:2px;'>" + esc(label) + " (" + (t.label || "low") + ")</div><div style='height:8px;background:var(--bg-input);border-radius:4px;overflow:hidden;'><div style='height:100%;width:" + Math.min(100, score) + "%;background:#8b5cf6;'></div></div></div>";
+      }).join("");
+      const dtEl = document.getElementById("darkTriadBars");
+      if (dtEl) dtEl.innerHTML = "<div class='meta-line' style='margin-bottom:6px;'>Dark Triad</div>" + dtHtml;
+
+      const compareLink = document.getElementById("compareLink");
+      if (compareLink) compareLink.href = "/admin/personality/compare?user_id_a=" + encodeURIComponent(String(USER_ID)) + "&chat_id=" + encodeURIComponent(String(CHAT_ID));
+
+      loadDrift();
+    } catch (e) {
+      if (loading) loading.style.display = "none";
+      if (empty) { empty.style.display = "block"; empty.innerHTML = "<span style='color:#ef4444;'>" + esc(e.message || e) + "</span>"; }
+    }
+  }
+
+  async function loadDrift() {
+    const el = document.getElementById("driftTimeline");
+    if (!el) return;
+    try {
+      const body = await apiFetch("/api/v2/personality/user/" + encodeURIComponent(String(USER_ID)) + "/drift?chat_id=" + encodeURIComponent(String(CHAT_ID)));
+      if (!body.ok || !body.drift) {
+        el.textContent = "Дрейф: недостаточно истории (нужно ≥2 профиля)";
+        return;
+      }
+      const d = body.drift;
+      el.innerHTML = "<strong>Дрейф</strong> " + (d.period || "") + " · score: " + Number(d.drift_score || 0).toFixed(2) + (d.alert ? " <span style='color:#f59e0b;'>⚠</span>" : "") + "<br><span class='meta-line'>" + esc(d.alert_reason || "—") + "</span>";
+    } catch (e) {
+      el.textContent = "Дрейф: " + (e.message || e);
+    }
+  }
+
+  async function buildPersonality() {
+    const btn = document.getElementById("buildPersonalityBtn");
+    const status = document.getElementById("personalityStatus");
+    if (btn) btn.disabled = true;
+    if (status) status.textContent = "Сборка…";
+    try {
+      const body = await apiFetch("/api/v2/personality/build", {
+        method: "POST",
+        body: JSON.stringify({ user_id: Number(USER_ID), chat_id: String(CHAT_ID) })
+      });
+      if (!body.ok) throw new Error(body.error || "Ошибка");
+      if (status) status.textContent = "Готово. Обновляю…";
+      await loadPersonality();
+      if (status) status.textContent = "";
+    } catch (e) {
+      if (status) status.textContent = "Ошибка: " + (e.message || e);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  document.getElementById("buildPersonalityBtn").addEventListener("click", function () { buildPersonality().catch(function () {}); });
+  loadPersonality().catch(function () {});
 
   loadUserGraph().catch(function () {});
   loadUserMetrics().catch(function () {});

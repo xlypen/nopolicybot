@@ -867,6 +867,27 @@ def admin_user_profile(user_id):
     )
 
 
+@app.route("/admin/personality/clusters")
+@login_required
+def admin_personality_clusters():
+    """Карта кластеров по личности (P-7)."""
+    chat_id = request.args.get("chat_id", "all")
+    return render_template("admin/personality_clusters.html", chat_id=chat_id)
+
+
+@app.route("/admin/personality/compare")
+@login_required
+def admin_personality_compare():
+    """Карточка сравнения двух пользователей (P-7)."""
+    user_id_a = request.args.get("user_id_a", "")
+    chat_id = request.args.get("chat_id", "all")
+    return render_template(
+        "admin/personality_compare.html",
+        user_id_a=user_id_a,
+        chat_id=chat_id,
+    )
+
+
 @app.route("/admin")
 @login_required
 def admin():

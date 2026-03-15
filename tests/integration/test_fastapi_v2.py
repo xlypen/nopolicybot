@@ -345,3 +345,17 @@ def test_fastapi_personality_compare_contract():
             assert "comparison" in body
         else:
             assert "error" in body
+
+
+def test_fastapi_personality_build_contract():
+    headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v2/personality/build",
+            json={"user_id": 1, "chat_id": "all"},
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is False
+        assert "chat_id" in (body.get("error") or "").lower() or "all" in (body.get("error") or "").lower()

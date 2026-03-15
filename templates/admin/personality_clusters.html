@@ -1,0 +1,69 @@
+{% extends "admin/base.html" %}
+{% block title %}Кластеры личности{% endblock %}
+{% block body %}
+<div class="hero">
+  <div class="header" style="margin-bottom: 6px;">
+    <h1>Кластеры личности по чату</h1>
+    <div class="actions">
+      <a class="btn btn-secondary" href="{{ url_for('admin_modern') }}">← Dashboard</a>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="title">Выберите чат</div>
+  <div class="row" style="gap:1rem;align-items:flex-end;">
+    <div>
+      <label for="chatId" class="meta-line">Chat ID</label>
+      <input type="text" id="chatId" value="{{ chat_id }}" placeholder="ID чата" style="width:140px;padding:6px;">
+    </div>
+    <button class="btn btn-secondary" id="loadBtn">Загрузить кластеры</button>
+  </div>
+</div>
+
+<div id="clustersResult" class="card" style="display:none;">
+  <div class="title">Кластеры</div>
+  <div id="clustersContent"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  function esc(t) { return String(t || "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"); }
+  document.getElementById("loadBtn").addEventListener("click", function () {
+    const chat = document.getElementById("chatId").value.trim();
+    if (!chat) { alert("Укажите chat_id"); return; }
+    const btn = this;
+    btn.disabled = true;
+    fetch("/api/v2/personality/community/" + encodeURIComponent(chat) + "/clusters")
+      .then(function (r) { return r.json(); })
+      .then(function (body) {
+        btn.disabled = false;
+        if (!body.ok) throw new Error(body.error || body.message || "Ошибка");
+        const clusters = body.clusters || [];
+        if (!clusters.length) {
+          document.getElementById("clustersContent").innerHTML = "<p class='meta-line'>Нет кластеров (нужно ≥2 профилей в чате).</p>";
+        } else {
+          const html = clusters.map(function (c) {
+            const users = (c.user_ids || []).map(function (uid) {
+              const name = (c.usernames || {})[String(uid)] || uid;
+              return "<a href='/admin/user/" + esc(uid) + "?chat=" + encodeURIComponent(chat) + "'>" + esc(name) + "</a>";
+            }).join(", ");
+            const ocean = c.centroid_ocean || {};
+            const oceanStr = Object.entries(ocean).map(function (kv) { return kv[0] + ": " + Number(kv[1]).toFixed(2); }).join(" · ");
+            return "<div style='margin-bottom:1rem;padding:8px;border:1px solid var(--border-card);border-radius:8px;'><strong>Кластер " + c.cluster_id + "</strong> (" + c.size + " чел.)<br><span class='meta-line'>" + users + "</span><br><span class='meta-line' style='font-size:0.8rem;'>" + esc(oceanStr) + "</span></div>";
+          }).join("");
+          document.getElementById("clustersContent").innerHTML = html;
+        }
+        document.getElementById("clustersResult").style.display = "block";
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        document.getElementById("clustersContent").innerHTML = "<span style='color:#ef4444;'>" + esc(e.message || e) + "</span>";
+        document.getElementById("clustersResult").style.display = "block";
+      });
+  });
+})();
+</script>
+{% endblock %}

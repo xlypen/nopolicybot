@@ -2,7 +2,7 @@
 # File: models.cpython-312.pyc (Python 3.12)
 
 from datetime import datetime
-from sqlalchemy import BigInteger, Boolean, Column, Float, Index, Integer, JSON, Text, TIMESTAMP
+from sqlalchemy import BigInteger, Boolean, Column, Float, Index, Integer, JSON, String, Text, TIMESTAMP
 from sqlalchemy.orm import DeclarativeBase
 
 class Base(DeclarativeBase):
@@ -70,4 +70,19 @@ class ChatSettings(Base):
     __tablename__ = 'chat_settings'
     chat_id = Column(BigInteger, primary_key = True)
     settings = Column(JSON, nullable = False, default = dict)
+
+
+class PersonalityProfileRow(Base):
+    """Structured personality profile (P-1) — OCEAN, Dark Triad, communication."""
+    __tablename__ = 'personality_profiles'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, nullable=False)
+    chat_id = Column(BigInteger, nullable=False)
+    generated_at = Column(TIMESTAMP, nullable=False)
+    period_days = Column(Integer, nullable=False)
+    messages_analyzed = Column(Integer, nullable=False)
+    confidence = Column(Float, nullable=False)
+    profile_json = Column(JSON, nullable=False)
+    model_version = Column(String(50), nullable=False)
+    __table_args__ = (Index('idx_personality_profiles_user_chat', 'user_id', 'chat_id', 'generated_at'),)
 

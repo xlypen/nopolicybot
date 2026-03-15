@@ -347,6 +347,22 @@ def test_fastapi_personality_compare_contract():
             assert "error" in body
 
 
+def test_fastapi_personality_verify_contract():
+    headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/personality/user/1/verify?chat_id=100", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "ok" in body
+        if body.get("ok"):
+            assert "verification" in body
+            v = body.get("verification") or {}
+            assert "reliability_badge" in v
+            assert v["reliability_badge"] in ("high", "medium", "low")
+        else:
+            assert "error" in body
+
+
 def test_fastapi_personality_build_contract():
     headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
     with TestClient(app) as client:

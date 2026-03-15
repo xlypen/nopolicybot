@@ -80,7 +80,10 @@
         <div id="darkTriadBars"></div>
       </div>
       <div id="driftTimeline" class="muted-box" style="margin-top:0.5rem;"></div>
-      <div style="margin-top:0.5rem;"><a href="#" id="compareLink" class="btn btn-sm btn-secondary">Сравнить с другим пользователем</a></div>
+      <div style="margin-top:0.5rem;">
+        <span id="reliabilityBadge" class="meta-line"></span>
+        <a href="#" id="compareLink" class="btn btn-sm btn-secondary" style="margin-left:0.5rem;">Сравнить с другим</a>
+      </div>
     </div>
     <div id="personalityEmpty" style="display:none;" class="meta-line">Нет данных. Нажмите «Собрать структурированный портрет».</div>
   </div>
@@ -321,9 +324,24 @@
       if (compareLink) compareLink.href = "/admin/personality/compare?user_id_a=" + encodeURIComponent(String(USER_ID)) + "&chat_id=" + encodeURIComponent(String(CHAT_ID));
 
       loadDrift();
+      loadVerify(profile);
     } catch (e) {
       if (loading) loading.style.display = "none";
       if (empty) { empty.style.display = "block"; empty.innerHTML = "<span style='color:#ef4444;'>" + esc(e.message || e) + "</span>"; }
+    }
+  }
+
+  async function loadVerify(profile) {
+    const el = document.getElementById("reliabilityBadge");
+    if (!el) return;
+    try {
+      const body = await apiFetch("/api/v2/personality/user/" + encodeURIComponent(String(USER_ID)) + "/verify?chat_id=" + encodeURIComponent(String(CHAT_ID)));
+      if (!body.ok || !body.verification) return;
+      const v = body.verification;
+      const badge = v.reliability_badge === "high" ? "🟢" : v.reliability_badge === "medium" ? "🟡" : "⚪";
+      el.textContent = badge + " Надёжность: " + v.reliability_badge + " (correlation " + Number(v.correlation_score || 0).toFixed(2) + ")";
+    } catch (e) {
+      el.textContent = "";
     }
   }
 

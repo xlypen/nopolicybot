@@ -54,6 +54,50 @@ async def get_personality_history(
     }
 
 
+@router.get("/user/{user_id}/verify")
+async def get_personality_verify(
+    user_id: int = Path(..., ge=1),
+    chat_id: int = Query(..., description="Chat ID"),
+    session: AsyncSession = Depends(get_db_session),
+    _auth=Depends(require_auth),
+):
+    """Verify profile against observed behavior (P-9)."""
+    from services.personality.storage import get_latest_profile
+    from services.personality.verification import (
+        BehavioralSignals,
+        VerificationResult,
+        compute_behavioral_signals,
+        verify_profile,
+    )
+    from services.marketing_metrics import get_user_metrics
+    from user_stats import get_user_messages_archive
+
+    profile = await get_latest_profile(session, user_id, chat_id)
+    if not profile:
+        return {"ok": False, "error": "Profile not found", "verification": None}
+
+    messages = await asyncio.to_thread(get_user_messages_archive, user_id, chat_id)
+    metrics = await asyncio.to_thread(get_user_metrics, user_id, chat_id=chat_id, days=30)
+
+    behavior = compute_behavioral_signals(messages, metrics)
+    verification: VerificationResult = verify_profile(profile, behavior)
+
+    return {
+        "ok": True,
+        "verification": {
+            "correlation_score": verification.correlation_score,
+            "reliability_badge": verification.reliability_badge,
+            "matched_dimensions": verification.matched_dimensions,
+            "mismatched_dimensions": verification.mismatched_dimensions,
+        },
+        "behavior": {
+            "message_count": behavior.message_count,
+            "conflict_ratio": round(behavior.conflict_ratio, 3),
+            "avg_message_length": round(behavior.avg_message_length, 1),
+        },
+    }
+
+
 @router.get("/user/{user_id}/drift")
 async def get_personality_drift(
     user_id: int = Path(..., ge=1),

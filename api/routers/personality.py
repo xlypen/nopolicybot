@@ -1,8 +1,10 @@
-"""Personality API — profile, history, drift, compare, clusters (P-6)."""
+"""Personality API — profile, history, drift, compare, clusters, portrait generation."""
 
 import asyncio
+import logging
 
 from fastapi import APIRouter, Body, Depends, Path, Query
+from fastapi.responses import Response
 
 from api.dependencies import get_db_session, require_auth
 from services.personality.comparison import (
@@ -20,6 +22,9 @@ from services.personality.storage import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter()
+_logger = logging.getLogger(__name__)
+
+_portrait_generating: set[str] = set()
 
 
 def _parse_chat_id(raw: int | str) -> int:
@@ -282,4 +287,253 @@ async def get_community_clusters(
             }
             for c in clusters
         ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# IMG-3/4/5: Portrait generation endpoints
+# ---------------------------------------------------------------------------
+
+@router.post("/user/{user_id}/portrait/generate")
+async def post_generate_portrait(
+    user_id: int = Path(..., ge=1),
+    body: dict = Body(default_factory=dict),
+    session: AsyncSession = Depends(get_db_session),
+    _auth=Depends(require_auth),
+):
+    """
+    Generate visual portrait from personality profile.
+    Body: { chat_id: int|"all", style_variant?: str, provider?: str }
+    """
+    from services.personality.image_prompt_builder import build_image_prompt, STYLE_VARIANTS
+    from services.personality.image_generator import generate_image_from_prompt
+    from services.personality.portrait_storage import (
+        save_portrait_file, save_portrait_record, compute_hash,
+    )
+    from services.portrait_image import PORTRAIT_IMAGES_DIR
+
+    chat_id_raw = body.get("chat_id", "all")
+    chat_id = _parse_chat_id(chat_id_raw)
+    style_variant = str(body.get("style_variant", "concept_art") or "concept_art")
+    if style_variant not in STYLE_VARIANTS:
+        style_variant = "concept_art"
+    provider = body.get("provider")
+
+    key = f"{user_id}:{chat_id}:{style_variant}"
+    if key in _portrait_generating:
+        return {"ok": False, "error": "Generation already in progress"}
+
+    profile = await get_latest_profile(session, user_id, chat_id)
+    if not profile:
+        profile = await get_latest_profile(session, user_id, 0)
+    if not profile:
+        return {"ok": False, "error": "No personality profile found. Build one first."}
+
+    prompt_data = build_image_prompt(profile, style_variant=style_variant)
+
+    _portrait_generating.add(key)
+    try:
+        result = await asyncio.to_thread(
+            generate_image_from_prompt,
+            prompt_data["positive_prompt"],
+            prompt_data["negative_prompt"],
+            preferred_provider=provider,
+        )
+    finally:
+        _portrait_generating.discard(key)
+
+    if not result:
+        return {"ok": False, "error": "All image generation models failed. Check API keys."}
+
+    image_bytes = result["image_bytes"]
+    image_hash = compute_hash(image_bytes)
+    image_path = save_portrait_file(chat_id, user_id, image_bytes)
+
+    PORTRAIT_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    legacy_path = PORTRAIT_IMAGES_DIR / f"{user_id}.png"
+    legacy_path.write_bytes(image_bytes)
+
+    profile_row_id = None
+    try:
+        from db.models import PersonalityProfileRow
+        from sqlalchemy import select
+        stmt = (
+            select(PersonalityProfileRow.id)
+            .where(
+                PersonalityProfileRow.user_id == user_id,
+                PersonalityProfileRow.chat_id == chat_id,
+            )
+            .order_by(PersonalityProfileRow.generated_at.desc())
+            .limit(1)
+        )
+        r = await session.execute(stmt)
+        profile_row_id = r.scalar_one_or_none()
+    except Exception:
+        pass
+
+    portrait_id = await save_portrait_record(
+        session,
+        user_id=user_id,
+        chat_id=chat_id,
+        profile_id=profile_row_id,
+        model_used=result["model_used"],
+        prompt_used=prompt_data["positive_prompt"],
+        seed_description=prompt_data["seed_description"],
+        generation_time_sec=result["generation_time_sec"],
+        image_path=image_path,
+        image_hash=image_hash,
+        style_variant=style_variant,
+    )
+    await session.commit()
+
+    return {
+        "ok": True,
+        "portrait_id": portrait_id,
+        "model_used": result["model_used"],
+        "provider": result["provider"],
+        "style_variant": style_variant,
+        "generation_time_sec": result["generation_time_sec"],
+        "seed_description": prompt_data["seed_description"],
+    }
+
+
+@router.get("/user/{user_id}/portrait/latest")
+async def get_latest_portrait_endpoint(
+    user_id: int = Path(..., ge=1),
+    chat_id: int | str = Query(default="all"),
+    session: AsyncSession = Depends(get_db_session),
+    _auth=Depends(require_auth),
+):
+    """Get latest portrait metadata for user."""
+    from services.personality.portrait_storage import get_latest_portrait
+    cid = _parse_chat_id(chat_id)
+    portrait = await get_latest_portrait(session, user_id, cid)
+    if not portrait:
+        return {"ok": False, "error": "No portrait found"}
+    return {"ok": True, "portrait": portrait}
+
+
+@router.get("/user/{user_id}/portrait/history")
+async def get_portrait_history_endpoint(
+    user_id: int = Path(..., ge=1),
+    chat_id: int | str = Query(default="all"),
+    limit: int = Query(default=20, ge=1, le=50),
+    session: AsyncSession = Depends(get_db_session),
+    _auth=Depends(require_auth),
+):
+    """Get portrait generation history."""
+    from services.personality.portrait_storage import get_portrait_history
+    cid = _parse_chat_id(chat_id)
+    portraits = await get_portrait_history(session, user_id, cid, limit=limit)
+    return {"ok": True, "portraits": portraits}
+
+
+@router.get("/user/{user_id}/portrait/{portrait_id}")
+async def get_portrait_by_id_endpoint(
+    user_id: int = Path(..., ge=1),
+    portrait_id: int = Path(..., ge=1),
+    session: AsyncSession = Depends(get_db_session),
+    _auth=Depends(require_auth),
+):
+    """Get specific portrait metadata."""
+    from services.personality.portrait_storage import get_portrait_by_id
+    portrait = await get_portrait_by_id(session, portrait_id)
+    if not portrait or portrait["user_id"] != user_id:
+        return {"ok": False, "error": "Portrait not found"}
+    return {"ok": True, "portrait": portrait}
+
+
+@router.get("/user/{user_id}/portrait/{portrait_id}/image")
+async def get_portrait_image_file(
+    user_id: int = Path(..., ge=1),
+    portrait_id: int = Path(..., ge=1),
+    session: AsyncSession = Depends(get_db_session),
+    _auth=Depends(require_auth),
+):
+    """Serve actual portrait image file."""
+    from pathlib import Path as PPath
+    from services.personality.portrait_storage import get_portrait_by_id, PORTRAITS_DIR
+    portrait = await get_portrait_by_id(session, portrait_id)
+    if not portrait or portrait["user_id"] != user_id:
+        return Response(status_code=404)
+    image_path = PPath(portrait["image_path"])
+    if not image_path.is_absolute():
+        image_path = PORTRAITS_DIR.parent.parent / image_path
+    if not image_path.exists():
+        return Response(status_code=404)
+    return Response(
+        content=image_path.read_bytes(),
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+@router.get("/styles")
+async def get_style_variants(_auth=Depends(require_auth)):
+    """List available style variants for portrait generation."""
+    from services.personality.image_prompt_builder import STYLE_VARIANTS
+    return {
+        "ok": True,
+        "styles": {
+            k: {"description": v["description"]}
+            for k, v in STYLE_VARIANTS.items()
+        },
+    }
+
+
+@router.post("/compare/portrait")
+async def post_compare_portrait(
+    body: dict = Body(default_factory=dict),
+    session: AsyncSession = Depends(get_db_session),
+    _auth=Depends(require_auth),
+):
+    """
+    Generate comparison diptych of two users' portraits.
+    Body: { user_id_a: int, user_id_b: int, chat_id: int|"all", style_variant?: str }
+    """
+    from services.personality.portrait_comparison import generate_comparison_diptych
+    from services.personality.portrait_storage import save_portrait_file, compute_hash
+
+    ua = body.get("user_id_a")
+    ub = body.get("user_id_b")
+    chat_id_raw = body.get("chat_id", "all")
+    style_variant = str(body.get("style_variant", "concept_art") or "concept_art")
+
+    if ua is None or ub is None:
+        return {"ok": False, "error": "Need user_id_a and user_id_b"}
+    try:
+        ua, ub = int(ua), int(ub)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "Invalid user_id"}
+
+    chat_id = _parse_chat_id(chat_id_raw)
+
+    pa = await get_latest_profile(session, ua, chat_id)
+    pb = await get_latest_profile(session, ub, chat_id)
+    if not pa:
+        pa = await get_latest_profile(session, ua, 0)
+    if not pb:
+        pb = await get_latest_profile(session, ub, 0)
+    if not pa:
+        return {"ok": False, "error": f"No profile for user {ua}"}
+    if not pb:
+        return {"ok": False, "error": f"No profile for user {ub}"}
+
+    result = await asyncio.to_thread(
+        generate_comparison_diptych, pa, pb, style_variant=style_variant,
+    )
+    if not result:
+        return {"ok": False, "error": "Diptych generation failed"}
+
+    import base64
+    image_b64 = base64.b64encode(result["image_bytes"]).decode("ascii")
+
+    return {
+        "ok": True,
+        "diptych_base64": image_b64,
+        "model_a": result["model_a"],
+        "model_b": result["model_b"],
+        "seed_a": result["seed_a"],
+        "seed_b": result["seed_b"],
+        "generation_time_sec": result["generation_time_sec"],
     }

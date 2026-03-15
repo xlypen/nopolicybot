@@ -328,6 +328,30 @@ def build_community_structure_dashboard(chat_id: int | None, *, period: str = "3
     }
 
 
+def build_users_list(
+    chat_id: int | None,
+    *,
+    limit: int = 300,
+) -> list[dict]:
+    """Список пользователей чата: [{id, name}, ...] для выпадающих списков."""
+    safe_limit = max(1, min(int(limit or 300), 500))
+    display_names = user_stats.get_user_display_names()
+    if chat_id is None:
+        user_ids = list(display_names.keys())
+    else:
+        user_ids = user_stats.get_users_in_chat(int(chat_id))
+    result = []
+    for uid in user_ids:
+        try:
+            uid_int = int(uid)
+        except (ValueError, TypeError):
+            continue
+        name = str(display_names.get(uid, uid))
+        result.append({"id": uid_int, "name": name})
+    result.sort(key=lambda x: (x["name"].lower(), str(x["id"])))
+    return result[:safe_limit]
+
+
 def build_user_leaderboard_dashboard(
     chat_id: int | None,
     *,

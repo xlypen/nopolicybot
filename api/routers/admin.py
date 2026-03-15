@@ -13,6 +13,7 @@ from services.admin_dashboards import (
     build_chat_health_dashboard,
     build_community_structure_dashboard,
     build_user_leaderboard_dashboard,
+    build_users_list,
 )
 from services.audit_log import write_event
 
@@ -59,6 +60,20 @@ async def get_community_structure(
         build_community_structure_dashboard, cid, period=period, limit=limit
     )
     return {"ok": True, "community": payload}
+
+
+@router.get("/users")
+async def get_users(
+    chat_id: str | None = Query(default="all"),
+    limit: int = Query(default=300, ge=1, le=500),
+    _auth=Depends(require_auth),
+):
+    """Список пользователей для выпадающих списков: [{id, name}, ...]."""
+    cid, err = _parse_chat_id(chat_id)
+    if err:
+        return {"ok": False, "error": err}
+    users = await _run_sync(build_users_list, cid, limit=limit)
+    return {"ok": True, "users": users}
 
 
 @router.get("/leaderboard")

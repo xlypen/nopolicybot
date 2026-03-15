@@ -12,3 +12,4 @@ bcrypt>=4.0.0
 flask-cors>=6.0.2
 flask-caching>=2.0.0
 networkx
+Pillow>=10.0.0

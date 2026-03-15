@@ -917,6 +917,7 @@ def build_deep_portrait_from_messages(
                     {"role": "user", "content": user_content},
                 ],
                 temperature=0.3,
+                max_tokens=2048,
             )
             content = (response.choices[0].message.content or "").strip()
             break

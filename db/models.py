@@ -86,3 +86,21 @@ class PersonalityProfileRow(Base):
     model_version = Column(String(50), nullable=False)
     __table_args__ = (Index('idx_personality_profiles_user_chat', 'user_id', 'chat_id', 'generated_at'),)
 
+
+class PersonalityPortraitRow(Base):
+    """Generated visual portrait based on personality profile (IMG-3)."""
+    __tablename__ = 'personality_portraits'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, nullable=False)
+    chat_id = Column(BigInteger, nullable=False)
+    profile_id = Column(Integer, nullable=True)
+    generated_at = Column(TIMESTAMP, nullable=False)
+    model_used = Column(String(50), nullable=False)
+    prompt_used = Column(Text, nullable=False)
+    seed_description = Column(Text, nullable=True)
+    generation_time_sec = Column(Float, nullable=True)
+    image_path = Column(String(500), nullable=False)
+    image_hash = Column(String(64), nullable=True)
+    style_variant = Column(String(50), nullable=False, default='concept_art')
+    __table_args__ = (Index('idx_personality_portraits_user_chat', 'user_id', 'chat_id', 'generated_at'),)
+

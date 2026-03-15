@@ -46,16 +46,83 @@ Rules:
 - Start with "Professional portrait photograph:"
 """
 
+_OCEAN_VISUAL_MAP = {
+    "openness": {
+        "high": "creative artistic look, unconventional style, curious bright eyes, eclectic accessories",
+        "low": "conventional neat appearance, traditional clothing, composed steady gaze",
+    },
+    "conscientiousness": {
+        "high": "immaculate grooming, crisp structured clothing, precise posture, organized appearance",
+        "low": "relaxed casual style, slightly disheveled, laid-back posture",
+    },
+    "extraversion": {
+        "high": "warm broad smile, open expressive face, vibrant clothing colors, dynamic energetic pose",
+        "low": "reserved subtle expression, muted tones, contemplative inward gaze, calm quiet demeanor",
+    },
+    "agreeableness": {
+        "high": "gentle kind eyes, soft warm smile, approachable open posture, warm lighting",
+        "low": "sharp analytical gaze, firm set jaw, confident assertive posture, cool lighting",
+    },
+    "neuroticism": {
+        "high": "intense slightly worried eyes, tension in brow, restless energy, dramatic moody lighting",
+        "low": "calm serene expression, relaxed shoulders, steady confident gaze, even soft lighting",
+    },
+}
 
-def _portrait_to_visual_prompt(portrait_text: str, display_name: str = "") -> str:
-    """Извлекает визуальные ключевые слова через LLM. Fallback — простая очистка."""
+_DARK_TRIAD_VISUAL = {
+    "narcissism": "self-assured commanding presence, perfectly styled, slightly elevated chin",
+    "machiavellianism": "calculating piercing gaze, subtle knowing half-smile, sharp attire",
+    "psychopathy": "flat affect, unnervingly calm expression, cold detached eyes",
+}
+
+
+def _build_ocean_visual_hints(profile_data: dict | None) -> str:
+    """Build visual hints from OCEAN and Dark Triad scores."""
+    if not profile_data:
+        return ""
+    parts = []
+    ocean = profile_data.get("ocean") or {}
+    for dim, mapping in _OCEAN_VISUAL_MAP.items():
+        score = ocean.get(dim)
+        if score is not None:
+            level = "high" if float(score) >= 0.6 else "low" if float(score) <= 0.4 else None
+            if level:
+                parts.append(mapping[level])
+    dt = profile_data.get("dark_triad") or {}
+    for trait, hint in _DARK_TRIAD_VISUAL.items():
+        info = dt.get(trait) or {}
+        score = info.get("score", 0) if isinstance(info, dict) else 0
+        if float(score) >= 0.6:
+            parts.append(hint)
+    topics = profile_data.get("topics") or {}
+    primary = topics.get("primary") or []
+    if primary:
+        topic_hints = {
+            "technical": "tech-savvy appearance, modern minimal style",
+            "politics": "authoritative formal look, power dressing",
+            "humor": "playful mischievous expression, laugh lines",
+            "conflict": "intense confrontational energy, sharp features",
+            "personal": "warm intimate presence, genuine authentic look",
+        }
+        for t in primary[:2]:
+            if t in topic_hints:
+                parts.append(topic_hints[t])
+    return ", ".join(parts)
+
+
+def _portrait_to_visual_prompt(portrait_text: str, display_name: str = "", personality_profile: dict | None = None) -> str:
+    """Извлекает визуальные ключевые слова через LLM с учётом OCEAN-профиля."""
     full_text = (portrait_text or "").strip()
     if not full_text:
         return "Professional portrait photograph: thoughtful person, neutral expression, soft lighting"
 
+    ocean_hints = _build_ocean_visual_hints(personality_profile)
+
     user_msg = full_text
     if display_name:
         user_msg = f"Name: {display_name}\n\n{user_msg}"
+    if ocean_hints:
+        user_msg += f"\n\nPersonality visual cues (use these for the portrait): {ocean_hints}"
 
     api_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
     if api_key:
@@ -258,12 +325,13 @@ def generate_portrait_image(
     portrait_text: str,
     display_name: str = "",
     provider: str | None = None,
+    personality_profile: dict | None = None,
 ) -> Path | None:
     if not (portrait_text or "").strip():
         logger.warning("Пустой портрет для user_id=%s", user_id)
         return None
 
-    visual_prompt = _portrait_to_visual_prompt(portrait_text, display_name)
+    visual_prompt = _portrait_to_visual_prompt(portrait_text, display_name, personality_profile)
     logger.info("Промпт из портрета: %s", visual_prompt[:150])
 
     img_data = None

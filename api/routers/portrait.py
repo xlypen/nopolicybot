@@ -85,12 +85,26 @@ async def post_portrait_image_generate(
     try:
         from services.portrait_image import generate_portrait_image
 
+        profile_data = None
+        try:
+            from services.personality.storage import get_latest_profile
+            from api.dependencies import get_db_session
+            from sqlalchemy.ext.asyncio import AsyncSession
+            async for session in get_db_session():
+                prof = await get_latest_profile(session, uid, 0)
+                if prof:
+                    profile_data = prof.model_dump(mode="json")
+                break
+        except Exception:
+            pass
+
         path = await _run_sync(
             generate_portrait_image,
             uid,
             portrait,
             u.get("display_name", ""),
             provider=provider,
+            personality_profile=profile_data,
         )
         if path:
             await _run_sync(set_portrait_image_updated_date, uid)

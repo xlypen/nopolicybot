@@ -237,10 +237,23 @@ def process_portrait_images_due() -> int:
             continue
         try:
             user_id = int(user_id_str)
+            profile_data = None
+            try:
+                import asyncio as _aio
+                from services.personality.storage import get_latest_profile
+                from api.dependencies import AsyncSessionLocal
+                async def _get_prof():
+                    async with AsyncSessionLocal() as s:
+                        p = await get_latest_profile(s, user_id, 0)
+                        return p.model_dump(mode="json") if p else None
+                profile_data = _aio.run(_get_prof())
+            except Exception:
+                pass
             path = generate_portrait_image(
                 user_id,
                 portrait,
                 u.get("display_name", ""),
+                personality_profile=profile_data,
             )
             if path:
                 u["portrait_image_updated_date"] = date.today().isoformat()

@@ -1,8 +1,16 @@
 {% extends "admin/base.html" %}
-{% block title %}Профиль пользователя {{ user_id }}{% endblock %}
+{% block title %}Профиль пользователя {{ u.get('display_name', user_id) }}{% endblock %}
 {% block head_extra %}
 <style>
 .user-grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1rem; }
+.main-card-layout { display: flex; gap: 1.5rem; align-items: flex-start; flex-wrap: wrap; }
+.main-card-image { flex: 1; min-width: 220px; max-width: 320px; position: relative; }
+.main-card-image img { width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--border-card); object-fit: cover; aspect-ratio: 1; display: block; }
+.main-card-image .img-placeholder { width: 100%; aspect-ratio: 1; border-radius: 12px; border: 1px solid var(--border-card); background: var(--bg-tertiary); display: flex; align-items: center; justify-content: center; font-size: 2.5rem; font-weight: 600; color: var(--text-tertiary); }
+.main-card-actions { flex: 1; min-width: 200px; max-width: 320px; display: flex; flex-direction: column; gap: 6px; }
+.main-card-actions .btn, .main-card-actions a.btn { width: auto; max-width: 100%; text-align: left; }
+.main-card-actions .main-card-select { padding: 5px 10px; font-size: 0.82rem; max-width: 100%; }
+.main-card-actions .row { flex-direction: column; }
 .user-compact-list { margin: 0; padding-left: 18px; color: var(--text-secondary); }
 .user-compact-list li { margin-bottom: 0.45rem; }
 .meta-line { color: var(--text-secondary); font-size: 0.86rem; }
@@ -50,15 +58,42 @@
 <div class="user-grid-2">
   <div class="card">
     <div class="title">Основное</div>
-    <div style="margin-bottom:8px;"><strong>{{ u.get('display_name', user_id) }}</strong></div>
-    <div class="row">
-      <button class="btn btn-secondary" id="buildPortraitBtn">Собрать портрет</button>
-      {% if portrait_exists %}
-      <a class="btn btn-secondary" href="{{ url_for('portrait_image', user_id=user_id) }}" target="_blank" rel="noopener">Открыть image-портрет</a>
-      {% endif %}
-      <a class="btn btn-secondary" href="{{ me_url }}" target="_blank" rel="noopener">Ссылка /me</a>
+    <div class="main-card-layout">
+      <div class="main-card-image">
+        {% if portrait_exists %}
+        <img src="{{ url_for('portrait_image', user_id=user_id) }}?v={{ portrait_image_mtime }}" alt="Портрет" title="Image-портрет">
+        {% else %}
+        <img src="{{ url_for('avatar', user_id=user_id) }}" alt="{{ u.get('display_name', user_id) }}" title="Аватар" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+        <div class="img-placeholder" style="display:none;">{{ ((u.get('display_name', user_id) or user_id)|string)[:2]|upper }}</div>
+        {% endif %}
+      </div>
+      <div class="main-card-actions">
+        <strong>{{ u.get('display_name', user_id) }}</strong>
+        <button class="btn btn-secondary btn-sm" id="buildPortraitBtn">Собрать портрет</button>
+        <a class="btn btn-secondary btn-sm" href="{{ me_url }}" target="_blank" rel="noopener">Ссылка /me</a>
+        <select id="portraitStyleSel" class="main-card-select" title="Стиль визуальной метафоры">
+          <option value="concept_art">Концепт-арт</option>
+          <option value="symbolic">Символика</option>
+          <option value="noir">Нуар</option>
+          <option value="fantasy">Фэнтези</option>
+          <option value="minimal">Минимализм</option>
+        </select>
+        <select id="portraitProviderSel" class="main-card-select" title="Провайдер генерации">
+          <option value="">Авто</option>
+          <option value="huggingface">HuggingFace</option>
+          <option value="gemini">Gemini</option>
+          <option value="replicate">Replicate</option>
+          <option value="openrouter">OpenRouter</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" id="generateImageBtn">{{ 'Обновить образ' if portrait_exists else 'Сгенерировать образ' }}</button>
+        {% if portrait_exists %}
+        <a class="btn btn-secondary btn-sm" href="{{ url_for('portrait_image', user_id=user_id) }}" target="_blank" rel="noopener">Открыть image-портрет</a>
+        {% endif %}
+        <div id="profileFeedback" class="meta-line">Готово к действиям.</div>
+        <div id="imageGenFeedback" class="meta-line"></div>
+        <div class="meta-line" style="font-style:italic;font-size:0.72rem;margin-top:2px;">Визуальная метафора личности на основе анализа поведения</div>
+      </div>
     </div>
-    <div id="profileFeedback" class="meta-line">Готово к действиям.</div>
   </div>
   <div class="card">
     <div class="title">Связи пользователя</div>
@@ -285,6 +320,31 @@
   });
   document.getElementById("buildPortraitBtn").addEventListener("click", function () {
     buildPortrait().catch(function () {});
+  });
+
+  document.getElementById("generateImageBtn").addEventListener("click", function () {
+    var btn = this;
+    var out = document.getElementById("imageGenFeedback");
+    var providerSel = document.getElementById("portraitProviderSel");
+    var styleSel = document.getElementById("portraitStyleSel");
+    var provider = (providerSel && providerSel.value) || "";
+    var style = (styleSel && styleSel.value) || "concept_art";
+    var chatParam = CHAT_ID === "0" ? "all" : String(CHAT_ID);
+    btn.disabled = true;
+    if (out) out.textContent = "Генерирую визуальную метафору… (30–60 сек)";
+    var payload = { chat_id: chatParam, style_variant: style };
+    if (provider) payload.provider = provider;
+    apiFetch("/api/v2/personality/user/" + encodeURIComponent(String(USER_ID)) + "/portrait/generate", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }).then(function (data) {
+      var info = data.model_used ? " (" + data.model_used + ", " + (data.generation_time_sec || 0) + "s)" : "";
+      if (out) out.innerHTML = "<span style='color:var(--accent-emerald);'>Готово!" + esc(info) + " Обновляю…</span>";
+      setTimeout(function () { location.reload(); }, 2000);
+    }).catch(function (e) {
+      if (out) out.innerHTML = "<span style='color:#ef4444;'>" + esc(e.message || "Ошибка") + "</span>";
+      btn.disabled = false;
+    });
   });
 
   let oceanChart = null;

@@ -848,6 +848,7 @@ def admin_user_profile(user_id):
     from user_stats import get_chats, get_user_archive_by_chat
     portrait_path = PORTRAIT_IMAGES_DIR / f"{uid}.png"
     portrait_exists = portrait_path.exists()
+    portrait_image_mtime = int(portrait_path.stat().st_mtime) if portrait_exists else 0
     my_connections, _my_chat_ids = _collect_user_connections(user_id=uid, chat_id=chat_int, limit=25)
 
     # Чаты: из get_chats() + чаты пользователя из архива (если get_chats пуст)
@@ -904,6 +905,7 @@ def admin_user_profile(user_id):
         effective_tone=_get_effective_tone(u),
         my_connections=my_connections,
         portrait_exists=portrait_exists,
+        portrait_image_mtime=portrait_image_mtime,
         me_url=_participant_me_url(uid, request.host_url.rstrip("/")),
     )
 

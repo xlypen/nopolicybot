@@ -51,8 +51,8 @@
         } else {
           const html = clusters.map(function (c) {
             const users = (c.user_ids || []).map(function (uid) {
-              const name = (c.usernames || {})[String(uid)] || uid;
-              return "<a href='/admin/user/" + esc(uid) + "?chat=" + encodeURIComponent(chat) + "'>" + esc(name) + "</a>";
+              const name = (c.usernames || {})[String(uid)] || "Без имени";
+              return "<a href='/admin/user/" + esc(uid) + "?chat=" + encodeURIComponent(chat) + "' title='ID: " + esc(uid) + "'>" + esc(name) + "</a>";
             }).join(", ");
             const ocean = c.centroid_ocean || {};
             const oceanStr = Object.entries(ocean).map(function (kv) { return kv[0] + ": " + Number(kv[1]).toFixed(2); }).join(" · ");

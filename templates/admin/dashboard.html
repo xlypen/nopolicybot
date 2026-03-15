@@ -93,8 +93,11 @@
       <button class="btn btn-secondary btn-danger-outline" id="resetPoliticalBtn">Сбросить полит. счётчик</button>
     </div>
     <div class="row">
-      <label for="portraitUserIdInput">ID пользователя:</label>
-      <input id="portraitUserIdInput" type="number" min="1" step="1" placeholder="Напр. 123456789">
+      <label for="portraitUserSel">Пользователь:</label>
+      <select id="portraitUserSel" style="min-width:200px;padding:6px;">
+        <option value="">— выберите пользователя —</option>
+      </select>
+      <span class="meta-line" id="portraitUserIdHint" title="ID для справки">ID: —</span>
       <button class="btn btn-secondary" id="openUserProfileBtn">Открыть профиль</button>
       <button class="btn btn-secondary" id="buildPortraitBtn">Собрать портрет пользователя</button>
       <button class="btn btn-secondary btn-danger-outline" id="restartBotBtn">Перезапустить бота</button>
@@ -151,8 +154,10 @@
 
         <section class="graph-lab-section">
           <h4>Фокус</h4>
-          <label for="labFocusUser">ID пользователя:</label>
-          <input type="text" id="labFocusUser" placeholder="например, 123456">
+          <label for="labFocusUserSel">Пользователь:</label>
+          <select id="labFocusUserSel" style="min-width:180px;padding:6px;">
+            <option value="">— выберите —</option>
+          </select>
           <label class="graph-lab-check">
             <input type="checkbox" id="labFocusEgoNetwork" checked>
             Эго-сеть (1 переход)
@@ -587,7 +592,7 @@ function currentLabFilters() {
     const el = document.getElementById(id);
     return el ? !!el.checked : !!fallback;
   };
-  const focusEl = document.getElementById('labFocusUser');
+  const focusEl = document.getElementById('labFocusUserSel');
   const focusRaw = String((focusEl && focusEl.value) || '').trim();
   return {
     min_degree: Math.max(0, Math.trunc(asNum('labFilterMinDegree', 0))),
@@ -683,6 +688,26 @@ async function applyGraphLabFilters() {
   }
 }
 
+async function loadUsersForGraphLab(chat) {
+  const sel = document.getElementById('labFocusUserSel');
+  if (!sel) return;
+  const prevVal = sel.value;
+  sel.innerHTML = '<option value="">— выберите —</option>';
+  if (!chat || chat === 'all') return;
+  try {
+    const body = await requestJson(`/api/v2/admin/users?chat_id=${encodeURIComponent(chat)}&limit=300`);
+    const users = Array.isArray(body.users) ? body.users : [];
+    for (const u of users) {
+      const opt = document.createElement('option');
+      opt.value = String(u.id);
+      opt.textContent = esc(u.name || String(u.id));
+      opt.title = 'ID: ' + u.id;
+      sel.appendChild(opt);
+    }
+    if (prevVal) sel.value = prevVal;
+  } catch (_e) {}
+}
+
 async function loadGraphLab() {
   const chat = document.getElementById('chatSel').value;
   const root = document.getElementById('labGraphRoot');
@@ -690,6 +715,7 @@ async function loadGraphLab() {
     root.textContent = 'Граф загружен. Примените фильтры.';
   }
   _labLoadedOnce = true;
+  await loadUsersForGraphLab(chat);
   await applyGraphLabFilters();
 }
 
@@ -1145,8 +1171,8 @@ async function loadAdminCommunity(chat) {
   }
   rows.innerHTML = bridge.slice(0, 8).map((u) => {
     const uid = Number(u.user_id || 0);
-    const name = esc(u.username || u.user_id);
-    const link = Number.isFinite(uid) ? `<a href="${userProfileUrl(uid, chat)}">${name}</a>` : name;
+    const name = esc(u.username || 'Без имени');
+    const link = Number.isFinite(uid) ? `<a href="${userProfileUrl(uid, chat)}" title="ID: ${uid}">${name}</a>` : name;
     return `<li>${link} · ${fmt(u.betweenness, 3)}</li>`;
   }).join('');
 }
@@ -1211,7 +1237,7 @@ async function loadAdminPanel(chat) {
         ${rows.slice(0, 8).map((u, idx) => `
           <li style="list-style:none;border:1px solid var(--border-card);border-radius:8px;padding:8px;background:var(--bg-secondary);" data-risk-user="${Number(u.user_id || 0)}">
             <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;">
-              <a href="${userProfileUrl(u.user_id, chat)}"><strong>${esc(u.username || u.user_id)}</strong></a>
+              <a href="${userProfileUrl(u.user_id, chat)}" title="ID: ${u.user_id}"><strong>${esc(u.username || 'Без имени')}</strong></a>
               <span style="font-size:12px;color:#ef4444;">риск ${fmt(u.churn_risk, 2)}</span>
             </div>
             <div style="margin-top:4px;font-size:12px;color:var(--text-secondary);">${esc(reasonCodeLabel(u.reason_code))}</div>
@@ -1323,7 +1349,8 @@ function setOpsDisabled(disabled) {
     'opsChatModeSel',
     'applyChatModeBtn',
     'resetPoliticalBtn',
-    'portraitUserIdInput',
+    'portraitUserSel',
+    'openUserProfileBtn',
     'buildPortraitBtn',
     'refreshDigestBtn',
     'refreshAnalysisBtn',
@@ -1334,6 +1361,40 @@ function setOpsDisabled(disabled) {
     if (el) {
       el.disabled = !!disabled;
     }
+  }
+}
+
+async function loadUsersForOps(chat) {
+  const sel = document.getElementById('portraitUserSel');
+  const hint = document.getElementById('portraitUserIdHint');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— выберите пользователя —</option>';
+  if (hint) { hint.textContent = 'ID: —'; hint.title = 'ID для справки'; }
+  if (!chat || chat === 'all') return;
+  try {
+    const body = await requestJson(`/api/v2/admin/users?chat_id=${encodeURIComponent(chat)}&limit=300`);
+    const users = Array.isArray(body.users) ? body.users : [];
+    for (const u of users) {
+      const opt = document.createElement('option');
+      opt.value = String(u.id);
+      opt.textContent = esc(u.name || String(u.id));
+      opt.title = 'ID: ' + u.id;
+      sel.appendChild(opt);
+    }
+  } catch (_e) {}
+}
+
+function updatePortraitUserIdHint() {
+  const sel = document.getElementById('portraitUserSel');
+  const hint = document.getElementById('portraitUserIdHint');
+  if (!hint) return;
+  const v = sel && sel.value;
+  if (v) {
+    hint.textContent = 'ID: ' + v;
+    hint.title = 'ID пользователя: ' + v;
+  } else {
+    hint.textContent = 'ID: —';
+    hint.title = 'ID для справки';
   }
 }
 
@@ -1351,9 +1412,11 @@ async function syncOpsState() {
     if (analysisEl) {
       analysisEl.textContent = 'Выберите чат и нажмите «Обновить анализ».';
     }
+    await loadUsersForOps(null);
     return;
   }
   setOpsDisabled(false);
+  await loadUsersForOps(chat);
   try {
     const body = await requestJson(`/api/v2/chat-mode?chat_id=${encodeURIComponent(chat)}`);
     const mode = String(body.mode || 'default');
@@ -1422,11 +1485,11 @@ async function resetPoliticalCountFromOps() {
 }
 
 async function buildPortraitFromOps() {
-  const userInput = document.getElementById('portraitUserIdInput');
-  const rawUserId = String((userInput && userInput.value) || '').trim();
+  const userSel = document.getElementById('portraitUserSel');
+  const rawUserId = String((userSel && userSel.value) || '').trim();
   const uid = Number(rawUserId);
   if (!rawUserId || !Number.isFinite(uid) || uid <= 0) {
-    setOpsFeedback('Укажите корректный ID пользователя.', '#f59e0b');
+    setOpsFeedback('Выберите пользователя.', '#f59e0b');
     return;
   }
   const chat = selectedChatIdForOps() || 'all';
@@ -1447,11 +1510,11 @@ async function buildPortraitFromOps() {
 }
 
 function openUserProfileFromOps() {
-  const userInput = document.getElementById('portraitUserIdInput');
-  const rawUserId = String((userInput && userInput.value) || '').trim();
+  const userSel = document.getElementById('portraitUserSel');
+  const rawUserId = String((userSel && userSel.value) || '').trim();
   const uid = Number(rawUserId);
   if (!rawUserId || !Number.isFinite(uid) || uid <= 0) {
-    setOpsFeedback('Укажите корректный ID пользователя.', '#f59e0b');
+    setOpsFeedback('Выберите пользователя.', '#f59e0b');
     return;
   }
   const chat = selectedChatIdForOps() || 'all';
@@ -1653,6 +1716,7 @@ document.getElementById('resetPoliticalBtn').addEventListener('click', () => {
 document.getElementById('buildPortraitBtn').addEventListener('click', () => {
   buildPortraitFromOps().catch(() => {});
 });
+document.getElementById('portraitUserSel').addEventListener('change', updatePortraitUserIdHint);
 document.getElementById('openUserProfileBtn').addEventListener('click', () => {
   openUserProfileFromOps();
 });

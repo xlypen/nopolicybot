@@ -86,6 +86,40 @@ def test_decision_engine_strict_in_beast_mode_for_low_risk(monkeypatch):
     assert result.level_delta >= 1
 
 
+def test_decision_engine_gentle_when_low_agreeableness(monkeypatch):
+    """P-8: personality_context influences strategy — low agreeableness -> gentle."""
+    monkeypatch.setattr("services.decision_engine.learning_loop.compose_bias", lambda chat_id, user_id: {"variant": "control", "variant_enabled": True, "bias": {}})
+    monkeypatch.setattr(
+        "services.decision_engine.get_user_metrics",
+        lambda user_id, chat_id=None, days=30: {
+            "engagement_score": 0.5,
+            "influence_score": 0.4,
+            "churn_risk": 0.3,
+        },
+    )
+    monkeypatch.setattr(
+        "services.decision_engine.get_chat_health",
+        lambda chat_id, days=30: {"health_score": 0.6},
+    )
+    engine = DecisionEngine()
+    result = engine.decide(
+        chat_id=1,
+        user_id=100,
+        sentiment="neutral",
+        is_political=True,
+        style="active",
+        political_count=4,
+        personality_context={
+            "ocean": {"agreeableness": 0.25, "openness": 0.5, "conscientiousness": 0.5, "extraversion": 0.5, "neuroticism": 0.5},
+            "communication": {"conflict_tendency": 0.8},
+            "confidence": 0.75,
+        },
+    )
+    assert result.strategy in ("gentle", "careful")
+    assert "personality_low_agreeableness" in result.reasons or "personality_high_conflict_tendency" in result.reasons
+    assert "personality_confidence" in result.metrics
+
+
 def test_decision_feedback_updates_quality_and_learning(tmp_path, monkeypatch):
     monkeypatch.setattr(de, "_DECISIONS_PATH", tmp_path / "decision_events.json")
     monkeypatch.setattr("services.learning_loop._PATH", tmp_path / "learning_feedback.json")
@@ -106,6 +140,7 @@ def test_decision_feedback_updates_quality_and_learning(tmp_path, monkeypatch):
         result=result,
         outcome="warning_sent",
         detail="unit-test",
+        personality_context={"ocean": {}, "confidence": 0.6},
     )
     updated = de.apply_decision_feedback(
         event_id=event_id,

@@ -60,6 +60,7 @@ def append_decision_event(
     result: DecisionResult,
     outcome: str,
     detail: str = "",
+    personality_context: dict | None = None,
 ) -> str:
     event_id = uuid4().hex[:16]
     event = {
@@ -78,6 +79,7 @@ def append_decision_event(
         "metrics": result.metrics,
         "outcome": str(outcome or "")[:80],
         "detail": str(detail or "")[:400],
+        "personality_context": personality_context,
     }
     with _LOCK:
         data = _load()
@@ -117,6 +119,7 @@ class DecisionEngine:
         is_political: bool,
         style: str,
         political_count: int,
+        personality_context: dict | None = None,
     ) -> DecisionResult:
         user = get_user_metrics(user_id, chat_id=chat_id, days=30)
         health = get_chat_health(chat_id, days=30)
@@ -125,6 +128,13 @@ class DecisionEngine:
         influence = float(user.get("influence_score", 0.0) or 0.0)
         churn_risk = float(user.get("churn_risk", 1.0) or 1.0)
         health_score = float(health.get("health_score", 0.0) or 0.0)
+
+        personality = personality_context or {}
+        ocean = personality.get("ocean") or {}
+        comm = personality.get("communication") or {}
+        agreeableness = float(ocean.get("agreeableness", 0.5) or 0.5)
+        conflict_tendency = float(comm.get("conflict_tendency", 0.5) or 0.5)
+        profile_confidence = float(personality.get("confidence", 0.0) or 0.0)
 
         strategy_scores = {
             "standard": 1.0,
@@ -176,6 +186,16 @@ class DecisionEngine:
             strategy_scores["strict"] += 4.0
             reasons.append("beast_mode_low_churn_low_influence")
 
+        # 5) Personality: low agreeableness / high conflict_tendency -> gentler approach (P-8).
+        if profile_confidence >= 0.5:
+            if agreeableness < 0.4:
+                strategy_scores["gentle"] += 2.0
+                strategy_scores["careful"] += 1.0
+                reasons.append("personality_low_agreeableness")
+            if conflict_tendency > 0.7:
+                strategy_scores["gentle"] += 1.5
+                reasons.append("personality_high_conflict_tendency")
+
         # Keep tie-breaking deterministic and conservative (standard first).
         ordered = ["standard", "gentle", "careful", "motivating", "strict"]
         strategy = max(
@@ -208,6 +228,8 @@ class DecisionEngine:
             "ab_variant_enabled": bool(bias_ctx.get("variant_enabled", True)),
             "strategy_scores": {k: round(float(v), 4) for k, v in strategy_scores.items()},
             "ab_bias": {str(k): round(float(v), 4) for k, v in (merged_bias or {}).items()},
+            "personality_confidence": round(profile_confidence, 4),
+            "personality_agreeableness": round(agreeableness, 4),
         }
         return DecisionResult(
             strategy=strategy,

@@ -67,6 +67,7 @@ from services.schedulers import (
 )
 from services.marketing_metrics import record_message_event, record_signal_event
 from services.decision_engine import DecisionEngine, append_decision_event
+from db.engine import init_db
 from services.db_ingest import ingest_message_event
 from services.topic_policies import get_topic_label, resolve_topic_trigger
 from utils.text_formatting import capitalize_sentences, reply_text_to_html, strip_leading_name
@@ -102,6 +103,16 @@ def _spawn_task(coro) -> asyncio.Task:
     task = asyncio.create_task(coro)
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+
+    def _log_exception(t: asyncio.Task) -> None:
+        try:
+            exc = t.exception()
+            if exc is not None:
+                logger.warning("background task failed: %s", exc, exc_info=True)
+        except asyncio.CancelledError:
+            pass
+
+    task.add_done_callback(_log_exception)
     return task
 
 
@@ -721,7 +732,17 @@ async def _run_batch_analysis(
         )
 
     decision_result = None
+    personality_context = None
     if initiator_user_id is not None:
+        try:
+            from db.engine import AsyncSessionLocal
+            from services.personality.storage import get_latest_profile
+            async with AsyncSessionLocal() as session:
+                profile = await get_latest_profile(session, int(initiator_user_id), chat_id)
+                if profile:
+                    personality_context = profile.model_dump(mode="json")
+        except Exception as e:
+            logger.debug("personality fetch for decision: %s", e)
         try:
             decision_result = DECISION_ENGINE.decide(
                 chat_id=chat_id,
@@ -730,6 +751,7 @@ async def _run_batch_analysis(
                 is_political=bool(is_political),
                 style=str(style),
                 political_count=int(political_count),
+                personality_context=personality_context,
             )
             _explain(
                 "decision",
@@ -814,6 +836,7 @@ async def _run_batch_analysis(
                     result=decision_result,
                     outcome="reaction_sent",
                     detail=f"emoji={emoji}",
+                    personality_context=personality_context,
                 )
         except Exception as e:
             logger.warning("Реакция не поставлена: %s", e)
@@ -829,6 +852,7 @@ async def _run_batch_analysis(
                     result=decision_result,
                     outcome="reaction_failed",
                     detail=str(e),
+                    personality_context=personality_context,
                 )
         return
 
@@ -868,6 +892,7 @@ async def _run_batch_analysis(
                         result=decision_result,
                         outcome="encouragement_sent",
                         detail=msg[:180],
+                        personality_context=personality_context,
                     )
         except Exception as e:
             logger.exception("Поощрение: %s", e)
@@ -882,6 +907,7 @@ async def _run_batch_analysis(
                     result=decision_result,
                     outcome="encouragement_failed",
                     detail=str(e),
+                    personality_context=personality_context,
                 )
         return
 
@@ -949,6 +975,7 @@ async def _run_batch_analysis(
                 result=decision_result,
                 outcome="warning_sent",
                 detail=f"base={base_level},effective={effective_level}",
+                personality_context=personality_context,
             )
     except Exception as e:
         logger.exception("Не удалось отправить замечание: %s", e)
@@ -964,6 +991,7 @@ async def _run_batch_analysis(
                 result=decision_result,
                 outcome="warning_failed",
                 detail=str(e),
+                personality_context=personality_context,
             )
 
 
@@ -1124,7 +1152,7 @@ async def check_and_reply(message: Message) -> None:
             )
         )
     except Exception as e:
-        logger.debug("db ingest scheduling failed: %s", e)
+        logger.warning("db ingest scheduling failed: %s", e)
 
     if is_political_event:
         _chat_political_count[chat_id] = _chat_political_count.get(chat_id, 0) + 1
@@ -1280,6 +1308,32 @@ async def on_message_to_bot(message: Message) -> None:
         display_name=first_name,
         chat_title=(message.chat.title or "") if message.chat else "",
     )
+
+    reply_to = message.reply_to_message
+    reply_to_user_id = (
+        int(reply_to.from_user.id)
+        if reply_to and reply_to.from_user and not reply_to.from_user.is_bot
+        else None
+    )
+    try:
+        media_type = "photo" if has_photo else ("voice" if has_voice else "text")
+        _spawn_task(
+            ingest_message_event(
+                chat_id=int(chat_id),
+                user_id=int(message.from_user.id),
+                message_id=int(message.message_id),
+                text=display_text,
+                username=(message.from_user.username or "") if message.from_user else "",
+                first_name=(message.from_user.first_name or "") if message.from_user else "",
+                last_name=(message.from_user.last_name or "") if message.from_user else "",
+                media_type=media_type,
+                replied_to_user_id=reply_to_user_id,
+                sentiment=None,
+                is_political=False,
+            )
+        )
+    except Exception as e:
+        logger.warning("db ingest scheduling failed (on_message_to_bot): %s", e)
 
     user_id = message.from_user.id
     now_mono = time.monotonic()
@@ -1755,6 +1809,7 @@ async def main() -> None:
     except OSError:
         pass
 
+    await init_db()
     bot_state.apply_state(
         _chat_political_count,
         _chat_warning_count,

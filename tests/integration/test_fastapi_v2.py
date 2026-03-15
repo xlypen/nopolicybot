@@ -298,3 +298,50 @@ def test_fastapi_admin_topic_policies_contract():
         body = resp.json()
         assert body.get("ok") is True
         assert "policies" in body
+
+
+def test_fastapi_personality_user_unauthorized():
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/personality/user/1?chat_id=100")
+        assert resp.status_code in (401, 403)
+
+
+def test_fastapi_personality_user_contract():
+    headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/personality/user/1?chat_id=100", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "ok" in body
+        if body.get("ok"):
+            assert "profile" in body
+        else:
+            assert "error" in body
+
+
+def test_fastapi_personality_community_clusters_contract():
+    headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+    with TestClient(app) as client:
+        resp = client.get("/api/v2/personality/community/100/clusters", headers=headers)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert "clusters" in body
+        assert "chat_id" in body
+
+
+def test_fastapi_personality_compare_contract():
+    headers = {"Authorization": f"Bearer {TEST_ADMIN_TOKEN}"}
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v2/personality/compare",
+            json={"user_id_a": 1, "user_id_b": 2, "chat_id": 100},
+            headers=headers,
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "ok" in body
+        if body.get("ok"):
+            assert "comparison" in body
+        else:
+            assert "error" in body

@@ -138,10 +138,6 @@ RANK_LABELS = {"loyal": "🇷🇺 Лояльный", "neutral": "⚪ Нейтр�
 _avatar_cache: dict[str, str] = {}
 _avatar_img_cache: dict[str, tuple[float, bytes, str]] = {}
 _AVATAR_IMG_CACHE_TTL_SEC = 3600
-# user_id (str) → идёт построение портрета (синхронизация главная ↔ профиль)
-_portrait_building: set[str] = set()
-# user_id (str) → идёт генерация картинки портрета
-_portrait_image_generating: set[str] = set()
 _API_CACHE = CacheBackend(namespace="admin_api", default_ttl=45)
 _FLASK_RATE_LIMITER = RateLimiter(namespace="flask_api_ratelimit")
 
@@ -525,6 +521,23 @@ def _portrait_status_from_api(user_id: str, kind: str) -> bool:
         return False
 
 
+def _portrait_building_ids_from_api() -> list[str]:
+    """Список user_id, для которых идёт построение портрета (из API v2)."""
+    token = str(os.getenv("ADMIN_TOKEN", "")).strip()
+    if not token:
+        return []
+    port = int(os.getenv("API_PORT", "8001"))
+    url = f"http://127.0.0.1:{port}/api/v2/portrait/portrait-building-status"
+    try:
+        req = urllib.request.Request(url)
+        req.add_header("Authorization", f"Bearer {token}")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        return list(body.get("building_user_ids") or [])
+    except Exception:
+        return []
+
+
 def _proxy_to_api_v2(path: str, method: str = "GET", data: bytes | None = None) -> tuple[dict | bytes, int]:
     """Проксирует запрос в FastAPI v2 с Bearer-токеном. Возвращает (body, status_code)."""
     token = str(os.getenv("ADMIN_TOKEN", "")).strip()
@@ -625,6 +638,20 @@ def api_v2_metrics_proxy(subpath: str):
     """Прокси metrics API (user, chat health) в FastAPI v2."""
     path = f"/api/v2/metrics/{subpath}"
     body, status = _proxy_to_api_v2(path)
+    if isinstance(body, dict):
+        return jsonify(body), status
+    return Response(body, status=status, mimetype="application/json")
+
+
+@app.route("/api/v2/personality/<path:subpath>", methods=["GET", "POST"])
+@login_required
+def api_v2_personality_proxy(subpath: str):
+    """Прокси personality API в FastAPI v2."""
+    path = f"/api/v2/personality/{subpath}"
+    data = None
+    if request.method == "POST" and request.is_json:
+        data = request.get_data()
+    body, status = _proxy_to_api_v2(path, method=request.method, data=data)
     if isinstance(body, dict):
         return jsonify(body), status
     return Response(body, status=status, mimetype="application/json")
@@ -923,7 +950,7 @@ def admin_legacy():
         rank_labels=RANK_LABELS,
         chats=chats,
         current_chat=chat_id or "all",
-        portrait_building_user_ids=list(_portrait_building),
+        portrait_building_user_ids=_portrait_building_ids_from_api(),
         digest_preview=digest_preview,
         analysis_brief=analysis_brief,
         chat_mode=chat_mode or "default",
@@ -1114,104 +1141,21 @@ def settings():
 @app.route("/api/settings", methods=["GET", "POST"])
 @login_required
 def api_settings():
-    """API настроек: GET — все, POST — обновить {key: value}."""
-    from bot_settings import get_all, set_all, DEFAULTS
-    if request.method == "POST":
-        data = request.get_json() or {}
-        updates = {}
-        for k, v in data.items():
-            if k in DEFAULTS and k != "chat_settings":
-                updates[k] = v
-        if updates:
-            set_all(updates)
-        return jsonify({"ok": True, "settings": get_all()})
-    return jsonify({"ok": True, "settings": get_all()})
+    """Legacy proxy -> /api/v2/settings."""
+    path = "/api/v2/settings"
+    body, status = _proxy_to_api_v2(path, method=request.method, data=request.get_data() if request.method == "POST" else None)
+    return (jsonify(body), status) if isinstance(body, dict) else (Response(body, status=status, mimetype="application/json"), status)
 
 
 @app.route("/api/chat-mode", methods=["GET", "POST"])
 @login_required
 def api_chat_mode():
-    """Чтение/установка режима чата.
-    GET: ?chat_id=123
-    POST: {chat_id: 123, mode: "default"|"soft"|"active"|"beast"}
-    """
-    try:
-        if request.method == "GET":
-            chat_id = request.args.get("chat_id")
-            if chat_id is None:
-                return jsonify({"ok": False, "error": "Нужен chat_id"}), 400
-            try:
-                cid = int(chat_id)
-            except (ValueError, TypeError):
-                return jsonify({"ok": False, "error": "chat_id должен быть числом"}), 400
-            from bot_settings import get_chat_mode
-
-            mode = get_chat_mode(cid)
-            descriptions = _chat_mode_descriptions()
-            return jsonify({
-                "ok": True,
-                "chat_id": cid,
-                "mode": mode,
-                "label": descriptions.get(mode, mode),
-                "descriptions": descriptions,
-            })
-
-        data = request.get_json() or {}
-        chat_id = data.get("chat_id")
-        mode = data.get("mode")
-        if chat_id is None:
-            return jsonify({"ok": False, "error": "Нужен chat_id"}), 400
-        try:
-            cid = int(chat_id)
-        except (ValueError, TypeError):
-            return jsonify({"ok": False, "error": "chat_id должен быть числом"}), 400
-        if mode not in ("default", "soft", "active", "beast"):
-            return jsonify({"ok": False, "error": "Нужен mode: default, soft, active или beast"}), 400
-        from bot_settings import set_chat_mode, CHAT_MODE_PRESETS
-        if set_chat_mode(cid, mode):
-            preset = CHAT_MODE_PRESETS.get(mode, {})
-            label = preset.get("_label", mode)
-            msg = f"[{datetime.now().strftime('%H:%M:%S')}] Чат {cid}: режим → «{label}»"
-            logger.info(msg)
-            try:
-                with open(MODE_CHANGES_LOG, "a", encoding="utf-8") as f:
-                    f.write(msg + "\n")
-            except Exception:
-                pass
-            return jsonify({"ok": True, "mode": mode, "label": label, "descriptions": _chat_mode_descriptions()})
-        return jsonify({"ok": False, "error": "Не удалось применить режим"}), 500
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route("/api/reset-political-count", methods=["POST"])
-@login_required
-def api_reset_political_count():
-    """Сброс счётчика полит. сообщений для чата. POST: {chat_id: 123}."""
-    try:
-        data = request.get_json() or request.form or {}
-        chat_id = data.get("chat_id")
-        if chat_id is None:
-            return jsonify({"ok": False, "error": "Нужен chat_id"}), 400
-        try:
-            cid = int(chat_id)
-        except (ValueError, TypeError):
-            return jsonify({"ok": False, "error": "chat_id должен быть числом"}), 400
-        cid_str = str(cid)
-        existing = []
-        if RESET_POLITICAL_COUNT_PATH.exists():
-            try:
-                fdata = json.loads(RESET_POLITICAL_COUNT_PATH.read_text(encoding="utf-8"))
-                existing = list(fdata.get("chat_ids") or [])
-            except Exception:
-                pass
-        if cid_str not in existing:
-            existing.append(cid_str)
-        RESET_POLITICAL_COUNT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        RESET_POLITICAL_COUNT_PATH.write_text(json.dumps({"chat_ids": existing}, ensure_ascii=False), encoding="utf-8")
-        return jsonify({"ok": True, "message": f"Сброс для чата {cid} запланирован. Применится при следующем сообщении в чате."})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+    """Legacy proxy -> /api/v2/chat-mode."""
+    path = "/api/v2/chat-mode"
+    if request.method == "GET" and request.query_string:
+        path += "?" + request.query_string.decode("utf-8")
+    body, status = _proxy_to_api_v2(path, method=request.method, data=request.get_data() if request.method == "POST" else None)
+    return (jsonify(body), status) if isinstance(body, dict) else (Response(body, status=status, mimetype="application/json"), status)
 
 
 @app.route("/user/<user_id>", methods=["GET", "POST"])
@@ -1267,8 +1211,8 @@ def user_detail(user_id):
         images_archive=images_archive,
         chats_titles=chats_titles,
         chat_id=chat_id or "",
-        is_portrait_building=user_id in _portrait_building,
-        is_portrait_image_generating=user_id in _portrait_image_generating,
+        is_portrait_building=_portrait_status_from_api(str(user_id), "building"),
+        is_portrait_image_generating=_portrait_status_from_api(str(user_id), "generating"),
         portrait_image_exists=portrait_image_exists,
         portrait_image_mtime=portrait_image_mtime,
         close_attention_views=close_attention_views,
@@ -1344,70 +1288,6 @@ def portrait_image(user_id):
         )
     except Exception:
         return Response(status=500)
-
-
-@app.route("/api/user/<user_id>/portrait-image-status")
-@login_required
-def api_portrait_image_status(user_id):
-    """Статус генерации картинки портрета (для polling при перезагрузке страницы)."""
-    return jsonify({"generating": user_id in _portrait_image_generating})
-
-
-@app.route("/api/portrait-clear-cache", methods=["POST"])
-@login_required
-def api_portrait_clear_cache():
-    """Выгружает модель FLUX из памяти."""
-    try:
-        from services.portrait_image import clear_portrait_model_cache
-
-        ok = clear_portrait_model_cache()
-        return jsonify({"ok": True, "cleared": ok})
-    except Exception as e:
-        logger.exception("Очистка кеша портретов: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route("/api/user/<user_id>/portrait-image", methods=["POST"])
-@login_required
-def api_portrait_image_generate(user_id):
-    """Генерирует картинку портрета по психологическому описанию."""
-    from services.portrait_image import generate_portrait_image, PROVIDERS
-    from user_stats import get_user, set_portrait_image_updated_date
-    user_id_str = str(user_id)
-    if user_id_str in _portrait_image_generating:
-        return jsonify({"ok": False, "error": "Генерация уже идёт"}), 409
-    u = get_user(int(user_id), "")
-    portrait = (u.get("portrait") or "").strip()
-    if not portrait:
-        return jsonify({"ok": False, "error": "Сначала составьте текстовый портрет"}), 400
-    provider = None
-    try:
-        data = request.get_json(silent=True) or {}
-        p = (data.get("provider") or "").strip().lower()
-        if p in PROVIDERS:
-            provider = p
-    except Exception:
-        pass
-    _portrait_image_generating.add(user_id_str)
-    try:
-        path = generate_portrait_image(
-            int(user_id),
-            portrait,
-            u.get("display_name", ""),
-            provider=provider,
-        )
-        if path:
-            set_portrait_image_updated_date(int(user_id))
-            return jsonify({"ok": True, "message": "Портрет сгенерирован"})
-        return jsonify({
-            "ok": False,
-            "error": "Не удалось сгенерировать. Проверьте баланс OpenRouter и логи сервера.",
-        }), 500
-    except Exception as e:
-        logger.exception("Ошибка генерации портрета: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
-    finally:
-        _portrait_image_generating.discard(user_id_str)
 
 
 @app.route("/api/user/<user_id>/telegram")
@@ -1518,134 +1398,17 @@ def chat_analysis_page(chat_id):
 @app.route("/api/portrait-from-storage", methods=["POST"])
 @login_required
 def api_portrait_from_storage():
-    try:
-        data = request.get_json() or {}
-        user_id = data.get("user_id")
-        chat_id = data.get("chat_id")
-        if not user_id:
-            return jsonify({"ok": False, "error": "Нужен user_id"}), 400
-
-        from user_stats import get_user_messages_archive, get_user, set_deep_portrait
-        from ai_analyzer import build_deep_portrait_from_messages
-
-        try:
-            user_id_int = int(user_id)
-        except ValueError:
-            return jsonify({"ok": False, "error": "Некорректный user_id"}), 400
-
-        user_id_str = str(user_id_int)
-        if user_id_str in _portrait_building:
-            return jsonify({"ok": False, "error": "Портрет уже создаётся для этого пользователя"}), 409
-
-        _portrait_building.add(user_id_str)
-        try:
-            chat_id_int = int(chat_id) if chat_id and chat_id != "all" else None
-            messages = get_user_messages_archive(user_id_int, chat_id_int)
-            if not messages:
-                return jsonify({
-                    "ok": False,
-                    "error": "Нет сообщений в архиве. Бот накапливает сообщения по мере чтения чата. Подождите, пока участник напишет больше.",
-                }), 404
-
-            u = get_user(user_id_int)
-            display_name = u.get("display_name", user_id)
-            portrait, rank = build_deep_portrait_from_messages(messages, display_name)
-            set_deep_portrait(user_id_int, portrait, rank)
-
-            return jsonify({
-                "ok": True,
-                "messages_count": len(messages),
-                "portrait_preview": (portrait[:500] + "…") if len(portrait) > 500 else portrait,
-            })
-        finally:
-            _portrait_building.discard(user_id_str)
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+    """Legacy proxy -> /api/v2/portrait/portrait-from-storage."""
+    body, status = _proxy_to_api_v2("/api/v2/portrait/portrait-from-storage", method="POST", data=request.get_data())
+    return (jsonify(body), status) if isinstance(body, dict) else (Response(body, status=status, mimetype="application/json"), status)
 
 
 @app.route("/api/portrait-classify-unknown", methods=["POST"])
 @login_required
 def api_portrait_classify_unknown():
-    """Массово классифицирует пользователей с rank=unknown через построение портрета."""
-    try:
-        from ai_analyzer import build_deep_portrait_from_messages
-        from user_stats import get_user, get_user_messages_archive, get_users_in_chat, set_deep_portrait
-
-        payload = request.get_json(silent=True) or {}
-        raw_chat = str(payload.get("chat_id", "all") or "all").strip()
-        chat_id: int | None = None
-        if raw_chat != "all":
-            if not raw_chat.lstrip("-").isdigit():
-                return jsonify({"ok": False, "error": "Некорректный chat_id"}), 400
-            chat_id = int(raw_chat)
-
-        users = ((_load_users() or {}).get("users", {}) or {})
-        chat_members: set[str] | None = None
-        if chat_id is not None:
-            try:
-                chat_members = {str(int(uid)) for uid in (get_users_in_chat(int(chat_id)) or [])}
-            except Exception:
-                chat_members = set()
-
-        candidate_ids: list[int] = []
-        for uid, row in users.items():
-            uid_str = str(uid or "").strip()
-            if not uid_str.lstrip("-").isdigit():
-                continue
-            if chat_members is not None and uid_str not in chat_members:
-                continue
-            rank = str((row or {}).get("rank", "unknown") or "unknown").strip().lower()
-            if rank == "unknown":
-                candidate_ids.append(int(uid_str))
-
-        processed = 0
-        skipped_no_messages = 0
-        skipped_in_progress = 0
-        failed = 0
-        for uid in candidate_ids:
-            uid_key = str(uid)
-            if uid_key in _portrait_building:
-                skipped_in_progress += 1
-                continue
-            _portrait_building.add(uid_key)
-            try:
-                messages = get_user_messages_archive(uid, chat_id)
-                if not messages:
-                    skipped_no_messages += 1
-                    continue
-                u = get_user(uid) or {}
-                display_name = str(u.get("display_name") or uid)
-                portrait, rank = build_deep_portrait_from_messages(messages, display_name)
-                set_deep_portrait(uid, portrait, rank)
-                processed += 1
-            except Exception:
-                failed += 1
-            finally:
-                _portrait_building.discard(uid_key)
-
-        return jsonify(
-            {
-                "ok": True,
-                "chat_id": "all" if chat_id is None else int(chat_id),
-                "unknown_total": len(candidate_ids),
-                "processed": int(processed),
-                "skipped_no_messages": int(skipped_no_messages),
-                "skipped_in_progress": int(skipped_in_progress),
-                "failed": int(failed),
-            }
-        )
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route("/api/portrait-building-status")
-@login_required
-def api_portrait_building_status():
-    """Возвращает, идёт ли построение портрета для user_id или список всех."""
-    user_id = request.args.get("user_id")
-    if user_id:
-        return jsonify({"building": user_id in _portrait_building})
-    return jsonify({"building_user_ids": list(_portrait_building)})
+    """Legacy proxy -> /api/v2/portrait/portrait-classify-unknown."""
+    body, status = _proxy_to_api_v2("/api/v2/portrait/portrait-classify-unknown", method="POST", data=request.get_data())
+    return (jsonify(body), status) if isinstance(body, dict) else (Response(body, status=status, mimetype="application/json"), status)
 
 
 @app.route("/api/user/<user_id>/close-attention", methods=["POST"])
@@ -2381,48 +2144,23 @@ def api_chat_moderation_risk_compat(chat_id: str):
 @app.route("/api/metrics/user/<path:user_id>")
 @login_required
 def api_metrics_user(user_id: str):
-    from services.marketing_metrics import get_user_metrics
-
-    if not str(user_id).lstrip("-").isdigit():
-        return jsonify({"ok": False, "error": "invalid user_id"}), 400
-    chat_raw = (request.args.get("chat_id") or "all").strip().lower()
-    chat_id = None if chat_raw == "all" else (int(chat_raw) if chat_raw.lstrip("-").isdigit() else None)
-    try:
-        days = max(1, min(90, int(request.args.get("days", "30"))))
-    except ValueError:
-        return jsonify({"ok": False, "error": "invalid days"}), 400
-    if chat_raw != "all" and chat_id is None:
-        return jsonify({"ok": False, "error": "invalid chat_id"}), 400
-    payload = _cached_json(
-        "metrics_user",
-        45,
-        lambda: get_user_metrics(int(user_id), chat_id=chat_id, days=days),
-        user_id=int(user_id),
-        chat_id=chat_id,
-        days=days,
-    )
-    return jsonify({"ok": True, "metrics": payload})
+    """Legacy proxy -> /api/v2/metrics/user/<user_id>."""
+    path = f"/api/v2/metrics/user/{user_id}"
+    if request.query_string:
+        path += "?" + request.query_string.decode("utf-8")
+    body, status = _proxy_to_api_v2(path)
+    return (jsonify(body), status) if isinstance(body, dict) else (Response(body, status=status, mimetype="application/json"), status)
 
 
 @app.route("/api/metrics/chat/<path:chat_id>/health")
 @login_required
 def api_metrics_chat_health(chat_id: str):
-    from services.marketing_metrics import get_chat_health
-
-    if not str(chat_id).lstrip("-").isdigit():
-        return jsonify({"ok": False, "error": "invalid chat_id"}), 400
-    try:
-        days = max(1, min(90, int(request.args.get("days", "30"))))
-    except ValueError:
-        return jsonify({"ok": False, "error": "invalid days"}), 400
-    payload = _cached_json(
-        "metrics_chat_health",
-        45,
-        lambda: get_chat_health(int(chat_id), days=days),
-        chat_id=int(chat_id),
-        days=days,
-    )
-    return jsonify({"ok": True, "health": payload})
+    """Legacy proxy -> /api/v2/metrics/chat/<chat_id>/health."""
+    path = f"/api/v2/metrics/chat/{chat_id}/health"
+    if request.query_string:
+        path += "?" + request.query_string.decode("utf-8")
+    body, status = _proxy_to_api_v2(path)
+    return (jsonify(body), status) if isinstance(body, dict) else (Response(body, status=status, mimetype="application/json"), status)
 
 
 @app.route("/api/leaderboard")
@@ -2965,92 +2703,30 @@ def api_me_graph_version():
 @app.route("/api/log-tail")
 @login_required
 def api_log_tail():
-    lines = max(20, min(500, int(request.args.get("lines", "120"))))
-    source = (request.args.get("source") or "telegram-bot.service").strip()
-    if source.endswith(".service"):
-        allowed = {"telegram-bot.service", "telegram-bot-admin.service", "telegram-bot-api.service"}
-        if source not in allowed:
-            source = "telegram-bot.service"
-        try:
-            cp = subprocess.run(
-                ["journalctl", "-u", source, "-n", str(lines), "--no-pager", "-o", "cat"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            content = (cp.stdout or "").splitlines()
-        except Exception:
-            content = []
-        return jsonify({"ok": True, "lines": content[-lines:], "source": source, "kind": "systemd"})
-    path = Path(source)
-    if not path.exists():
-        return jsonify({"ok": True, "lines": [], "source": str(path), "kind": "file"})
-    try:
-        content = path.read_text(encoding="utf-8").splitlines()
-    except Exception:
-        content = []
-    return jsonify({"ok": True, "lines": content[-lines:], "source": str(path), "kind": "file"})
+    """Legacy proxy -> /api/v2/admin/log-tail."""
+    path = "/api/v2/admin/log-tail"
+    if request.query_string:
+        path += "?" + request.query_string.decode("utf-8")
+    body, status = _proxy_to_api_v2(path)
+    return (jsonify(body), status) if isinstance(body, dict) else (Response(body, status=status, mimetype="application/json"), status)
 
 
 @app.route("/api/prompts", methods=["GET", "POST", "DELETE"])
 @login_required
 def api_prompts():
-    if request.method == "GET":
-        return jsonify({"ok": True, "prompts": get_all_prompts()})
-    if request.method == "POST":
-        payload = request.get_json(silent=True) or {}
-        name = str(payload.get("name") or "").strip()
-        value = str(payload.get("value") or "")
-        if not name:
-            return jsonify({"ok": False, "error": "name is required"}), 400
-        set_prompt(name, value)
-        return jsonify({"ok": True, "prompts": get_all_prompts()})
-    payload = request.get_json(silent=True) or {}
-    names = payload.get("names")
-    if isinstance(names, list):
-        names = [str(x) for x in names if str(x).strip()]
-    else:
-        names = None
-    return jsonify({"ok": True, "prompts": reset_prompts(names)})
+    """Legacy proxy -> /api/v2/admin/prompts."""
+    path = "/api/v2/admin/prompts"
+    body, status = _proxy_to_api_v2(path, method=request.method, data=request.get_data() if request.method != "GET" else None)
+    return (jsonify(body), status) if isinstance(body, dict) else (Response(body, status=status, mimetype="application/json"), status)
 
 
 @app.route("/api/topic-policies", methods=["GET", "POST", "DELETE"])
 @login_required
 def api_topic_policies():
-    from services.topic_policies import (
-        get_primary_topic,
-        get_topic_policies,
-        reset_topic_policies,
-        set_primary_topic,
-        set_topic_policy,
-    )
-
-    if request.method == "GET":
-        payload = _cached_json(
-            "topic_policies_get",
-            20,
-            lambda: {"ok": True, "primary_topic": get_primary_topic(), "policies": get_topic_policies()},
-            scope="global",
-        )
-        return jsonify(payload)
-
-    payload = request.get_json(silent=True) or {}
-    if request.method == "POST":
-        primary_topic = payload.get("primary_topic")
-        if primary_topic is not None:
-            set_primary_topic(str(primary_topic))
-        name = str(payload.get("name") or "").strip().lower()
-        patch = payload.get("patch")
-        if name and isinstance(patch, dict):
-            set_topic_policy(name, patch)
-        _API_CACHE.clear_prefix("topic_policies_get")
-        return jsonify({"ok": True, "primary_topic": get_primary_topic(), "policies": get_topic_policies()})
-
-    names = payload.get("names")
-    names_list = [str(x) for x in names] if isinstance(names, list) else None
-    policies = reset_topic_policies(names_list)
-    _API_CACHE.clear_prefix("topic_policies_get")
-    return jsonify({"ok": True, "primary_topic": get_primary_topic(), "policies": policies})
+    """Legacy proxy -> /api/v2/admin/topic-policies."""
+    path = "/api/v2/admin/topic-policies"
+    body, status = _proxy_to_api_v2(path, method=request.method, data=request.get_data() if request.method != "GET" else None)
+    return (jsonify(body), status) if isinstance(body, dict) else (Response(body, status=status, mimetype="application/json"), status)
 
 
 if __name__ == "__main__":

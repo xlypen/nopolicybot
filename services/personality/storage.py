@@ -74,3 +74,29 @@ async def get_profile_history(
     result = await session.execute(stmt)
     rows = result.scalars().all()
     return [PersonalityProfile.model_validate(r.profile_json) for r in rows]
+
+
+async def get_profiles_for_chat(
+    session: AsyncSession,
+    chat_id: int,
+    limit_per_user: int = 1,
+) -> list[tuple[int, PersonalityProfile]]:
+    """
+    Get latest profile per user in chat.
+    Returns list of (user_id, profile).
+    """
+    stmt = (
+        select(PersonalityProfileRow)
+        .where(PersonalityProfileRow.chat_id == chat_id)
+        .order_by(PersonalityProfileRow.generated_at.desc())
+    )
+    result = await session.execute(stmt)
+    rows = result.scalars().all()
+    seen: set[int] = set()
+    out: list[tuple[int, PersonalityProfile]] = []
+    for r in rows:
+        if r.user_id in seen:
+            continue
+        seen.add(r.user_id)
+        out.append((r.user_id, PersonalityProfile.model_validate(r.profile_json)))
+    return out

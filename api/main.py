@@ -14,6 +14,7 @@ from api.routers.admin import router as admin_router
 from api.routers.graph import router as graph_router
 from api.routers.health import router as health_router
 from api.routers.metrics import router as metrics_router
+from api.routers.personality import router as personality_router
 from api.routers.portrait import router as portrait_router
 from api.routers.predictive import router as predictive_router
 from api.routers.recommendations import router as recommendations_router
@@ -252,6 +253,7 @@ app.include_router(health_router, prefix="/api/v2", tags=["health"])
 app.include_router(graph_router, prefix="/api/v2/graph", tags=["graph"])
 app.include_router(admin_router, prefix="/api/v2/admin", tags=["admin"])
 app.include_router(metrics_router, prefix="/api/v2/metrics", tags=["metrics"])
+app.include_router(personality_router, prefix="/api/v2/personality", tags=["personality"])
 app.include_router(portrait_router, prefix="/api/v2/portrait", tags=["portrait"])
 app.include_router(recommendations_router, prefix="/api/v2/recommendations", tags=["recommendations"])
 app.include_router(predictive_router, prefix="/api/v2/predictive", tags=["predictive"])

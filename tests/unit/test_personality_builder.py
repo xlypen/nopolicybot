@@ -57,15 +57,10 @@ def test_build_structured_profile_mocked():
         "confidence": 0.78,
     }
 
-    fake_choice = MagicMock()
-    fake_choice.message.content = json.dumps(fake_response)
-    fake_resp = MagicMock()
-    fake_resp.choices = [fake_choice]
+    fake_text = json.dumps(fake_response)
 
-    mock_client = MagicMock()
-    mock_client.chat.completions.create.return_value = fake_resp
-
-    with patch("services.personality.builder.get_client", return_value=mock_client):
+    with patch("services.personality.builder.chat_complete_with_fallback", return_value=(fake_text, "test-model")), \
+         patch("services.personality.builder.prefer_free_mode", return_value=False):
         msgs = [{"text": "Test message", "date": "2025-01-01"} for _ in range(10)]
         profile = build_structured_profile_from_messages(msgs, user_id="42", username="test", period_days=30)
 

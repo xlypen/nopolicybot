@@ -5,6 +5,7 @@ import logging
 import os
 from collections import defaultdict
 
+from ai.client import chat_complete_with_fallback, prefer_free_mode
 from services.personality.schema import ContextProfile, PersonalityProfile
 
 logger = logging.getLogger(__name__)
@@ -109,10 +110,7 @@ def detect_topics_llm(messages: list[dict]) -> dict[str, list[dict]]:
     Falls back to keyword detection on any API error.
     Returns {topic: [messages]}.
     """
-    from ai.client import get_client
-
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    client = get_client()
 
     by_topic: dict[str, list[dict]] = defaultdict(list)
     filtered = [(i, m) for i, m in enumerate(messages) if (m.get("text") or "").strip()]
@@ -125,12 +123,14 @@ def detect_topics_llm(messages: list[dict]) -> dict[str, list[dict]]:
         prompt = _TOPIC_CLASSIFY_PROMPT.format(messages_block=messages_block)
 
         try:
-            response = client.chat.completions.create(
-                model=model,
+            content, _model_used = chat_complete_with_fallback(
                 messages=[{"role": "user", "content": prompt}],
+                model=model,
                 temperature=0.1,
+                prefer_free=prefer_free_mode(),
             )
-            content = (response.choices[0].message.content or "").strip()
+            if not content:
+                raise ValueError("Empty LLM response")
             mapping = _extract_json_object(content)
             if not mapping or not isinstance(mapping, dict):
                 raise ValueError("Invalid LLM response structure")

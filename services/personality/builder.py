@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ai.client import get_client
+from ai.client import chat_complete_with_fallback, get_client, prefer_free_mode
 from openai import APIError, RateLimitError
 
 from services.personality.contextual import enrich_profile_with_context
@@ -114,40 +114,32 @@ def build_structured_profile_from_messages(
         schema_json=_SCHEMA_EXAMPLE,
     )
 
-    client = get_client()
     last_error = ""
+    msgs = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
 
     for attempt in range(max_retries + 1):
         try:
-            response = client.chat.completions.create(
+            content, model_used = chat_complete_with_fallback(
+                messages=msgs,
                 model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
+                max_tokens=2048,
                 temperature=0.3,
+                prefer_free=prefer_free_mode(),
             )
-            content = (response.choices[0].message.content or "").strip()
             if not content:
-                last_error = "Empty response"
+                last_error = f"Empty response from {model_used}"
                 continue
 
             raw = _extract_json(content)
             data = json.loads(raw)
 
-            # Ensure required structure
-            if "ocean" not in data:
-                data["ocean"] = {}
-            if "dark_triad" not in data:
-                data["dark_triad"] = {}
-            if "communication" not in data:
-                data["communication"] = {}
-            if "emotional_profile" not in data:
-                data["emotional_profile"] = {}
-            if "topics" not in data:
-                data["topics"] = {}
+            for key in ("ocean", "dark_triad", "communication", "emotional_profile", "topics"):
+                if key not in data:
+                    data[key] = {}
 
-            # Fill from context
             data["user_id"] = str(user_id)
             data["username"] = username or str(user_id)
             data["generated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -161,7 +153,7 @@ def build_structured_profile_from_messages(
         except json.JSONDecodeError as e:
             last_error = f"Invalid JSON: {e}"
             if attempt < max_retries:
-                user_prompt += f"\n\n[RETRY] Previous response had invalid JSON. Error: {e}. Return ONLY valid JSON."
+                msgs[-1]["content"] += f"\n\n[RETRY] Previous response had invalid JSON. Error: {e}. Return ONLY valid JSON."
         except Exception as e:
             if isinstance(e, (RateLimitError, APIError)):
                 if attempt < max_retries:

@@ -7,7 +7,7 @@ import time
 
 import asyncio
 
-from ai.client import get_client
+from ai.client import chat_complete_with_fallback, get_client, prefer_free_mode
 from services.personality.ensemble import build_ensemble_profile
 from services.personality.schema import PersonalityProfile
 
@@ -160,14 +160,13 @@ def generate_portrait(
         "Пиши кратко (до 500 слов), по-русски, в третьем лице."
     )
 
-    client = get_client()
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-    response = client.chat.completions.create(
-        model=model,
+    text, _model_used = chat_complete_with_fallback(
         messages=[{"role": "user", "content": prompt}],
+        model=model,
         temperature=0.5,
         max_tokens=1000,
+        prefer_free=prefer_free_mode(),
     )
-
-    return (response.choices[0].message.content or "").strip()
+    return (text or "").strip()

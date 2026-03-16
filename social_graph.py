@@ -270,6 +270,44 @@ def _merge_connection_entry(
     return entry
 
 
+def _sync_connection_to_db(chat_id: int, entry: dict) -> None:
+    """Best-effort sync of a single connection entry to the DB."""
+    try:
+        import asyncio
+        from db.engine import get_db
+        from db.repositories.edge_repo import EdgeRepository
+
+        ua = int(entry.get("user_a", 0) or 0)
+        ub = int(entry.get("user_b", 0) or 0)
+        if not ua or not ub:
+            return
+
+        async def _do():
+            async with get_db() as session:
+                repo = EdgeRepository(session)
+                await repo.upsert_full(
+                    chat_id=chat_id,
+                    from_user=ua,
+                    to_user=ub,
+                    weight=float(entry.get("message_count", 0) or 0),
+                    period_7d=float(entry.get("message_count_7d", 0) or 0),
+                    period_30d=float(entry.get("message_count_30d", 0) or 0),
+                    tone=str(entry.get("tone", "neutral") or "neutral"),
+                    topics=list(entry.get("topics") or []),
+                    summary=str(entry.get("summary", "") or ""),
+                    summary_by_date=list(entry.get("summary_by_date") or []),
+                )
+
+        try:
+            asyncio.get_running_loop()
+            return
+        except RuntimeError:
+            pass
+        asyncio.run(_do())
+    except Exception as e:
+        logger.debug("_sync_connection_to_db: %s", e)
+
+
 def append_dialogue_message(
     chat_id: int,
     sender_id: int,
@@ -428,7 +466,7 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
                 summary = _summarize_dialogue_pair(pair_msgs, names)
                 if not summary:
                     continue
-                data["connections"][ckey][pk] = _merge_connection_entry(
+                entry = _merge_connection_entry(
                     data=data,
                     ckey=ckey,
                     pk=pk,
@@ -437,6 +475,8 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
                     summary=summary,
                     pair_msgs_count=len(pair_msgs),
                 )
+                data["connections"][ckey][pk] = entry
+                _sync_connection_to_db(int(ckey), entry)
             data.setdefault("processed_dates", {})
             if ckey not in data["processed_dates"]:
                 data["processed_dates"][ckey] = []
@@ -516,7 +556,7 @@ def process_realtime_updates(
             summary = _summarize_dialogue_pair(pair_msgs, names)
             if not summary:
                 continue
-            data["connections"][ckey][pk] = _merge_connection_entry(
+            entry = _merge_connection_entry(
                 data=data,
                 ckey=ckey,
                 pk=pk,
@@ -525,6 +565,8 @@ def process_realtime_updates(
                 summary=summary,
                 pair_msgs_count=len(pair_msgs),
             )
+            data["connections"][ckey][pk] = entry
+            _sync_connection_to_db(int(ckey), entry)
             chat_cursor[pk] = len(pair_msgs)
             updated += 1
             updated_by_chat[ckey] = int(updated_by_chat.get(ckey, 0) or 0) + 1
@@ -540,41 +582,18 @@ def process_realtime_updates(
 
 
 def get_connections_for_digest(chat_id: int | None) -> list[dict]:
-    """Связи для дайджеста/анализа: JSON с обогащением из БД (актуальные счётчики).
+    """Связи для дайджеста/анализа — чтение из БД (основной источник).
 
-    Основной источник — JSON (содержит summary, tone, topics).
-    Из БД подтягиваются свежие счётчики сообщений, если они больше.
+    Fallback на JSON только если БД недоступна или пуста.
     """
-    json_conn = get_connections(chat_id)
     try:
-        from services.storage_cutover import storage_db_reads_enabled
-        if not storage_db_reads_enabled():
-            return json_conn
         from services.graph_api import get_connection_rows_from_db_sync
         db_rows = get_connection_rows_from_db_sync(chat_id)
+        if db_rows:
+            return db_rows
     except Exception as e:
-        logger.warning("get_connections_for_digest DB unavailable: %s", e)
-        return json_conn
-    if not db_rows:
-        return json_conn
-    db_by_pair: dict[tuple[int, int], dict] = {}
-    for r in db_rows:
-        ua, ub = int(r.get("user_a", 0) or 0), int(r.get("user_b", 0) or 0)
-        if ua and ub:
-            db_by_pair[(min(ua, ub), max(ua, ub))] = r
-    for r in json_conn:
-        ua, ub = int(r.get("user_a", 0) or 0), int(r.get("user_b", 0) or 0)
-        if not ua or not ub:
-            continue
-        db = db_by_pair.get((min(ua, ub), max(ua, ub)))
-        if not db:
-            continue
-        for key in ("message_count_7d", "message_count_30d", "message_count_24h"):
-            db_val = float(db.get(key, 0) or 0)
-            json_val = float(r.get(key, 0) or 0)
-            if db_val > json_val:
-                r[key] = db_val
-    return json_conn
+        logger.warning("get_connections_for_digest DB read failed: %s", e)
+    return get_connections(chat_id)
 
 
 def get_connections(chat_id: int | None = None) -> list[dict]:

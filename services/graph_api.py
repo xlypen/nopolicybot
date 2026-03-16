@@ -390,6 +390,9 @@ async def build_payload(chat_id: int | None, edge_repo, user_repo, period: int =
             "message_count_30d": float(getattr(e, "period_30d", 0.0) or 0.0),
             "message_count_a_to_b": int(getattr(e, "weight", 0.0) or 0.0),
             "message_count_b_to_a": int(getattr(e, "weight", 0.0) or 0.0),
+            "tone": str(getattr(e, "tone", "neutral") or "neutral"),
+            "topics": list(getattr(e, "topics", None) or []),
+            "summary": str(getattr(e, "summary", "") or ""),
         }
         for e in edge_models or []
     ]
@@ -434,7 +437,7 @@ async def _build_graph_payload_from_db(chat_id: int | None, period: str = "all",
 
 
 async def get_connection_rows_from_db_async(chat_id: int | None) -> list[dict]:
-    """Связи из БД в формате строк для дайджеста/анализа (без summary/tone/topics)."""
+    """Связи из БД в формате строк для дайджеста/анализа (с summary/tone/topics)."""
     async with get_db() as session:
         edge_repo = EdgeRepository(session)
         if chat_id is None:
@@ -451,6 +454,12 @@ async def get_connection_rows_from_db_async(chat_id: int | None) -> list[dict]:
         w = float(getattr(e, "weight", 0) or 0)
         p7 = float(getattr(e, "period_7d", 0) or 0)
         p30 = float(getattr(e, "period_30d", 0) or 0)
+        tone = str(getattr(e, "tone", "neutral") or "neutral")
+        topics = list(getattr(e, "topics", None) or [])
+        summary = str(getattr(e, "summary", "") or "")
+        summary_by_date = list(getattr(e, "summary_by_date", None) or [])
+        last_upd = getattr(e, "last_updated", None)
+        last_upd_str = last_upd.isoformat() if last_upd else ""
         rows.append({
             "chat_id": cid,
             "user_a": ua,
@@ -462,11 +471,11 @@ async def get_connection_rows_from_db_async(chat_id: int | None) -> list[dict]:
             "message_count_30d": p30,
             "message_count_a_to_b": int(w),
             "message_count_b_to_a": int(w),
-            "summary": "",
-            "summary_by_date": [],
-            "last_updated": "",
-            "tone": "neutral",
-            "topics": [],
+            "summary": summary,
+            "summary_by_date": summary_by_date,
+            "last_updated": last_upd_str,
+            "tone": tone,
+            "topics": topics,
             "trend_delta": 0,
             "confidence": 0.0,
             "tone_trend": "stable",

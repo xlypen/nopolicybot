@@ -46,6 +46,10 @@ class Edge(Base):
     weight = Column(Float, default = 1)
     period_7d = Column(Float, default = 0)
     period_30d = Column(Float, default = 0)
+    tone = Column(String(32), default='neutral')
+    topics = Column(JSON, default=list)
+    summary = Column(Text, default='')
+    summary_by_date = Column(JSON, default=list)
     last_updated = Column(TIMESTAMP, default = datetime.utcnow)
     __table_args__ = (Index('idx_edges_chat', 'chat_id'), Index('idx_edges_unique', 'chat_id', 'from_user', 'to_user', unique = True))
 

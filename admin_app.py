@@ -1412,8 +1412,15 @@ def api_chat_digest_preview(chat_id):
         return jsonify({"ok": False, "error": "Некорректный chat_id"}), 400
     try:
         import social_graph
-        digest = social_graph.build_chat_digest(int(chat_id), period_days=1)
-        return jsonify({"ok": True, "digest": digest})
+        from datetime import datetime, timezone
+        digest = social_graph.build_chat_digest(int(chat_id), period_days=1, for_admin=True)
+        updated_at = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+        return jsonify({
+            "ok": True,
+            "digest": digest,
+            "updated_at": updated_at,
+            "period_days": 1,
+        })
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -1425,6 +1432,7 @@ def api_chat_analysis(chat_id):
     if not str(chat_id).lstrip("-").isdigit():
         return jsonify({"ok": False, "error": "Некорректный chat_id"}), 400
     try:
+        from datetime import datetime, timezone
         from services.chat_analysis import build_chat_analysis, render_analysis_brief, render_analysis_full
         from user_stats import get_chats
         period = int(request.args.get("period", 7))
@@ -1432,10 +1440,13 @@ def api_chat_analysis(chat_id):
         data = build_chat_analysis(int(chat_id), period_days=period, include_ai_summary=include_ai)
         chats_map = {str(c["chat_id"]): c.get("title", "") for c in get_chats()}
         chat_title = chats_map.get(str(chat_id), "")
+        updated_at = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
         return jsonify({
             "ok": True,
-            "brief": render_analysis_brief(data),
+            "brief": render_analysis_brief(data, for_admin=True),
             "full": render_analysis_full(data, chat_title),
+            "updated_at": updated_at,
+            "period_days": period,
             "data": {k: v for k, v in data.items() if k not in ("names", "TONE_RU", "TOPIC_RU", "ROLE_RU", "RANK_LABELS")},
         })
     except Exception as e:

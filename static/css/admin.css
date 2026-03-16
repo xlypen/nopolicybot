@@ -860,6 +860,28 @@ span[style*="color:var(--text-primary)"] {
 .skeleton-block { height: 80px; margin-bottom: 12px; }
 .skeleton-circle { width: 48px; height: 48px; border-radius: 50%; }
 
+/* Digest block (admin style) — !important перекрывает любые inline-стили из кэша/старого API */
+.digest.digest--admin { font-size: 0.9rem; color: var(--text-primary) !important; }
+.digest.digest--admin .digest-empty { color: var(--text-secondary) !important; }
+.digest.digest--admin .digest-title { font-weight: 700; font-size: 0.95rem; margin-bottom: 0.5rem; color: var(--text-primary) !important; }
+.digest.digest--admin .digest-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 0.5rem; margin-bottom: 0.75rem; }
+.digest.digest--admin .digest-metric { background: var(--bg-secondary) !important; border: 1px solid var(--border-card) !important; border-radius: 8px; padding: 0.4rem 0.6rem; }
+.digest.digest--admin .digest-metric-label { display: block; font-size: 0.7rem; color: var(--text-secondary) !important; }
+.digest.digest--admin .digest-metric-value { font-size: 0.92rem; font-weight: 700; color: var(--text-primary) !important; }
+.digest.digest--admin .digest-row { margin-bottom: 0.5rem; color: var(--text-primary) !important; }
+.digest.digest--admin .digest-label { font-size: 0.78rem; color: var(--text-secondary); margin-right: 0.25rem; }
+.digest.digest--admin .digest-tag { display: inline-block; padding: 0.15rem 0.4rem; border-radius: 999px; background: var(--bg-secondary) !important; color: var(--text-primary) !important; font-size: 0.73rem; margin-right: 0.25rem; border: 1px solid var(--border-card) !important; }
+.digest.digest--admin .digest-active { font-size: 0.82rem; }
+.digest.digest--admin .digest-muted { color: var(--text-secondary) !important; font-weight: normal; }
+.digest.digest--admin .digest-subtitle { font-weight: 600; font-size: 0.85rem; margin-bottom: 0.35rem; color: var(--text-primary) !important; }
+.digest.digest--admin .digest-dialogue { padding: 0.4rem 0.5rem; margin-bottom: 0.4rem; background: var(--bg-secondary) !important; border: 1px solid var(--border-card) !important; border-radius: 8px; }
+.digest.digest--admin .digest-dialogue-head { font-size: 0.84rem; color: var(--text-primary) !important; }
+.digest.digest--admin .digest-dialogue-summary { font-size: 0.8rem; color: var(--text-secondary) !important; margin-top: 0.2rem; line-height: 1.35; }
+.digest.digest--admin .digest-updated { font-size: 0.75rem; color: var(--text-tertiary) !important; margin-top: 0.5rem; }
+.digest.digest--admin .portrait-card--admin { border-left-color: var(--primary) !important; }
+.digest.digest--admin .portrait-card-title { font-size: 0.8rem; font-weight: 600; color: var(--text-secondary) !important; margin-bottom: 0.35rem; }
+.digest.digest--admin .portrait-card-text { font-size: 0.88rem; line-height: 1.5; color: var(--text-primary) !important; }
+
 /* Custom modal */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 9999; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
 .modal-overlay.active { opacity: 1; pointer-events: auto; }

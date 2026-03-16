@@ -433,6 +433,58 @@ async def _build_graph_payload_from_db(chat_id: int | None, period: str = "all",
     return payload
 
 
+async def get_connection_rows_from_db_async(chat_id: int | None) -> list[dict]:
+    """Связи из БД в формате строк для дайджеста/анализа (без summary/tone/topics)."""
+    async with get_db() as session:
+        edge_repo = EdgeRepository(session)
+        if chat_id is None:
+            edge_models = await edge_repo.get_all_chats()
+        else:
+            edge_models = await edge_repo.get_all(int(chat_id))
+    rows = []
+    for e in edge_models or []:
+        cid = int(getattr(e, "chat_id", 0) or 0)
+        ua = int(getattr(e, "from_user", 0) or 0)
+        ub = int(getattr(e, "to_user", 0) or 0)
+        if not ua or not ub:
+            continue
+        w = float(getattr(e, "weight", 0) or 0)
+        p7 = float(getattr(e, "period_7d", 0) or 0)
+        p30 = float(getattr(e, "period_30d", 0) or 0)
+        rows.append({
+            "chat_id": cid,
+            "user_a": ua,
+            "user_b": ub,
+            "message_count": w,
+            "message_count_total": w,
+            "message_count_24h": 0,
+            "message_count_7d": p7,
+            "message_count_30d": p30,
+            "message_count_a_to_b": int(w),
+            "message_count_b_to_a": int(w),
+            "summary": "",
+            "summary_by_date": [],
+            "last_updated": "",
+            "tone": "neutral",
+            "topics": [],
+            "trend_delta": 0,
+            "confidence": 0.0,
+            "tone_trend": "stable",
+            "connection_cooling": False,
+            "alert_flags": [],
+        })
+    return rows
+
+
+def get_connection_rows_from_db_sync(chat_id: int | None) -> list[dict]:
+    """Синхронная обёртка для вызова из Flask/social_graph."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(get_connection_rows_from_db_async(chat_id))
+    raise RuntimeError("get_connection_rows_from_db_sync cannot run inside active event loop")
+
+
 def _fallback_rows_from_user_stats(chat_id: int | None) -> list[dict]:
     """
     Recovery fallback: build weak interaction edges from message sequences

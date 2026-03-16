@@ -201,6 +201,10 @@
     </div>
   </div>
   <div class="card">
+    <div class="title">AI: кредиты и модели</div>
+    <div id="aiCreditsStatus" style="color:var(--text-secondary);">Загрузка...</div>
+  </div>
+  <div class="card">
     <div class="title">Рекомендации</div>
     <ul id="recoList" style="margin:0;padding-left:18px;color:var(--text-secondary);">
       <li>Загрузка...</li>
@@ -844,6 +848,7 @@ async function loadInsights(chat) {
     loadRecommendations(chat),
     loadPredictive(chat),
     loadStorageStatus(),
+    loadAiCreditsStatus(),
     loadAdminHealth(chat),
     loadAdminCommunity(chat),
     loadAdminLeaderboard(chat),
@@ -1071,6 +1076,35 @@ async function loadStorageStatus() {
     <div style="margin-top:4px;">JSON → пользователей ${j.users || 0}, сообщений ${j.messages || 0}, связей ${j.edges || 0}</div>
     <div>БД → пользователей ${d.users || 0}, сообщений ${d.messages || 0}, связей ${d.edges || 0}</div>
   `;
+}
+
+async function loadAiCreditsStatus() {
+  const el = document.getElementById('aiCreditsStatus');
+  if (!el) return;
+  el.textContent = 'Загрузка...';
+  try {
+    const r = await fetch('/api/v2/personality/credits-status', { credentials: 'same-origin' });
+    const d = await r.json();
+    if (!d || !d.ok) {
+      el.textContent = '—';
+      return;
+    }
+    const mode = d.mode_label || d.mode || '—';
+    const exhausted = d.openrouter_credits_exhausted;
+    const preferFree = d.prefer_free_mode;
+    const fp = d.free_providers || {};
+    const providers = [];
+    if (fp.gemini) providers.push('Gemini');
+    if (fp.huggingface) providers.push('HF');
+    if (fp.replicate) providers.push('Replicate');
+    el.innerHTML = `
+      <div>Режим: <strong style="color:${exhausted || preferFree ? '#fbbf24' : '#4ade80'}">${esc(mode)}</strong></div>
+      <div style="margin-top:4px;font-size:12px;">OpenRouter 402: ${exhausted ? 'да' : 'нет'} · AI_PREFER_FREE: ${preferFree ? 'да' : 'нет'}</div>
+      <div style="margin-top:2px;font-size:12px;">Бесплатные провайдеры: ${providers.length ? providers.join(', ') : 'нет'}</div>
+    `;
+  } catch (e) {
+    el.textContent = 'Ошибка загрузки';
+  }
 }
 
 function trendMark(value){
@@ -1533,7 +1567,14 @@ async function refreshDigestFromOps() {
   if (out) out.innerHTML = '<span style="color:var(--text-secondary);">Обновляю дайджест…</span>';
   try {
     const body = await requestJson(`/api/chat/${encodeURIComponent(chat)}/digest-preview`);
-    if (out) out.innerHTML = body.digest || 'Данных пока недостаточно для дайджеста.';
+    const html = body.digest || 'Данных пока недостаточно для дайджеста.';
+    const updatedAt = body.updated_at ? esc(String(body.updated_at)) : '';
+    const periodDays = body.period_days ? Number(body.period_days) : 1;
+    if (out) {
+      out.innerHTML = '<div class="digest digest--admin">' + html +
+        (updatedAt ? `<div class="digest-updated">Данные за последние ${periodDays} дн. Обновлено: ${updatedAt}</div>` : '') +
+        '</div>';
+    }
     setOpsFeedback('Дайджест обновлён.', '#10b981');
   } catch (e) {
     if (out) out.innerHTML = `<span style="color:#ef4444;">${esc(e.message || e)}</span>`;
@@ -1555,7 +1596,14 @@ async function refreshAnalysisFromOps(withAi) {
   if (out) out.innerHTML = `<span style="color:var(--text-secondary);">${withAi ? 'Создаю AI-портрет чата…' : 'Обновляю анализ…'}</span>`;
   try {
     const body = await requestJson(`/api/chat/${encodeURIComponent(chat)}/analysis?period=7&ai=${withAi ? '1' : '0'}`);
-    if (out) out.innerHTML = body.brief || 'Данных пока недостаточно для анализа.';
+    const html = body.brief || 'Данных пока недостаточно для анализа.';
+    const updatedAt = body.updated_at ? esc(String(body.updated_at)) : '';
+    const periodDays = body.period_days != null ? Number(body.period_days) : 7;
+    if (out) {
+      out.innerHTML = '<div class="digest digest--admin">' + html +
+        (updatedAt ? `<div class="digest-updated">Данные за ${periodDays} дн. Обновлено: ${updatedAt}</div>` : '') +
+        '</div>';
+    }
     setOpsFeedback(withAi ? 'AI-портрет чата обновлён.' : 'Анализ чата обновлён.', '#10b981');
   } catch (e) {
     if (out) out.innerHTML = `<span style="color:#ef4444;">${esc(e.message || e)}</span>`;

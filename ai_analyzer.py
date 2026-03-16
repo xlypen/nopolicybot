@@ -15,7 +15,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 logger = logging.getLogger(__name__)
 
 from openai import OpenAI, RateLimitError, APIError, APIStatusError
-from ai.client import get_client as _shared_get_client, load_project_env
+from ai.client import (
+    get_client as _shared_get_client,
+    load_project_env,
+    _is_402 as _check_402,
+    gemini_chat_complete,
+    gemini_analyze_image,
+    chat_complete_with_fallback,
+    is_credits_exhausted,
+    prefer_free_mode,
+)
 from ai.parsers import normalize_message_type, normalize_sentiment, parse_json
 from ai.prompts import SUBSTANTIVE_REPLY_PROMPT
 from ai.tasks.replies import build_substantive_user_content
@@ -388,31 +397,28 @@ def analyze_messages(text: str) -> tuple[bool, str, str]:
     """
     Возвращает (is_political, remark, sentiment).
     sentiment: "positive" / "negative" / "neutral".
-    При 429 — до 3 попыток с паузой.
+    При 429 — до 3 попыток с паузой. При 402 — Gemini fallback.
     """
     if not text or not text.strip():
         return False, "", "neutral"
 
-    client = get_client()
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": f"Переписка:\n\n{text}"},
+    ]
+
     content = ""
     for attempt in range(3):
-        try:
-            response = client.chat.completions.create(
-                model=os.getenv("OPENAI_MODEL", "deepseek-chat"),
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": f"Переписка:\n\n{text}"},
-                ],
-                temperature=0.3,
-            )
-            raw = response.choices[0].message.content
-            content = (raw or "").strip()
+        raw, _ = chat_complete_with_fallback(
+            messages,
+            temperature=0.3,
+            prefer_free=prefer_free_mode(),
+        )
+        content = (raw or "").strip()
+        if content:
             break
-        except RateLimitError:
-            if attempt < 2:
-                time.sleep(10 + attempt * 10)
-            else:
-                raise
+        if attempt < 2:
+            time.sleep(5 + attempt * 5)
     if not content:
         return False, "", "neutral"
 
@@ -459,21 +465,20 @@ def analyze_close_attention(
     if not message_text or not (message_text := message_text.strip()):
         return {"views": "", "needs_evidence": False, "evidence_found": False, "demand_phrase": ""}
 
-    client = get_client()
     user_content = f"Высказывание:\n\n{sanitize_for_prompt(message_text, 1500)}"
     if accumulated_context:
         user_content = f"Контекст накопленных взглядов участника:\n{accumulated_context}\n\n{user_content}"
 
     try:
-        response = client.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL", "deepseek-chat"),
-            messages=[
+        raw, _ = chat_complete_with_fallback(
+            [
                 {"role": "system", "content": CLOSE_ATTENTION_PROMPT},
                 {"role": "user", "content": user_content},
             ],
             temperature=0.2,
+            prefer_free=prefer_free_mode(),
         )
-        raw = (response.choices[0].message.content or "").strip()
+        raw = (raw or "").strip()
         if "```" in raw:
             parts = raw.split("```")
             if len(parts) >= 2:
@@ -538,6 +543,31 @@ def analyze_image(image_bytes: bytes, caption: str = "") -> tuple[bool, str, str
     elif image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
         mime = "image/webp"
     url = f"data:{mime};base64,{b64}"
+    prompt_text = IMAGE_ANALYSIS_PROMPT + (f"\n\nПодпись к изображению от пользователя: {caption}" if caption else "")
+    if prefer_free_mode():
+        raw = gemini_analyze_image(image_bytes, "Ты анализируешь изображения. Отвечай только JSON.\n\n" + prompt_text, mime=mime)
+        if raw:
+            try:
+                data = parse_json(raw)
+                if isinstance(data, dict):
+                    is_political = bool(data.get("is_political", False))
+                    remark = (data.get("remark") or "").strip()
+                    sentiment = normalize_sentiment(data.get("sentiment"))
+                    mt = normalize_message_type(data.get("message_type"))
+                    cat = (data.get("category") or "other").strip().lower()
+                    if cat not in ("political", "vulgar", "technical", "meme", "neutral", "other"):
+                        cat = "other"
+                    desc = (data.get("description") or "").strip()[:500]
+                    reac = (data.get("reaction_emoji") or "👍").strip() or "👍"
+                    if reac not in _ALLOWED_REACTION_EMOJI:
+                        reac = "👍"
+                    is_analysis_screenshot = bool(data.get("is_analysis_screenshot", False))
+                    if not is_analysis_screenshot and _looks_like_archive_screenshot(desc):
+                        is_analysis_screenshot = True
+                    return is_political, remark, sentiment, mt, cat, desc, reac, is_analysis_screenshot
+            except (KeyError, TypeError):
+                pass
+        return False, "", "neutral", "other", "other", "", "👍", False
     client = get_client()
     # Важно: для image-анализa не используем OPENAI_MODEL (часто это текстовая модель -> 404 на vision).
     # Список vision-моделей, пробуем по порядку; сломанные (404/402) помечаем и пропускаем.
@@ -659,18 +689,18 @@ def analyze_message_for_reply(context_and_message: str) -> tuple[bool, str, str,
     cached = _cache_get(ck)
     if isinstance(cached, tuple) and len(cached) == 4:
         return cached
-    client = get_client()
+    messages = [
+        {"role": "system", "content": ANALYZE_FOR_REPLY_PROMPT},
+        {"role": "user", "content": f"Переписка:\n\n{text}"},
+    ]
     for attempt in range(2):
         try:
-            response = client.chat.completions.create(
-                model=os.getenv("OPENAI_MODEL", "deepseek-chat"),
-                messages=[
-                    {"role": "system", "content": ANALYZE_FOR_REPLY_PROMPT},
-                    {"role": "user", "content": f"Переписка:\n\n{text}"},
-                ],
+            raw, _ = chat_complete_with_fallback(
+                messages,
                 temperature=0.2,
+                prefer_free=prefer_free_mode(),
             )
-            raw = (response.choices[0].message.content or "").strip()
+            raw = (raw or "").strip()
             data = parse_json(raw)
             if not isinstance(data, dict):
                 continue
@@ -683,9 +713,9 @@ def analyze_message_for_reply(context_and_message: str) -> tuple[bool, str, str,
             return result
         except (KeyError, TypeError):
             pass
-        except RateLimitError:
+        except Exception:
             if attempt < 1:
-                time.sleep(5)
+                time.sleep(3)
     return False, "neutral", "other", False
 
 
@@ -713,27 +743,25 @@ def should_pause_dialog(context_and_message: str) -> bool:
     cached = _cache_get(ck)
     if isinstance(cached, bool):
         return cached
-    client = get_client()
+    messages = [
+        {"role": "system", "content": STOP_DIALOG_PROMPT},
+        {"role": "user", "content": f"Диалог:\n\n{text}"},
+    ]
     for attempt in range(2):
         try:
-            response = client.chat.completions.create(
-                model=os.getenv("OPENAI_MODEL", "deepseek-chat"),
-                messages=[
-                    {"role": "system", "content": STOP_DIALOG_PROMPT},
-                    {"role": "user", "content": f"Диалог:\n\n{text}"},
-                ],
+            raw, _ = chat_complete_with_fallback(
+                messages,
                 temperature=0.1,
+                prefer_free=prefer_free_mode(),
             )
-            data = parse_json((response.choices[0].message.content or "").strip())
+            data = parse_json((raw or "").strip())
             if isinstance(data, dict):
                 result = bool(data.get("should_pause", False))
                 _cache_set(ck, result)
                 return result
-        except RateLimitError:
+        except Exception:
             if attempt < 1:
                 time.sleep(3)
-        except Exception:
-            pass
     return False
 
 
@@ -906,16 +934,18 @@ def build_deep_portrait_from_messages(
     block = "\n".join(lines[-500:])
     user_content = f"Имя/ник: {user_display_name or '—'}\n\nСообщения пользователя:\n{block}"
 
+    msgs = [
+        {"role": "system", "content": DEEP_PORTRAIT_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
     client = get_client()
     content = ""
     for attempt in range(3):
         try:
             response = client.chat.completions.create(
                 model=os.getenv("OPENAI_MODEL", "deepseek-chat"),
-                messages=[
-                    {"role": "system", "content": DEEP_PORTRAIT_PROMPT},
-                    {"role": "user", "content": user_content},
-                ],
+                messages=msgs,
                 temperature=0.3,
                 max_tokens=2048,
             )
@@ -926,6 +956,11 @@ def build_deep_portrait_from_messages(
                 time.sleep(10 + attempt * 10)
             else:
                 raise
+        except (APIStatusError, APIError) as e:
+            if _check_402(e):
+                content = gemini_chat_complete(msgs, max_tokens=2048, temperature=0.3) or ""
+                break
+            raise
 
     if not content:
         return "Ошибка анализа ИИ.", "unknown"
@@ -951,15 +986,16 @@ def assess_tone_toward_bot(messages: list[str]) -> str:
     if not texts:
         return "обращений к боту пока нет"
     block = "\n".join(f"- {t[:200]}" for t in texts)
+    tone_msgs = [
+        {"role": "system", "content": TONE_TO_BOT_PROMPT},
+        {"role": "user", "content": f"Сообщения пользователя боту:\n{block}"},
+    ]
     client = get_client()
     for attempt in range(2):
         try:
             response = client.chat.completions.create(
                 model=os.getenv("OPENAI_MODEL", "deepseek-chat"),
-                messages=[
-                    {"role": "system", "content": TONE_TO_BOT_PROMPT},
-                    {"role": "user", "content": f"Сообщения пользователя боту:\n{block}"},
-                ],
+                messages=tone_msgs,
                 temperature=0.3,
             )
             content = (response.choices[0].message.content or "").strip()[:200]
@@ -971,6 +1007,13 @@ def assess_tone_toward_bot(messages: list[str]) -> str:
                 time.sleep(5)
             else:
                 break
+        except (APIStatusError, APIError) as e:
+            if _check_402(e):
+                result = gemini_chat_complete(tone_msgs, temperature=0.3)
+                if result:
+                    return result[:200]
+                break
+            break
     return "нейтрален"
 
 
@@ -1145,7 +1188,26 @@ def _generate_reply_ensemble(
     Генерирует ответ через несколько моделей:
     1) Получаем 2+ кандидата от разных моделей.
     2) Выбираем лучший отдельной моделью.
+    При AI_PREFER_FREE — сразу Gemini.
     """
+    if prefer_free_mode():
+        raw, _ = chat_complete_with_fallback(
+            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
+            temperature=temperature,
+            prefer_free=True,
+        )
+        if raw:
+            return _normalize_reply_text(raw, max_chars)
+        # Gemini пустой — пробуем OpenRouter (пополненные кредиты)
+        raw, _ = chat_complete_with_fallback(
+            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
+            temperature=temperature,
+            prefer_free=False,
+        )
+        if raw:
+            return _normalize_reply_text(raw, max_chars)
+        return fallback_text
+
     models = _get_reply_models()
     candidates: list[str] = []
     candidate_models = [m for m in models[:3] if m not in _UNAVAILABLE_REPLY_MODELS]
@@ -1171,6 +1233,12 @@ def _generate_reply_ensemble(
             except Exception as e:
                 if _is_model_not_found_error(e):
                     _UNAVAILABLE_REPLY_MODELS.add(model)
+                if _check_402(e):
+                    result = gemini_chat_complete(
+                        [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
+                        temperature=temperature,
+                    )
+                    return _normalize_reply_text(result or "", max_chars) if result else ""
                 return ""
         return ""
 
@@ -1189,7 +1257,14 @@ def _generate_reply_ensemble(
                     candidates.append(content)
                 if len(candidates) >= 2:
                     break
+
     if not candidates:
+        gemini_result = gemini_chat_complete(
+            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
+            temperature=temperature,
+        )
+        if gemini_result:
+            return _normalize_reply_text(gemini_result, max_chars)
         return fallback_text
     return _select_best_candidate(candidates, user_content)
 

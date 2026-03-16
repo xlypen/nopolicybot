@@ -7,6 +7,9 @@
 .main-card-image { flex: 1; min-width: 220px; max-width: 320px; position: relative; }
 .main-card-image img { width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--border-card); object-fit: cover; aspect-ratio: 1; display: block; }
 .main-card-image .img-placeholder { width: 100%; aspect-ratio: 1; border-radius: 12px; border: 1px solid var(--border-card); background: var(--bg-tertiary); display: flex; align-items: center; justify-content: center; font-size: 2.5rem; font-weight: 600; color: var(--text-tertiary); }
+.img-toggle { display: flex; gap: 0; border-radius: 8px; overflow: hidden; border: 1px solid var(--border-card); margin-bottom: 6px; }
+.img-toggle button { flex: 1; padding: 4px 0; font-size: 0.75rem; border: none; cursor: pointer; background: var(--bg-tertiary); color: var(--text-secondary); transition: background 0.15s, color 0.15s; }
+.img-toggle button.active { background: var(--accent-blue, #3b82f6); color: #fff; font-weight: 600; }
 .main-card-actions { flex: 1; min-width: 200px; max-width: 320px; display: flex; flex-direction: column; gap: 6px; }
 .main-card-actions .btn, .main-card-actions a.btn { width: auto; max-width: 100%; text-align: left; }
 .main-card-actions .main-card-select { padding: 5px 10px; font-size: 0.82rem; max-width: 100%; }
@@ -60,11 +63,16 @@
     <div class="title">Основное</div>
     <div class="main-card-layout">
       <div class="main-card-image">
+        <div class="img-toggle">
+          <button type="button" id="imgToggleAvatar" class="active">Аватар</button>
+          <button type="button" id="imgToggleVision">Образ</button>
+        </div>
+        <img id="imgAvatar" src="{{ url_for('avatar', user_id=user_id) }}" alt="{{ u.get('display_name', user_id) }}" title="Аватар из Telegram" onerror="this.style.display='none';document.getElementById('imgPlaceholder').style.display='flex';">
+        <div class="img-placeholder" id="imgPlaceholder" style="display:none;">{{ ((u.get('display_name', user_id) or user_id)|string)[:2]|upper }}</div>
         {% if portrait_exists %}
-        <img src="{{ url_for('portrait_image', user_id=user_id) }}?v={{ portrait_image_mtime }}" alt="Портрет" title="Image-портрет">
+        <img id="imgVision" src="{{ url_for('portrait_image', user_id=user_id) }}?v={{ portrait_image_mtime }}" alt="Визуальный образ" title="Визуальная метафора личности" style="display:none;">
         {% else %}
-        <img src="{{ url_for('avatar', user_id=user_id) }}" alt="{{ u.get('display_name', user_id) }}" title="Аватар" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
-        <div class="img-placeholder" style="display:none;">{{ ((u.get('display_name', user_id) or user_id)|string)[:2]|upper }}</div>
+        <img id="imgVision" src="" alt="Визуальный образ" title="Нет сгенерированного образа" style="display:none;">
         {% endif %}
       </div>
       <div class="main-card-actions">
@@ -181,6 +189,41 @@
 (function () {
   const USER_ID = {{ user_id|tojson }};
   const CHAT_ID = {{ chat_id|tojson }};
+  const PORTRAIT_EXISTS = {{ portrait_exists|tojson }};
+
+  (function initImageToggle() {
+    var btnAvatar = document.getElementById("imgToggleAvatar");
+    var btnVision = document.getElementById("imgToggleVision");
+    var imgAvatar = document.getElementById("imgAvatar");
+    var imgVision = document.getElementById("imgVision");
+    var placeholder = document.getElementById("imgPlaceholder");
+    if (!btnAvatar || !btnVision) return;
+
+    function showAvatar() {
+      btnAvatar.classList.add("active"); btnVision.classList.remove("active");
+      if (imgAvatar) imgAvatar.style.display = "";
+      if (imgVision) imgVision.style.display = "none";
+      if (placeholder && imgAvatar && imgAvatar.style.display === "none") placeholder.style.display = "flex";
+      else if (placeholder) placeholder.style.display = "none";
+    }
+    function showVision() {
+      btnVision.classList.add("active"); btnAvatar.classList.remove("active");
+      if (imgAvatar) imgAvatar.style.display = "none";
+      if (placeholder) placeholder.style.display = "none";
+      if (imgVision) {
+        if (!imgVision.src || imgVision.src === window.location.href) {
+          imgVision.style.display = "none";
+          if (placeholder) { placeholder.textContent = "Нет образа"; placeholder.style.display = "flex"; }
+        } else {
+          imgVision.style.display = "";
+        }
+      }
+    }
+    btnAvatar.addEventListener("click", showAvatar);
+    btnVision.addEventListener("click", showVision);
+    if (PORTRAIT_EXISTS) showVision();
+  })();
+
   const _rawPortrait = {{ u.get('portrait', 'Портрет пока не сформирован.')|tojson }};
   const portraitBox = document.getElementById('portraitBox');
   if (portraitBox && typeof marked !== 'undefined') {
@@ -338,9 +381,17 @@
       method: "POST",
       body: JSON.stringify(payload)
     }).then(function (data) {
-      var info = data.model_used ? " (" + data.model_used + ", " + (data.generation_time_sec || 0) + "s)" : "";
-      if (out) out.innerHTML = "<span style='color:var(--accent-emerald);'>Готово!" + esc(info) + " Обновляю…</span>";
-      setTimeout(function () { location.reload(); }, 2000);
+      var costLabel = data.cost === "free" ? " бесплатно" : " платно";
+      var info = data.model_used ? " (" + data.model_used + ", " + (data.generation_time_sec || 0) + "s," + costLabel + ")" : "";
+      if (out) out.innerHTML = "<span style='color:var(--accent-emerald);'>Готово!" + esc(info) + "</span>";
+      var imgVision = document.getElementById("imgVision");
+      if (imgVision) {
+        imgVision.src = "/portrait-image/" + encodeURIComponent(String(USER_ID)) + "?v=" + Date.now();
+        imgVision.style.display = "";
+      }
+      var btnVision = document.getElementById("imgToggleVision");
+      if (btnVision) btnVision.click();
+      btn.disabled = false;
     }).catch(function (e) {
       if (out) out.innerHTML = "<span style='color:#ef4444;'>" + esc(e.message || "Ошибка") + "</span>";
       btn.disabled = false;

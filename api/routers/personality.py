@@ -394,6 +394,7 @@ async def post_generate_portrait(
         "style_variant": style_variant,
         "generation_time_sec": result["generation_time_sec"],
         "seed_description": prompt_data["seed_description"],
+        "cost": "free" if result["provider"] in ("huggingface", "gemini") else "paid",
     }
 
 
@@ -478,6 +479,32 @@ async def get_style_variants(_auth=Depends(require_auth)):
             k: {"description": v["description"]}
             for k, v in STYLE_VARIANTS.items()
         },
+    }
+
+
+@router.get("/credits-status")
+async def get_credits_status(_auth=Depends(require_auth)):
+    """Check if OpenRouter credits are available or exhausted."""
+    import os
+    from ai.client import is_credits_exhausted, prefer_free_mode
+
+    has_hf = bool((os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN") or "").strip())
+    has_gemini = bool((os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip())
+    has_replicate = bool((os.getenv("REPLICATE_API_TOKEN") or "").strip())
+    exhausted = is_credits_exhausted()
+    prefer_free = prefer_free_mode()
+    effective_mode = "free" if (exhausted or prefer_free) else "paid"
+    return {
+        "ok": True,
+        "openrouter_credits_exhausted": exhausted,
+        "prefer_free_mode": prefer_free,
+        "free_providers": {
+            "huggingface": has_hf,
+            "gemini": has_gemini,
+            "replicate": has_replicate,
+        },
+        "mode": effective_mode,
+        "mode_label": "Gemini (бесплатно)" if prefer_free else ("free (fallback)" if exhausted else "OpenRouter (платно)"),
     }
 
 

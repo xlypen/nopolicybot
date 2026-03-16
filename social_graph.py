@@ -539,6 +539,44 @@ def process_realtime_updates(
     return int(updated)
 
 
+def get_connections_for_digest(chat_id: int | None) -> list[dict]:
+    """Связи для дайджеста/анализа: JSON с обогащением из БД (актуальные счётчики).
+
+    Основной источник — JSON (содержит summary, tone, topics).
+    Из БД подтягиваются свежие счётчики сообщений, если они больше.
+    """
+    json_conn = get_connections(chat_id)
+    try:
+        from services.storage_cutover import storage_db_reads_enabled
+        if not storage_db_reads_enabled():
+            return json_conn
+        from services.graph_api import get_connection_rows_from_db_sync
+        db_rows = get_connection_rows_from_db_sync(chat_id)
+    except Exception as e:
+        logger.warning("get_connections_for_digest DB unavailable: %s", e)
+        return json_conn
+    if not db_rows:
+        return json_conn
+    db_by_pair: dict[tuple[int, int], dict] = {}
+    for r in db_rows:
+        ua, ub = int(r.get("user_a", 0) or 0), int(r.get("user_b", 0) or 0)
+        if ua and ub:
+            db_by_pair[(min(ua, ub), max(ua, ub))] = r
+    for r in json_conn:
+        ua, ub = int(r.get("user_a", 0) or 0), int(r.get("user_b", 0) or 0)
+        if not ua or not ub:
+            continue
+        db = db_by_pair.get((min(ua, ub), max(ua, ub)))
+        if not db:
+            continue
+        for key in ("message_count_7d", "message_count_30d", "message_count_24h"):
+            db_val = float(db.get(key, 0) or 0)
+            json_val = float(r.get(key, 0) or 0)
+            if db_val > json_val:
+                r[key] = db_val
+    return json_conn
+
+
 def get_connections(chat_id: int | None = None) -> list[dict]:
     """
     Возвращает список связей для отображения в админке.
@@ -681,16 +719,24 @@ def get_user_roles(chat_id: int | None = None, limit: int = 100) -> list[dict]:
     return sorted(result, key=lambda x: x["degree"], reverse=True)[: max(1, int(limit))]
 
 
-def build_chat_digest(chat_id: int, period_days: int = 1, max_items: int = 8) -> str:
-    """Строит HTML-дайджест чата: метрики, участники, темы, ключевые диалоги."""
+def build_chat_digest(
+    chat_id: int,
+    period_days: int = 1,
+    max_items: int = 8,
+    for_admin: bool = False,
+) -> str:
+    """Строит HTML-дайджест чата: метрики, участники, темы, ключевые диалоги.
+    for_admin=True — классы под стиль админки (без тёмно-синих фонов)."""
     from html import escape as esc
     cid = int(chat_id)
     days = max(1, int(period_days or 1))
 
     metric_key = "message_count_24h" if days <= 1 else ("message_count_7d" if days <= 7 else "message_count_30d")
     period_label = "за сутки" if days <= 1 else (f"за {days} дн." if days <= 7 else f"за ~{days} дн.")
-    rows_all = [r for r in get_connections(cid) if int(r.get("message_count_30d", 0) or 0) > 0]
+    rows_all = [r for r in get_connections_for_digest(cid) if int(r.get("message_count_30d", 0) or 0) > 0]
     if not rows_all:
+        if for_admin:
+            return '<div class="digest-empty">Дайджест пока недоступен — недостаточно данных по связям.</div>'
         return '<div style="color:#9bb0cf;">Дайджест пока недоступен — недостаточно данных по связям.</div>'
 
     rows = [r for r in rows_all if int(r.get(metric_key, 0) or 0) > 0]
@@ -734,61 +780,95 @@ def build_chat_digest(chat_id: int, period_days: int = 1, max_items: int = 8) ->
             uid = str(int(r.get(uid_key, 0) or 0))
             participant_counts[uid] = participant_counts.get(uid, 0) + cnt
 
-    # --- Метрики ---
     dominant_tone = max(tone_counts, key=tone_counts.get) if tone_counts else "neutral"
     top_topics_arr = sorted(topic_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
     top_people = sorted(participant_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
 
     h = []
-    h.append(f'<div style="font-weight:700;font-size:0.95rem;margin-bottom:0.5rem;">Сводка {esc(period_label)}</div>')
-
-    # Metrics row
-    h.append('<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:0.4rem;margin-bottom:0.6rem;">')
-    for label, val in [
-        ("Активных связей", str(len(rows))),
-        ("Сообщений", str(total_msgs)),
-        ("Тон", tone_ru.get(dominant_tone, dominant_tone)),
-    ]:
-        h.append(
-            f'<div style="background:#11345c;border:1px solid #2b5f95;border-radius:7px;padding:0.35rem 0.5rem;">'
-            f'<div style="font-size:0.7rem;color:#9fb9da;">{esc(label)}</div>'
-            f'<div style="font-size:0.92rem;font-weight:700;color:#e8f2ff;">{esc(val)}</div></div>'
-        )
-    h.append('</div>')
-
-    # Topics
-    if top_topics_arr:
-        chips = " ".join(
-            f'<span style="display:inline-block;padding:0.15rem 0.4rem;border-radius:999px;background:#1f4d3c;color:#d2f7e4;font-size:0.73rem;margin-right:0.25rem;">'
-            f'{esc(topic_ru.get(k, k))} ({v})</span>'
-            for k, v in top_topics_arr
-        )
-        h.append(f'<div style="margin-bottom:0.5rem;"><span style="font-size:0.78rem;color:#9db4d1;">Темы:</span> {chips}</div>')
-
-    # Top participants
-    if top_people:
-        people_parts = []
-        for uid, cnt in top_people:
-            people_parts.append(f'<strong>{_name(uid)}</strong> <span style="color:#9db4d1;">({cnt})</span>')
-        h.append(f'<div style="font-size:0.82rem;margin-bottom:0.6rem;color:#dbe8ff;">Самые активные: {", ".join(people_parts)}</div>')
-
-    # Key dialogues
-    top_links = sorted(rows, key=_activity, reverse=True)[: max(1, int(max_items))]
-    h.append('<div style="font-weight:600;font-size:0.85rem;margin-bottom:0.35rem;color:#c9dcf5;">Ключевые диалоги:</div>')
-    for r in top_links:
-        ua = _name(r.get("user_a"))
-        ub = _name(r.get("user_b"))
-        cnt = _activity(r)
-        tone = esc(tone_ru.get(str(r.get("tone", "neutral") or "neutral"), "нейтральный"))
-        summary = esc(_latest_summary(r))
-        h.append(
-            f'<div style="padding:0.4rem 0.5rem;margin-bottom:0.35rem;background:#0f2f56;border:1px solid #204e7d;border-radius:7px;">'
-            f'<div style="font-size:0.84rem;color:#e6f0ff;"><strong>{ua}</strong> ↔ <strong>{ub}</strong>'
-            f' <span style="color:#9db4d1;">· {cnt} сообщ. · {tone}</span></div>'
-        )
-        if summary:
-            h.append(f'<div style="font-size:0.8rem;color:#b8cfe8;margin-top:0.2rem;line-height:1.35;">{summary}</div>')
+    if for_admin:
+        h.append(f'<div class="digest-title">Сводка {esc(period_label)}</div>')
+        h.append('<div class="digest-metrics">')
+        for label, val in [
+            ("Активных связей", str(len(rows))),
+            ("Сообщений", str(total_msgs)),
+            ("Тон", tone_ru.get(dominant_tone, dominant_tone)),
+        ]:
+            h.append(
+                f'<div class="digest-metric"><span class="digest-metric-label">{esc(label)}</span>'
+                f'<span class="digest-metric-value">{esc(val)}</span></div>'
+            )
         h.append('</div>')
+        if top_topics_arr:
+            chips = " ".join(
+                f'<span class="digest-tag">{esc(topic_ru.get(k, k))} ({v})</span>'
+                for k, v in top_topics_arr
+            )
+            h.append(f'<div class="digest-row"><span class="digest-label">Темы:</span> {chips}</div>')
+        if top_people:
+            people_parts = [
+                f'<strong>{_name(uid)}</strong> <span class="digest-muted">({cnt})</span>'
+                for uid, cnt in top_people
+            ]
+            h.append(f'<div class="digest-row digest-active">Самые активные: {", ".join(people_parts)}</div>')
+        top_links = sorted(rows, key=_activity, reverse=True)[: max(1, int(max_items))]
+        h.append('<div class="digest-subtitle">Ключевые диалоги:</div>')
+        for r in top_links:
+            ua = _name(r.get("user_a"))
+            ub = _name(r.get("user_b"))
+            cnt = _activity(r)
+            tone = esc(tone_ru.get(str(r.get("tone", "neutral") or "neutral"), "нейтральный"))
+            summary = esc(_latest_summary(r))
+            h.append('<div class="digest-dialogue">')
+            h.append(
+                f'<div class="digest-dialogue-head"><strong>{ua}</strong> ↔ <strong>{ub}</strong>'
+                f' <span class="digest-muted">· {cnt} сообщ. · {tone}</span></div>'
+            )
+            if summary:
+                h.append(f'<div class="digest-dialogue-summary">{summary}</div>')
+            h.append('</div>')
+    else:
+        # Telegram / legacy: прежние inline-стили
+        h.append(f'<div style="font-weight:700;font-size:0.95rem;margin-bottom:0.5rem;">Сводка {esc(period_label)}</div>')
+        h.append('<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:0.4rem;margin-bottom:0.6rem;">')
+        for label, val in [
+            ("Активных связей", str(len(rows))),
+            ("Сообщений", str(total_msgs)),
+            ("Тон", tone_ru.get(dominant_tone, dominant_tone)),
+        ]:
+            h.append(
+                f'<div style="background:#11345c;border:1px solid #2b5f95;border-radius:7px;padding:0.35rem 0.5rem;">'
+                f'<div style="font-size:0.7rem;color:#9fb9da;">{esc(label)}</div>'
+                f'<div style="font-size:0.92rem;font-weight:700;color:#e8f2ff;">{esc(val)}</div></div>'
+            )
+        h.append('</div>')
+        if top_topics_arr:
+            chips = " ".join(
+                f'<span style="display:inline-block;padding:0.15rem 0.4rem;border-radius:999px;background:#1f4d3c;color:#d2f7e4;font-size:0.73rem;margin-right:0.25rem;">'
+                f'{esc(topic_ru.get(k, k))} ({v})</span>'
+                for k, v in top_topics_arr
+            )
+            h.append(f'<div style="margin-bottom:0.5rem;"><span style="font-size:0.78rem;color:#9db4d1;">Темы:</span> {chips}</div>')
+        if top_people:
+            people_parts = []
+            for uid, cnt in top_people:
+                people_parts.append(f'<strong>{_name(uid)}</strong> <span style="color:#9db4d1;">({cnt})</span>')
+            h.append(f'<div style="font-size:0.82rem;margin-bottom:0.6rem;color:#dbe8ff;">Самые активные: {", ".join(people_parts)}</div>')
+        top_links = sorted(rows, key=_activity, reverse=True)[: max(1, int(max_items))]
+        h.append('<div style="font-weight:600;font-size:0.85rem;margin-bottom:0.35rem;color:#c9dcf5;">Ключевые диалоги:</div>')
+        for r in top_links:
+            ua = _name(r.get("user_a"))
+            ub = _name(r.get("user_b"))
+            cnt = _activity(r)
+            tone = esc(tone_ru.get(str(r.get("tone", "neutral") or "neutral"), "нейтральный"))
+            summary = esc(_latest_summary(r))
+            h.append(
+                f'<div style="padding:0.4rem 0.5rem;margin-bottom:0.35rem;background:#0f2f56;border:1px solid #204e7d;border-radius:7px;">'
+                f'<div style="font-size:0.84rem;color:#e6f0ff;"><strong>{ua}</strong> ↔ <strong>{ub}</strong>'
+                f' <span style="color:#9db4d1;">· {cnt} сообщ. · {tone}</span></div>'
+            )
+            if summary:
+                h.append(f'<div style="font-size:0.8rem;color:#b8cfe8;margin-top:0.2rem;line-height:1.35;">{summary}</div>')
+            h.append('</div>')
 
     return "\n".join(h)
 

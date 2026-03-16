@@ -74,6 +74,34 @@ from services.topic_policies import get_topic_label, resolve_topic_trigger
 from utils.text_formatting import capitalize_sentences, reply_text_to_html, strip_leading_name
 
 
+async def _last_resort_gemini_reply(
+    context: str, display_text: str, first_name: str, user_id: int
+) -> str:
+    """При ошибке ИИ — последняя попытка через Gemini, иначе fallback."""
+    from ai.client import gemini_chat_complete
+    fallback = bot_settings.get("reply_fallback_on_error") or "сейчас не в настроении, напиши потом."
+    ctx = (context or "").strip()[-800:]
+    user_msg = f"{first_name}: {display_text}" if first_name else display_text
+    prompt = (
+        "Ты бот в чате. Пользователь написал тебе. Ответь коротко (1–2 предложения), по-человечески. "
+        "Без морализаторства. На русском.\n\n"
+    )
+    if ctx:
+        prompt += f"Контекст:\n{ctx}\n\n"
+    prompt += f"Сообщение: {user_msg}"
+    msgs = [{"role": "user", "content": prompt}]
+    try:
+        loop = asyncio.get_event_loop()
+        raw = await loop.run_in_executor(
+            None, lambda: gemini_chat_complete(msgs, max_tokens=200, temperature=0.7)
+        )
+        if raw and (raw := raw.strip()):
+            return raw[:500]
+    except Exception as e:
+        logger.debug("Gemini last-resort failed: %s", e)
+    return fallback
+
+
 def _load_env():
     env_path = Path(__file__).resolve().parent / ".env"
     load_dotenv(env_path, encoding="utf-8-sig", override=True)
@@ -380,7 +408,7 @@ INSULTS_LEVEL_3_PLUS = [
 
 
 class IsDirectedAtBotFilter(BaseFilter):
-    """Сообщение обращено к боту: ответ на бота, упоминание @username бота, фото или голос в ответ боту."""
+    """Сообщение обращено к боту: личка, ответ на бота, упоминание @username бота, фото или голос в ответ боту."""
 
     async def __call__(self, message: Message, bot: Bot) -> bool:
         has_text = bool((message.text or message.caption or "").strip())
@@ -388,6 +416,9 @@ class IsDirectedAtBotFilter(BaseFilter):
         has_voice = bool(message.voice)
         if not has_text and not has_photo and not has_voice:
             return False
+        # В личке любое сообщение — к боту
+        if getattr(message.chat, "type", None) == "private":
+            return True
         me = await bot.get_me()
         if message.reply_to_message and message.reply_to_message.from_user and message.reply_to_message.from_user.is_bot:
             return True
@@ -1354,6 +1385,9 @@ async def on_message_to_bot(message: Message) -> None:
             _debug_log("DM_UNPAUSE", chat_id=chat_id, user=first_name, detail="forgive-detected")
             _explain("dm", "unpause", chat_id=chat_id, user_id=user_id, detail=display_text[:120])
             return
+        remaining = int(_dm_silence_until.get(user_id, 0) - now_mono)
+        pause_msg = f"в паузе ещё {max(0, remaining) // 60} мин. напиши «извини» чтобы снять."
+        await message.reply(pause_msg)
         logger.info("Чат %s: пользователь %s в паузе диалога (ignore)", chat_id, first_name)
         _explain("dm", "ignore_in_pause", chat_id=chat_id, user_id=user_id, detail=display_text[:120])
         return
@@ -1510,12 +1544,12 @@ async def on_message_to_bot(message: Message) -> None:
             logger.warning("ИИ недоступен: 402")
         else:
             logger.exception("Ошибка API ИИ при ответе: %s", e)
-        fallback = bot_settings.get("reply_fallback_on_error") or "сейчас не в настроении, напиши потом."
-        await message.reply(fallback, parse_mode="HTML")
+        _reply = await _last_resort_gemini_reply(context, display_text, first_name, message.from_user.id)
+        await message.reply(_reply, parse_mode="HTML")
     except Exception as e:
         logger.exception("Ошибка при генерации ответа: %s", e)
-        fallback = bot_settings.get("reply_fallback_on_error") or "сейчас не в настроении, напиши потом."
-        await message.reply(fallback, parse_mode="HTML")
+        _reply = await _last_resort_gemini_reply(context, display_text, first_name, message.from_user.id)
+        await message.reply(_reply, parse_mode="HTML")
 
 
 async def cmd_start(message: Message) -> None:

@@ -21,7 +21,7 @@ def build_chat_analysis(
     days = max(1, min(int(period_days or 7), 30))
 
     from user_stats import get_users_in_chat, get_user_display_names, get_user
-    from social_graph import get_connections, get_user_roles, get_conflict_forecast
+    from social_graph import get_connections, get_connections_for_digest, get_user_roles, get_conflict_forecast
     from utils.labels import TONE_RU, TOPIC_RU, ROLE_RU
 
     RANK_LABELS = {
@@ -88,11 +88,11 @@ def build_chat_analysis(
     users_data.sort(key=lambda x: -x["total_messages"])
     top_users = users_data[:5]
 
-    # --- social_graph: связи, тон, темы ---
+    # --- social_graph: связи, тон, темы (из БД при включённом режиме) ---
     metric_key = "message_count_7d" if days <= 7 else "message_count_30d"
-    rows = [r for r in get_connections(cid) if int(r.get(metric_key, 0) or r.get("message_count_30d", 0) or 0) > 0]
+    rows = [r for r in get_connections_for_digest(cid) if int(r.get(metric_key, 0) or r.get("message_count_30d", 0) or 0) > 0]
     if not rows:
-        rows = list(get_connections(cid))
+        rows = list(get_connections_for_digest(cid))
 
     total_connections = len(rows)
     conn_messages = sum(int(r.get(metric_key, 0) or r.get("message_count_30d", 0) or 0) for r in rows)
@@ -285,44 +285,56 @@ def _generate_ai_portrait(sections: dict, participants: int, total_messages: int
         return None
 
 
-def _render_portrait_sections(sections: dict, compact: bool = False) -> str:
-    """Рендерит структурированный портрет чата (эргономичная вёрстка)."""
+def _render_portrait_sections(sections: dict, compact: bool = False, for_admin: bool = False) -> str:
+    """Рендерит структурированный портрет чата (эргономичная вёрстка). for_admin — стиль админки (CSS vars)."""
     from html import escape as esc
     if not sections:
+        if for_admin:
+            return '<section class="analysis-section chat-portrait-section"><h3 class="digest-subtitle">Портрет чата</h3><p class="digest-muted">Данных нет.</p></section>'
         return '<section class="analysis-section"><h3>Портрет чата</h3><p style="color:#9bb0cf;">Данных нет.</p></section>'
 
     blocks = [
-        ("psychological", "Психологический профиль", "🧠", "#2d3a5c"),
-        ("professional", "Профессиональный контур", "💼", "#1f4d3c"),
-        ("political", "Политический профиль", "📊", "#3d2a4a"),
-        ("topics", "Частые темы", "💬", "#2a3d4a"),
-        ("summary", "Краткая сводка", "📋", "#1a3a5c"),
+        ("psychological", "Психологический профиль", "🧠"),
+        ("professional", "Профессиональный контур", "💼"),
+        ("political", "Политический профиль", "📊"),
+        ("topics", "Частые темы", "💬"),
+        ("summary", "Краткая сводка", "📋"),
     ]
 
     h = []
     h.append('<section class="analysis-section chat-portrait-section" style="margin-bottom:1.5rem;">')
-    h.append('<h3 style="margin:0 0 1rem;font-size:1.1rem;color:var(--text-primary);">Портрет чата</h3>')
+    h.append('<h3 class="digest-subtitle" style="margin:0 0 1rem;font-size:1.1rem;">Портрет чата</h3>')
     grid_style = "display:grid;grid-template-columns:1fr;gap:0.5rem;" if compact else "display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:0.75rem;"
     h.append(f'<div class="portrait-grid" style="{grid_style}">')
 
-    for key, label, icon, accent in blocks:
+    for key, label, icon in blocks:
         text = sections.get(key, "")
         if not text:
             continue
-        h.append(
-            f'<div class="portrait-card" style="background:var(--bg-input);border:1px solid var(--border-card);'
-            f'border-radius:8px;padding:0.75rem;border-left:4px solid {accent};">'
-            f'<div class="portrait-card-title" style="font-size:0.8rem;font-weight:600;color:#9fb9da;margin-bottom:0.35rem;">{icon} {esc(label)}</div>'
-            f'<div class="portrait-card-text" style="font-size:0.88rem;line-height:1.5;color:#d4e5ff;">{esc(text)}</div>'
-            f'</div>'
-        )
+        if for_admin:
+            h.append(
+                f'<div class="digest-dialogue portrait-card portrait-card--admin">'
+                f'<div class="digest-dialogue-head portrait-card-title">{icon} {esc(label)}</div>'
+                f'<div class="digest-dialogue-summary portrait-card-text">{esc(text)}</div>'
+                f'</div>'
+            )
+        else:
+            h.append(
+                f'<div class="portrait-card" style="background:var(--bg-input);border:1px solid var(--border-card);'
+                f'border-radius:8px;padding:0.75rem;border-left:4px solid #2d3a5c;">'
+                f'<div class="portrait-card-title" style="font-size:0.8rem;font-weight:600;color:#9fb9da;margin-bottom:0.35rem;">{icon} {esc(label)}</div>'
+                f'<div class="portrait-card-text" style="font-size:0.88rem;line-height:1.5;color:#d4e5ff;">{esc(text)}</div>'
+                f'</div>'
+            )
     h.append('</div></section>')
     return "\n".join(h)
 
 
-def render_analysis_brief(data: dict) -> str:
-    """Краткий блок для главной (index): метрики + портрет чата."""
+def render_analysis_brief(data: dict, for_admin: bool = False) -> str:
+    """Краткий блок для главной (index): метрики + портрет чата. for_admin — стиль админки."""
     if not data:
+        if for_admin:
+            return '<div class="digest-empty">Данных недостаточно для анализа.</div>'
         return '<div style="color:#9bb0cf;">Данных недостаточно для анализа.</div>'
     from html import escape as esc
     p = data["participants"]
@@ -333,25 +345,44 @@ def render_analysis_brief(data: dict) -> str:
     tone = data["TONE_RU"].get(data["dominant_tone"], data["dominant_tone"])
     conflicts = data["conflicts"]
     h = []
-    h.append('<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:0.4rem;margin-bottom:0.5rem;">')
-    for label, val in [
-        ("Участников", str(p)),
-        ("Сообщений", str(tm)),
-        ("Полит. (%)", f"{pol} ({pol_pct}%)"),
-        ("Замечаний", str(warn)),
-        ("Тон", esc(tone)),
-    ]:
-        h.append(
-            f'<div style="background:#11345c;border:1px solid #2b5f95;border-radius:7px;padding:0.35rem 0.5rem;">'
-            f'<div style="font-size:0.7rem;color:#9fb9da;">{esc(label)}</div>'
-            f'<div style="font-size:0.9rem;font-weight:700;color:#e8f2ff;">{esc(str(val))}</div></div>'
-        )
-    h.append('</div>')
-    if conflicts:
-        h.append(f'<div style="font-size:0.8rem;color:#e8a87c;margin-bottom:0.4rem;">⚠ Рисков конфликтов: {len(conflicts)}</div>')
-    # Портрет чата (структурированный, компактный)
-    sections = data.get("portrait_sections") or {}
-    h.append(_render_portrait_sections(sections, compact=True))
+    if for_admin:
+        h.append('<div class="digest-title">Сводка за период</div>')
+        h.append('<div class="digest-metrics">')
+        for label, val in [
+            ("Участников", str(p)),
+            ("Сообщений", str(tm)),
+            ("Полит. (%)", f"{pol} ({pol_pct}%)"),
+            ("Замечаний", str(warn)),
+            ("Тон", esc(tone)),
+        ]:
+            h.append(
+                f'<div class="digest-metric"><span class="digest-metric-label">{esc(label)}</span>'
+                f'<span class="digest-metric-value">{esc(str(val))}</span></div>'
+            )
+        h.append('</div>')
+        if conflicts:
+            h.append(f'<div class="digest-row" style="color:var(--color-warn);">⚠ Рисков конфликтов: {len(conflicts)}</div>')
+        sections = data.get("portrait_sections") or {}
+        h.append(_render_portrait_sections(sections, compact=True, for_admin=True))
+    else:
+        h.append('<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:0.4rem;margin-bottom:0.5rem;">')
+        for label, val in [
+            ("Участников", str(p)),
+            ("Сообщений", str(tm)),
+            ("Полит. (%)", f"{pol} ({pol_pct}%)"),
+            ("Замечаний", str(warn)),
+            ("Тон", esc(tone)),
+        ]:
+            h.append(
+                f'<div style="background:#11345c;border:1px solid #2b5f95;border-radius:7px;padding:0.35rem 0.5rem;">'
+                f'<div style="font-size:0.7rem;color:#9fb9da;">{esc(label)}</div>'
+                f'<div style="font-size:0.9rem;font-weight:700;color:#e8f2ff;">{esc(str(val))}</div></div>'
+            )
+        h.append('</div>')
+        if conflicts:
+            h.append(f'<div style="font-size:0.8rem;color:#e8a87c;margin-bottom:0.4rem;">⚠ Рисков конфликтов: {len(conflicts)}</div>')
+        sections = data.get("portrait_sections") or {}
+        h.append(_render_portrait_sections(sections, compact=True))
     return "\n".join(h)
 
 

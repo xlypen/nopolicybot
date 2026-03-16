@@ -44,7 +44,7 @@ def proxy_to_fastapi(
     req.add_header("Content-Type", request.content_type or "application/json")
 
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=180) as resp:
             body = resp.read()
             try:
                 return json.loads(body.decode("utf-8")), resp.status

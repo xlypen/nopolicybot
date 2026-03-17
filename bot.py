@@ -12,6 +12,7 @@ import os
 import sys
 import logging
 import random
+import socket
 import time
 from datetime import date, datetime
 from html import escape
@@ -1757,6 +1758,31 @@ async def _question_of_day_scheduler(bot: Bot) -> None:
             await asyncio.sleep(jitter)
 
 
+def _sd_notify(msg: str) -> None:
+    """Send a message to systemd via NOTIFY_SOCKET (zero dependencies)."""
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        try:
+            if addr[0] == "@":
+                addr = "\0" + addr[1:]
+            sock.sendto(msg.encode(), addr)
+        finally:
+            sock.close()
+    except OSError:
+        pass
+
+
+async def _watchdog_loop() -> None:
+    """Send WATCHDOG=1 to systemd every 60s so it knows the bot is alive."""
+    _sd_notify("READY=1")
+    while True:
+        await asyncio.sleep(60)
+        _sd_notify("WATCHDOG=1")
+
+
 async def _state_persistence_loop() -> None:
     """Периодически сохраняет состояние бота на диск (каждые 60 сек)."""
     await asyncio.sleep(60)
@@ -1856,6 +1882,7 @@ async def main() -> None:
     )
     logger.info("Бот запущен. ИИ: %s", os.getenv("OPENAI_BASE_URL", "(не задан)"))
     _debug_log("SESSION_START", detail=f"ИИ={os.getenv('OPENAI_BASE_URL', '—')}")
+    _spawn_task(_watchdog_loop())
     _spawn_task(restart_checker(RESTART_FLAG_PATH, logger))
     _spawn_task(_state_persistence_loop())
     _spawn_task(_question_of_day_scheduler(bot))

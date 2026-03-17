@@ -4,16 +4,16 @@ After=network.target
 
 [Service]
 Type=simple
-User=nopolicybot
-Group=nopolicybot
+User=root
+Group=root
 WorkingDirectory=/opt/telegram-political-monitor-bot
 Environment=PATH=/opt/telegram-political-monitor-bot/venv/bin
 ExecStart=/opt/telegram-political-monitor-bot/venv/bin/python /opt/telegram-political-monitor-bot/run_api.py
-NoNewPrivileges=true
-PrivateTmp=true
-ReadWritePaths=/opt/telegram-political-monitor-bot/data
-Restart=on-failure
+Restart=always
 RestartSec=5
+TimeoutStopSec=30
+MemoryMax=384M
+MemorySwapMax=64M
 
 [Install]
 WantedBy=multi-user.target

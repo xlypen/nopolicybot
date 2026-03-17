@@ -3,17 +3,25 @@ Description=Telegram Bot Admin (Gunicorn)
 After=network.target
 
 [Service]
-Type=simple
-User=nopolicybot
-Group=nopolicybot
+User=root
 WorkingDirectory=/opt/telegram-political-monitor-bot
-Environment=PATH=/opt/telegram-political-monitor-bot/venv/bin
-ExecStart=/bin/bash -lc 'CPU="$(nproc 2>/dev/null || echo 1)"; W="$((2 * CPU + 1))"; if [ "$W" -lt 3 ]; then W=3; fi; exec /opt/telegram-political-monitor-bot/venv/bin/gunicorn -w "$W" -k gevent --worker-connections 50 -b 127.0.0.1:5000 --timeout 30 --keep-alive 5 --max-requests 1000 --max-requests-jitter 100 admin_app:app'
-NoNewPrivileges=true
-PrivateTmp=true
-ReadWritePaths=/opt/telegram-political-monitor-bot/data
-Restart=on-failure
+EnvironmentFile=/opt/telegram-political-monitor-bot/.env
+Environment=USE_SQLITE=true
+ExecStart=/opt/telegram-political-monitor-bot/venv/bin/gunicorn \
+    -w 2 \
+    -k gevent \
+    --worker-connections 50 \
+    -b 127.0.0.1:5000 \
+    --timeout 120 \
+    --keep-alive 5 \
+    --max-requests 1000 \
+    --max-requests-jitter 100 \
+    --log-level warning \
+    admin_app:app
+Restart=always
 RestartSec=5
+MemoryMax=384M
+MemorySwapMax=64M
 
 [Install]
 WantedBy=multi-user.target

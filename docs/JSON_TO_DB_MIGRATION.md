@@ -16,7 +16,7 @@
 |-------------|------------|-------------|
 | **user_stats.json** | Ранги, political_messages, warnings, sentiment, архивы сообщений, флаги (question_of_day, factcheck, portrait и т.д.) | Таблица `user_stats` или расширение `users`: добавить колонки/JSON для ранга, счётчиков, флагов; архивы сообщений не хранить в БД (уже есть в `messages`) или вынести в отдельную таблицу |
 | **bot_settings.json** | Глобальные настройки (DEFAULTS) | Вариант 1: одна строка в таблице `global_settings` (key-value или один JSON). Вариант 2: оставить файл/env для глобальных настроек, в БД только переопределения по чатам (уже сделано) |
-| **storage_mode.json** | Режим хранения (db_only, dual и т.д.) | Перевести на переменную окружения `STORAGE_MODE` |
+| **storage_mode.json** | Режим хранения (db_only, dual и т.д.) | Готово: приоритет у `STORAGE_MODE` / `STORAGE_PRIMARY`, затем файл |
 | **decision_events.json** | События решений движка | Таблица `decision_events` (id, created_at, payload JSON) |
 | **marketing_metrics.json** | Метрики маркетинга | Таблица `marketing_metrics` или отдельная БД/сервис |
 | **question_of_day_*.json**, **reset_political_count.json** | Состояние вопросов дня и сбросов | Таблицы или одна таблица `bot_state` (key, value JSON) |

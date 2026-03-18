@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 
 from sqlalchemy import func, select
@@ -11,27 +10,9 @@ from db.engine import get_db
 from db.models import Edge, Message, User
 
 
-_MODE_PATH = Path(__file__).resolve().parent.parent / "data" / "storage_mode.json"
-_ALLOWED_MODES = {"json", "dual", "db_first", "db_only"}
-
-
 def _effective_storage_mode() -> str:
-    aliases = {"hybrid": "dual", "db": "db_only", "database": "db_only"}
-
-    def _norm(src: str) -> str:
-        raw = str(src or "").strip().lower()
-        normalized = aliases.get(raw, raw)
-        if normalized in _ALLOWED_MODES:
-            return normalized
-        return "dual"
-
-    if _MODE_PATH.exists():
-        try:
-            payload = json.loads(_MODE_PATH.read_text(encoding="utf-8"))
-            return _norm(str(payload.get("mode", "")).strip().lower())
-        except Exception:
-            pass
-    return _norm((os.getenv("STORAGE_MODE") or os.getenv("STORAGE_PRIMARY") or "dual").strip().lower())
+    from services.storage_cutover import get_storage_mode
+    return get_storage_mode()
 
 
 def _json_counts() -> dict:

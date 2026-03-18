@@ -62,14 +62,17 @@ def storage_json_writes_enabled(mode: str | None = None) -> bool:
 
 
 def get_storage_mode() -> str:
+    """Режим хранилища: приоритет у переменных окружения, затем storage_mode.json."""
+    env_mode = (os.getenv("STORAGE_MODE") or os.getenv("STORAGE_PRIMARY") or "").strip().lower()
+    if env_mode:
+        return _normalize_mode(env_mode)
     if _MODE_PATH.exists():
         try:
             payload = json.loads(_MODE_PATH.read_text(encoding="utf-8"))
             return _normalize_mode(str(payload.get("mode", "")).strip().lower())
         except Exception:
             pass
-    env_mode = (os.getenv("STORAGE_MODE") or os.getenv("STORAGE_PRIMARY") or "dual").strip().lower()
-    return _normalize_mode(env_mode)
+    return _normalize_mode("dual")
 
 
 def set_storage_mode(mode: str, *, reason: str = "manual") -> dict:

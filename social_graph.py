@@ -316,35 +316,8 @@ def append_dialogue_message(
     sender_name: str = "",
     chat_title: str = "",
 ) -> None:
-    """
-    Добавляет сообщение в лог диалогов. Вызывается при каждом сообщении в группе.
-    reply_to_user_id — кому адресован ответ (из message.reply_to_message.from_user.id).
-    """
-    if not text or not (text := text.strip()):
-        return
-    if sender_id == reply_to_user_id:
-        return  # не считаем ответ самому себе
-    data = _load()
-    ckey = str(int(chat_id))
-    if ckey not in data["dialogue_log"]:
-        data["dialogue_log"][ckey] = {}
-    today = date.today().isoformat()
-    if today not in data["dialogue_log"][ckey]:
-        data["dialogue_log"][ckey][today] = []
-    data["dialogue_log"][ckey][today].append({
-        "sender_id": int(sender_id),
-        "text": text[:300],
-        "reply_to_user_id": int(reply_to_user_id) if reply_to_user_id else None,
-        "sender_name": (sender_name or "")[:50],
-    })
-    # Ограничиваем размер лога: удаляем старые дни
-    if ckey in data["dialogue_log"]:
-        days = sorted(data["dialogue_log"][ckey].keys())
-        cutoff = (date.today() - timedelta(days=DIALOGUE_LOG_DAYS)).isoformat()
-        for d in days:
-            if d < cutoff:
-                del data["dialogue_log"][ckey][d]
-    _save(data)
+    """No-op: диалоги теперь пишутся через ingest_message_event → таблица messages."""
+    pass
 
 
 def _get_unprocessed_dates(data: dict) -> list[tuple[str, str]]:
@@ -357,6 +330,81 @@ def _get_unprocessed_dates(data: dict) -> list[tuple[str, str]]:
             if d < today and d not in processed:
                 result.append((ckey, d))
     return result
+
+
+def _get_unprocessed_dates_from_db(processed_dates: dict[str, list[str]]) -> list[tuple[str, str]]:
+    """Необработанные даты из таблицы messages (БД)."""
+    import sqlite3
+    today = date.today().isoformat()
+    db_path = DATA_DIR / "data" / "bot.db"
+    if not db_path.exists():
+        return []
+    try:
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute(
+            "SELECT DISTINCT CAST(chat_id AS TEXT), date(sent_at) AS d "
+            "FROM messages WHERE sent_at IS NOT NULL AND date(sent_at) < ? "
+            "GROUP BY chat_id, date(sent_at)",
+            (today,),
+        ).fetchall()
+        conn.close()
+    except Exception as e:
+        logger.warning("_get_unprocessed_dates_from_db: %s", e)
+        return []
+    result = []
+    for ckey, d in rows:
+        if d and d not in set(processed_dates.get(ckey, [])):
+            result.append((ckey, d))
+    return result
+
+
+def _get_db_chat_ids_with_today_messages(today: str) -> set[str]:
+    """Chat IDs that have messages on a given date in the DB."""
+    import sqlite3
+    db_path = DATA_DIR / "data" / "bot.db"
+    if not db_path.exists():
+        return set()
+    try:
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute(
+            "SELECT DISTINCT CAST(chat_id AS TEXT) FROM messages WHERE date(sent_at) = ?",
+            (today,),
+        ).fetchall()
+        conn.close()
+        return {r[0] for r in rows}
+    except Exception:
+        return set()
+
+
+def _load_dialogue_from_db(chat_id: str, day: str) -> list[dict]:
+    """Загрузить сообщения за день из таблицы messages."""
+    import sqlite3
+    db_path = DATA_DIR / "data" / "bot.db"
+    if not db_path.exists():
+        return []
+    try:
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute(
+            "SELECT user_id, text, replied_to, sent_at FROM messages "
+            "WHERE CAST(chat_id AS TEXT) = ? AND date(sent_at) = ? "
+            "ORDER BY sent_at",
+            (chat_id, day),
+        ).fetchall()
+        conn.close()
+    except Exception as e:
+        logger.warning("_load_dialogue_from_db: %s", e)
+        return []
+    msgs = []
+    for uid, text, replied_to, sent_at in rows:
+        if not text or not text.strip():
+            continue
+        msgs.append({
+            "sender_id": int(uid) if uid else 0,
+            "text": (text or "")[:300],
+            "reply_to_user_id": int(replied_to) if replied_to else None,
+            "sender_name": "",
+        })
+    return msgs
 
 
 def _summarize_dialogue_pair(messages: list[dict], user_names: dict[str, str]) -> str:
@@ -414,7 +462,7 @@ def _summarize_dialogue_pair(messages: list[dict], user_names: dict[str, str]) -
 def process_pending_days(user_display_names: dict[str, str] | None = None) -> int:
     """
     Обрабатывает все необработанные дни: саммари диалогов и обновление связей.
-    user_display_names: {user_id: display_name} для подстановки имён. Если None — загружаем из user_stats.
+    Читает диалоги из БД (таблица messages). JSON dialogue_log как fallback.
     Возвращает количество обработанных (chat_id, date) пар.
     """
     import os
@@ -423,7 +471,15 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
     except OSError:
         pass
     data = _load()
-    pending = _get_unprocessed_dates(data)
+    processed_dates = data.get("processed_dates", {})
+    pending_db = _get_unprocessed_dates_from_db(processed_dates)
+    pending_json = _get_unprocessed_dates(data)
+    seen = set()
+    pending = []
+    for item in pending_db + pending_json:
+        if item not in seen:
+            seen.add(item)
+            pending.append(item)
     if not pending:
         return 0
     if user_display_names is None:
@@ -437,7 +493,9 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
     processed_count = 0
     for ckey, day in sorted(pending):
         try:
-            msgs = data["dialogue_log"].get(ckey, {}).get(day, [])
+            msgs = _load_dialogue_from_db(ckey, day)
+            if not msgs:
+                msgs = data["dialogue_log"].get(ckey, {}).get(day, [])
             if not msgs:
                 data.setdefault("processed_dates", {})
                 if ckey not in data["processed_dates"]:
@@ -525,8 +583,14 @@ def process_realtime_updates(
     data.setdefault("connections", {})
     data.setdefault("realtime_cursors", {})
 
-    for ckey, days in (data.get("dialogue_log") or {}).items():
-        msgs = (days or {}).get(today, [])
+    db_chats = _get_db_chat_ids_with_today_messages(today)
+    json_chats = set((data.get("dialogue_log") or {}).keys())
+    all_chats = db_chats | json_chats
+
+    for ckey in all_chats:
+        msgs = _load_dialogue_from_db(ckey, today)
+        if not msgs:
+            msgs = (data.get("dialogue_log") or {}).get(ckey, {}).get(today, [])
         if not msgs:
             continue
 

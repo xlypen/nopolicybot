@@ -750,13 +750,23 @@ def build_chat_digest(
     cid = int(chat_id)
     days = max(1, int(period_days or 1))
 
-    metric_key = "message_count_24h" if days <= 1 else ("message_count_7d" if days <= 7 else "message_count_30d")
+    _metric_candidates = (
+        ["message_count_24h", "message_count_7d", "message_count_30d"] if days <= 1
+        else ["message_count_7d", "message_count_30d"] if days <= 7
+        else ["message_count_30d"]
+    )
     period_label = "за сутки" if days <= 1 else (f"за {days} дн." if days <= 7 else f"за ~{days} дн.")
     rows_all = [r for r in get_connections_for_digest(cid) if int(r.get("message_count_30d", 0) or 0) > 0]
     if not rows_all:
         if for_admin:
             return '<div class="digest-empty">Дайджест пока недоступен — недостаточно данных по связям.</div>'
         return '<div style="color:#9bb0cf;">Дайджест пока недоступен — недостаточно данных по связям.</div>'
+
+    metric_key = _metric_candidates[0]
+    for mk in _metric_candidates:
+        if any(int(r.get(mk, 0) or 0) > 0 for r in rows_all):
+            metric_key = mk
+            break
 
     rows = [r for r in rows_all if int(r.get(metric_key, 0) or 0) > 0]
     if not rows:

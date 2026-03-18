@@ -438,12 +438,18 @@ async def _build_graph_payload_from_db(chat_id: int | None, period: str = "all",
 
 async def get_connection_rows_from_db_async(chat_id: int | None) -> list[dict]:
     """Связи из БД в формате строк для дайджеста/анализа (с summary/tone/topics)."""
+    from datetime import date, timedelta
+
     async with get_db() as session:
         edge_repo = EdgeRepository(session)
         if chat_id is None:
             edge_models = await edge_repo.get_all_chats()
         else:
             edge_models = await edge_repo.get_all(int(chat_id))
+
+    today = date.today()
+    yesterday_iso = (today - timedelta(days=1)).isoformat()
+
     rows = []
     for e in edge_models or []:
         cid = int(getattr(e, "chat_id", 0) or 0)
@@ -460,13 +466,20 @@ async def get_connection_rows_from_db_async(chat_id: int | None) -> list[dict]:
         summary_by_date = list(getattr(e, "summary_by_date", None) or [])
         last_upd = getattr(e, "last_updated", None)
         last_upd_str = last_upd.isoformat() if last_upd else ""
+
+        c24 = sum(
+            int(entry.get("message_count", 0) or 0)
+            for entry in summary_by_date
+            if str(entry.get("date", "")) >= yesterday_iso
+        )
+
         rows.append({
             "chat_id": cid,
             "user_a": ua,
             "user_b": ub,
             "message_count": w,
             "message_count_total": w,
-            "message_count_24h": 0,
+            "message_count_24h": c24,
             "message_count_7d": p7,
             "message_count_30d": p30,
             "message_count_a_to_b": int(w),

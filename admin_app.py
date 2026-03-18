@@ -117,6 +117,7 @@ app.secret_key = _secret_key
 CORS(app, resources={r"/api/*": {"origins": _allowed_origins()}}, allow_headers=["*"], methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 mimetypes.add_type("text/javascript", ".jsx")
 USERS_JSON = Path(__file__).resolve().parent / "user_stats.json"
+BOT_DB_PATH = Path(__file__).resolve().parent / "data" / "bot.db"
 # Пароль админа: из переменной окружения или из файла (задаётся один раз через страницу /login)
 _ADMIN_PASSWORD_ENV = (os.getenv("ADMIN_PASSWORD") or "").strip()
 ADMIN_PASSWORD_FILE = Path(__file__).resolve().parent / "data" / "admin_password.txt"
@@ -467,6 +468,37 @@ def _load_users() -> dict:
         return data if isinstance(data, dict) and "users" in data else {"users": {}}
     except Exception:
         return {"users": {}}
+
+
+def _get_dashboard_counts_from_db() -> dict | None:
+    """Актуальные счётчики из БД для панели: users, messages, political, warnings."""
+    if not BOT_DB_PATH.exists():
+        return None
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(BOT_DB_PATH))
+        users_row = conn.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM messages WHERE user_id IS NOT NULL"
+        ).fetchone()
+        messages_row = conn.execute("SELECT COUNT(*) FROM messages").fetchone()
+        try:
+            pol_warn = conn.execute(
+                "SELECT COALESCE(SUM(political_messages),0), COALESCE(SUM(warnings_received),0) FROM users"
+            ).fetchone()
+            total_political = int(pol_warn[0] or 0)
+            total_warnings = int(pol_warn[1] or 0)
+        except Exception:
+            total_political = 0
+            total_warnings = 0
+        conn.close()
+        return {
+            "users": int(users_row[0] or 0),
+            "messages": int(messages_row[0] or 0),
+            "political": total_political,
+            "warnings": total_warnings,
+        }
+    except Exception:
+        return None
 
 
 def _save_tone_override(user_id: str, value: str | None, add_to_history: bool = False, save_current_to_history: bool = False) -> bool:
@@ -1042,16 +1074,24 @@ def admin_modern():
 
     data = _load_users()
     users = data.get("users", {}) or {}
-    total_users = len(users)
-    total_messages = 0
-    total_political = 0
-    total_warnings = 0
+    db_counts = _get_dashboard_counts_from_db()
+    if db_counts is not None:
+        total_users = db_counts["users"]
+        total_messages = db_counts["messages"]
+        total_political = db_counts.get("political", 0)
+        total_warnings = db_counts.get("warnings", 0)
+    else:
+        total_users = len(users)
+        total_messages = 0
+        total_political = 0
+        total_warnings = 0
     rank_counts: dict[str, int] = {"loyal": 0, "neutral": 0, "opposition": 0, "unknown": 0}
     for u in users.values():
         stats = u.get("stats", {}) or {}
-        total_messages += int(stats.get("total_messages", 0) or 0)
-        total_political += int(stats.get("political_messages", 0) or 0)
-        total_warnings += int(stats.get("warnings_received", 0) or 0)
+        if db_counts is None:
+            total_messages += int(stats.get("total_messages", 0) or 0)
+            total_political += int(stats.get("political_messages", 0) or 0)
+            total_warnings += int(stats.get("warnings_received", 0) or 0)
         rank = str(u.get("rank", "unknown") or "unknown")
         rank_counts[rank] = rank_counts.get(rank, 0) + 1
 

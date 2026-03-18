@@ -159,6 +159,9 @@ def _default_user(user_id: int, display_name: str = "") -> dict:
         "tone_to_bot": "",
         "tone_override": "",
         "tone_history": [],
+        "emotion_score": None,  # -10..+10 от assess_aggression_score (последние 15 сообщений к боту)
+        "emotion_positivity": None,  # 0..10
+        "emotion_aggression": None,  # 0..10
         "messages_archive": [],  # deprecated, мигрируется в messages_by_chat
         "messages_by_chat": {},  # chat_id -> [{text, date}, ...], до 1000 на чат
         "question_of_day_enabled": False,  # задавать ли боту «вопрос дня» вечером
@@ -642,12 +645,13 @@ def record_message(user_id: int, text_snippet: str, sentiment: str, is_political
 
 
 def record_warning(user_id: int) -> None:
-    """Учитывает выданное пользователю замечание."""
+    """Учитывает выданное пользователю замечание. Пишет в JSON и в БД (users.warnings_received)."""
     data = _load()
     key = str(user_id)
     if key not in data["users"]:
         data["users"][key] = _default_user(user_id)
     data["users"][key]["stats"]["warnings_received"] = data["users"][key]["stats"].get("warnings_received", 0) + 1
+    _increment_user_warnings_in_db(user_id)
     _save(data)
 
 
@@ -726,7 +730,7 @@ def record_message_to_bot(user_id: int, text: str, display_name: str = "") -> No
 
 
 def _update_tone_to_bot(u: dict) -> None:
-    """Обновляет tone_to_bot по буферу обращений к боту (вызов ИИ)."""
+    """Обновляет tone_to_bot и emotion_score по буферу обращений к боту (вызов ИИ)."""
     buf = u.get("messages_to_bot_buffer") or []
     texts = [x.get("text", "").strip() for x in buf if (x.get("text") or "").strip()]
     if len(texts) < 2:
@@ -734,9 +738,19 @@ def _update_tone_to_bot(u: dict) -> None:
     try:
         tone = assess_tone_toward_bot(texts)
         u["tone_to_bot"] = tone
-        u["messages_to_bot_buffer"] = buf[-5:]
+        u["messages_to_bot_buffer"] = buf[-15:]  # храним 15 для шкалы эмоций
     except Exception as e:
         logger.debug("Оценка тона к боту: %s", e)
+    # Шкала эмоций -10..+10 по последним 15 сообщениям
+    try:
+        from ai_analyzer import assess_aggression_score
+        last_15 = texts[-15:] if len(texts) >= 2 else texts
+        emotion = assess_aggression_score(last_15, last_n=15)
+        u["emotion_score"] = emotion.get("score", 0)
+        u["emotion_positivity"] = emotion.get("positivity")
+        u["emotion_aggression"] = emotion.get("aggression")
+    except Exception as e:
+        logger.debug("Оценка шкалы агрессии: %s", e)
 
 
 def get_yesterday_quotes(user_id: int) -> list[str]:
@@ -764,6 +778,9 @@ def get_portrait_for_reply_fast(user_id: int, display_name: str = "") -> str:
     tone = (u.get("tone_override") or "").strip() or (u.get("tone_to_bot") or "").strip()
     if tone:
         portrait = (portrait + "\n\nНастроение обращений к боту: " + tone).strip()
+    score = u.get("emotion_score")
+    if score is not None:
+        portrait = (portrait + f"\nEMOTION_SCORE: {score}").strip()
     return portrait
 
 
@@ -792,6 +809,9 @@ def get_portrait_for_reply(user_id: int, display_name: str = "") -> str:
     tone = (u.get("tone_override") or "").strip() or (u.get("tone_to_bot") or "").strip()
     if tone:
         portrait = (portrait + "\n\nНастроение обращений к боту: " + tone).strip()
+    score = u.get("emotion_score")
+    if score is not None:
+        portrait = (portrait + f"\nEMOTION_SCORE: {score}").strip()
     return portrait
 
 
@@ -941,6 +961,19 @@ def format_close_attention_context(user_id: int, max_items: int = 15) -> str:
             parts.append(f"требовались доказательства: {'да' if ef else 'нет'}")
         lines.append(f"  {i}. {'; '.join(parts)}")
     return "Накопленные взгляды участника (режим пристального внимания):\n" + "\n".join(lines)
+
+
+def get_emotion_score(user_id: int) -> dict | None:
+    """Шкала эмоций по последним 15 сообщениям к боту: score (-10..+10), positivity, aggression. None если не считалось."""
+    data = _load()
+    u = data.get("users", {}).get(str(user_id))
+    if not u or u.get("emotion_score") is None:
+        return None
+    return {
+        "score": u.get("emotion_score"),
+        "positivity": u.get("emotion_positivity"),
+        "aggression": u.get("emotion_aggression"),
+    }
 
 
 def get_effective_tone(u: dict) -> str:

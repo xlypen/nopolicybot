@@ -19,6 +19,8 @@ class User(Base):
     joined_at = Column(TIMESTAMP, default = datetime.utcnow)
     last_seen = Column(TIMESTAMP)
     is_active = Column(Boolean, default = True)
+    political_messages = Column(Integer, default = 0)
+    warnings_received = Column(Integer, default = 0)
     __table_args__ = (Index('idx_users_chat', 'chat_id'),)
 
 

@@ -76,6 +76,13 @@ class ChatSettings(Base):
     settings = Column(JSON, nullable = False, default = dict)
 
 
+class ProcessedDate(Base):
+    """Даты, по которым уже построены связи (social_graph). Замена JSON processed_dates."""
+    __tablename__ = "processed_dates"
+    chat_id = Column(BigInteger, primary_key = True)
+    processed_date = Column(String(10), primary_key = True)
+
+
 class PersonalityProfileRow(Base):
     """Structured personality profile (P-1) — OCEAN, Dark Triad, communication."""
     __tablename__ = 'personality_profiles'

@@ -1,12 +1,33 @@
 """
 Общий анализ чата: состав, активность, политический контур, модерация, риски.
-Объединяет данные из user_stats, social_graph и bot_settings.
+Объединяет данные из БД (messages, edges), user_stats и bot_settings.
 """
 
 import logging
+from pathlib import Path
 from html import escape as esc
 
 logger = logging.getLogger(__name__)
+DATA_DIR = Path(__file__).resolve().parent.parent
+
+
+def _get_chat_participants_from_db(chat_id: int) -> list[tuple[str, int]]:
+    """Участники чата и число сообщений из таблицы messages: [(user_id_str, count), ...]."""
+    import sqlite3
+    db_path = DATA_DIR / "data" / "bot.db"
+    if not db_path.exists():
+        return []
+    try:
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute(
+            "SELECT user_id, COUNT(*) FROM messages WHERE chat_id = ? AND user_id IS NOT NULL GROUP BY user_id",
+            (chat_id,),
+        ).fetchall()
+        conn.close()
+        return [(str(uid), int(cnt)) for uid, cnt in rows]
+    except Exception as e:
+        logger.debug("_get_chat_participants_from_db: %s", e)
+        return []
 
 
 def build_chat_analysis(
@@ -37,13 +58,19 @@ def build_chat_analysis(
     except Exception:
         chat_mode = "default"
 
-    user_ids = get_users_in_chat(cid)
     names = get_user_display_names()
+    db_participants = _get_chat_participants_from_db(cid)
+    if db_participants:
+        user_ids = [uid for uid, _ in db_participants]
+        db_msg_counts = {uid: cnt for uid, cnt in db_participants}
+    else:
+        user_ids = get_users_in_chat(cid)
+        db_msg_counts = {}
 
     def _name(uid) -> str:
         return names.get(str(int(uid or 0)), str(uid))
 
-    # --- user_stats: участники, ранги, полит, замечания ---
+    # --- участники: счётчики из БД (messages), ранги/полит/замечания из user_stats при наличии ---
     users_data: list[dict] = []
     total_messages = 0
     total_political = 0
@@ -56,11 +83,11 @@ def build_chat_analysis(
         try:
             u = get_user(int(uid_str))
         except Exception:
-            continue
+            u = None
         if not u:
-            continue
+            u = {}
         stats = u.get("stats") or {}
-        tm = int(stats.get("total_messages", 0) or 0)
+        tm = int(db_msg_counts.get(uid_str, stats.get("total_messages", 0) or 0))
         pm = int(stats.get("political_messages", 0) or 0)
         wr = int(stats.get("warnings_received", 0) or 0)
         total_messages += tm
@@ -75,7 +102,7 @@ def build_chat_analysis(
             users_with_warnings += 1
         users_data.append({
             "user_id": uid_str,
-            "display_name": u.get("display_name", uid_str),
+            "display_name": (u.get("display_name") or _name(uid_str)) or uid_str,
             "rank": r,
             "total_messages": tm,
             "political_messages": pm,

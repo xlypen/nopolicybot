@@ -332,6 +332,46 @@ def _get_unprocessed_dates(data: dict) -> list[tuple[str, str]]:
     return result
 
 
+def _get_processed_dates_from_db() -> dict[str, list[str]]:
+    """Прочитанные из БД обработанные даты: {chat_id_str: [date, ...]}."""
+    import sqlite3
+    db_path = DATA_DIR / "data" / "bot.db"
+    if not db_path.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute(
+            "SELECT chat_id, processed_date FROM processed_dates"
+        ).fetchall()
+        conn.close()
+        result = {}
+        for cid, d in rows:
+            ckey = str(cid)
+            result.setdefault(ckey, []).append(str(d))
+        return result
+    except Exception as e:
+        logger.debug("_get_processed_dates_from_db: %s", e)
+        return {}
+
+
+def _mark_date_processed_in_db(chat_id: int, day: str) -> None:
+    """Пометить дату как обработанную в БД."""
+    import sqlite3
+    db_path = DATA_DIR / "data" / "bot.db"
+    if not db_path.exists():
+        return
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "INSERT OR IGNORE INTO processed_dates (chat_id, processed_date) VALUES (?, ?)",
+            (chat_id, day),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.debug("_mark_date_processed_in_db: %s", e)
+
+
 def _get_unprocessed_dates_from_db(processed_dates: dict[str, list[str]]) -> list[tuple[str, str]]:
     """Необработанные даты из таблицы messages (БД)."""
     import sqlite3
@@ -471,7 +511,12 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
     except OSError:
         pass
     data = _load()
-    processed_dates = data.get("processed_dates", {})
+    processed_dates = _get_processed_dates_from_db()
+    for ckey, dates in (data.get("processed_dates") or {}).items():
+        processed_dates.setdefault(ckey, [])
+        for d in dates:
+            if d not in processed_dates[ckey]:
+                processed_dates[ckey].append(d)
     pending_db = _get_unprocessed_dates_from_db(processed_dates)
     pending_json = _get_unprocessed_dates(data)
     seen = set()
@@ -540,6 +585,7 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
                 data["processed_dates"][ckey] = []
             if day not in data["processed_dates"][ckey]:
                 data["processed_dates"][ckey].append(day)
+                _mark_date_processed_in_db(int(ckey), day)
             processed_count += 1
         except Exception as e:
             logger.warning("Ошибка обработки дня %s чата %s: %s", day, ckey, e)

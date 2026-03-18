@@ -12,6 +12,7 @@ from datetime import date
 from pathlib import Path
 
 SETTINGS_PATH = Path(__file__).resolve().parent / "bot_settings.json"
+DB_PATH = Path(__file__).resolve().parent / "data" / "bot.db"
 
 DEFAULTS = {
     # Модерация политики
@@ -136,14 +137,35 @@ def _save(data: dict) -> None:
         pass
 
 
+def _get_chat_overrides_from_db(chat_id: int) -> dict:
+    """Переопределения настроек чата из таблицы chat_settings (БД)."""
+    if not DB_PATH.exists():
+        return {}
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(DB_PATH))
+        row = conn.execute(
+            "SELECT settings FROM chat_settings WHERE chat_id = ?", (chat_id,)
+        ).fetchone()
+        conn.close()
+        if not row:
+            return {}
+        raw = row[0]
+        return json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except Exception as e:
+        logger.debug("_get_chat_overrides_from_db: %s", e)
+        return {}
+
+
 def get(key: str, chat_id: int | None = None):
     data = _load()
     base = data.get(key, DEFAULTS.get(key))
     if chat_id is not None:
-        overrides = data.get("chat_settings") or {}
-        chat_key = f"chat_{chat_id}"
-        if chat_key in overrides and key in overrides[chat_key]:
-            return overrides[chat_key][key]
+        overrides = _get_chat_overrides_from_db(chat_id)
+        if not overrides and data.get("chat_settings"):
+            overrides = (data.get("chat_settings") or {}).get(f"chat_{chat_id}", {})
+        if key in overrides:
+            return overrides[key]
     return base
 
 
@@ -159,39 +181,69 @@ def set_all(updates: dict) -> None:
     _save(data)
 
 
+def _set_chat_overrides_in_db(chat_id: int, overrides: dict) -> None:
+    """Записать переопределения чата в таблицу chat_settings (БД). Пустой dict — удалить строку."""
+    if not DB_PATH.exists():
+        return
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(DB_PATH))
+        if not overrides:
+            conn.execute("DELETE FROM chat_settings WHERE chat_id = ?", (chat_id,))
+        else:
+            payload = json.dumps(overrides, ensure_ascii=False)
+            conn.execute(
+                "INSERT INTO chat_settings (chat_id, settings) VALUES (?, ?) "
+                "ON CONFLICT(chat_id) DO UPDATE SET settings = excluded.settings",
+                (chat_id, payload),
+            )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.debug("_set_chat_overrides_in_db: %s", e)
+
+
 def set_chat_override(chat_id: int, key: str, value) -> None:
-    """Устанавливает переопределение настройки для конкретного чата."""
+    """Устанавливает переопределение настройки для конкретного чата. Пишет в БД и при возможности в JSON."""
     if key not in DEFAULTS or key == "chat_settings":
         return
+    overrides = dict(get_chat_overrides(chat_id))
+    overrides[key] = value
+    _set_chat_overrides_in_db(chat_id, overrides)
     data = _load()
-    overrides = data.get("chat_settings") or {}
     ckey = f"chat_{chat_id}"
-    if ckey not in overrides:
-        overrides[ckey] = {}
-    overrides[ckey][key] = value
-    data["chat_settings"] = overrides
+    data.setdefault("chat_settings", {})[ckey] = overrides
     _save(data)
 
 
 def clear_chat_overrides(chat_id: int, key: str | None = None) -> None:
-    """Сбрасывает переопределения для чата. key=None — сбросить все."""
-    data = _load()
-    overrides = data.get("chat_settings") or {}
-    ckey = f"chat_{chat_id}"
-    if ckey not in overrides:
+    """Сбрасывает переопределения для чата. key=None — сбросить все. Обновляет БД и JSON."""
+    overrides = dict(get_chat_overrides(chat_id))
+    if not overrides:
         return
     if key is None:
-        del overrides[ckey]
+        overrides = {}
     else:
-        overrides[ckey].pop(key, None)
-        if not overrides[ckey]:
-            del overrides[ckey]
-    data["chat_settings"] = overrides
+        overrides.pop(key, None)
+    _set_chat_overrides_in_db(chat_id, overrides)
+    data = _load()
+    ckey = f"chat_{chat_id}"
+    if ckey not in (data.get("chat_settings") or {}):
+        return
+    if key is None:
+        (data.setdefault("chat_settings", {})).pop(ckey, None)
+    else:
+        (data["chat_settings"][ckey]).pop(key, None)
+        if not data["chat_settings"][ckey]:
+            del data["chat_settings"][ckey]
     _save(data)
 
 
 def get_chat_overrides(chat_id: int) -> dict:
-    """Возвращает все переопределения для чата."""
+    """Возвращает все переопределения для чата. Сначала БД (chat_settings), потом JSON."""
+    out = _get_chat_overrides_from_db(chat_id)
+    if out:
+        return dict(out)
     data = _load()
     overrides = data.get("chat_settings") or {}
     return dict(overrides.get(f"chat_{chat_id}", {}))

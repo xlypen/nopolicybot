@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parent
 USERS_JSON = DATA_DIR / "user_stats.json"
+DB_PATH = DATA_DIR / "data" / "bot.db"
 MESSAGES_ARCHIVE_LIMIT = 1000
 IMAGES_ARCHIVE_LIMIT = 100
 CLOSE_ATTENTION_VIEWS_LIMIT = 200
@@ -171,10 +172,39 @@ def _default_user(user_id: int, display_name: str = "") -> dict:
     }
 
 
+def _get_user_from_db(user_id: int) -> dict | None:
+    """Данные пользователя из БД: display_name (users), total_messages (messages)."""
+    if not DB_PATH.exists():
+        return None
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(DB_PATH))
+        row = conn.execute(
+            "SELECT first_name, username, last_name FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0]
+        conn.close()
+        result = {}
+        if row:
+            name = (row[0] or row[1] or row[2] or "").strip()
+            result["display_name"] = name or str(user_id)
+        if int(cnt) > 0:
+            result["stats"] = {"total_messages": int(cnt)}
+        return result if result else None
+    except Exception as e:
+        logger.debug("_get_user_from_db: %s", e)
+        return None
+
+
 def get_user(user_id: int, display_name: str = "") -> dict:
-    """Возвращает данные пользователя; создаёт запись при первом обращении."""
-    data = _load()
+    """Возвращает данные пользователя. БД (имя, счётчик сообщений) + JSON (ранг, полит, предупреждения)."""
     key = str(user_id)
+    from_db = _get_user_from_db(user_id)
+    data = _load()
     if key not in data["users"]:
         data["users"][key] = _default_user(user_id, display_name)
         _save(data)
@@ -182,7 +212,13 @@ def get_user(user_id: int, display_name: str = "") -> dict:
         if display_name and not data["users"][key].get("display_name"):
             data["users"][key]["display_name"] = display_name
             _save(data)
-    return data["users"][key].copy()
+    out = data["users"][key].copy()
+    if from_db:
+        if from_db.get("display_name"):
+            out["display_name"] = from_db["display_name"]
+        if from_db.get("stats", {}).get("total_messages") is not None:
+            out.setdefault("stats", {})["total_messages"] = from_db["stats"]["total_messages"]
+    return out
 
 
 def _ensure_messages_by_chat(u: dict, data: dict | None = None) -> bool:
@@ -329,13 +365,35 @@ def clear_user_images_archive(user_id: int) -> bool:
     return True
 
 
+def _get_display_names_from_db() -> dict[str, str]:
+    """Читает имена из таблицы users (БД). {user_id: display_name}."""
+    if not DB_PATH.exists():
+        return {}
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(DB_PATH))
+        rows = conn.execute(
+            "SELECT id, first_name, username, last_name FROM users"
+        ).fetchall()
+        conn.close()
+        result = {}
+        for uid, first, username, last in rows:
+            name = (first or username or last or "").strip() or str(uid)
+            result[str(uid)] = name
+        return result
+    except Exception as e:
+        logger.debug("_get_display_names_from_db: %s", e)
+        return {}
+
+
 def get_user_display_names() -> dict[str, str]:
-    """Возвращает {user_id: display_name} для всех пользователей (для social_graph)."""
+    """Возвращает {user_id: display_name}. Сначала БД (users), потом JSON."""
+    names = _get_display_names_from_db()
     data = _load()
-    return {
-        uid: (u.get("display_name") or uid)
-        for uid, u in (data.get("users") or {}).items()
-    }
+    for uid, u in (data.get("users") or {}).items():
+        if uid not in names:
+            names[uid] = (u.get("display_name") or uid)
+    return names
 
 
 def get_chats() -> list[dict]:
@@ -346,11 +404,31 @@ def get_chats() -> list[dict]:
     return sorted(result, key=lambda x: x["chat_id"])
 
 
+def _get_users_in_chat_from_db(chat_id: int) -> list[str]:
+    """Участники чата из таблицы messages (БД)."""
+    if not DB_PATH.exists():
+        return []
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(DB_PATH))
+        rows = conn.execute(
+            "SELECT DISTINCT user_id FROM messages WHERE chat_id = ? AND user_id IS NOT NULL",
+            (chat_id,),
+        ).fetchall()
+        conn.close()
+        return [str(r[0]) for r in rows]
+    except Exception as e:
+        logger.debug("_get_users_in_chat_from_db: %s", e)
+        return []
+
+
 def get_users_in_chat(chat_id: int) -> list[str]:
-    """Возвращает user_id (str) участников, у которых есть сообщения в этом чате."""
+    """Возвращает user_id (str) участников. Сначала БД (messages), потом JSON."""
+    result = _get_users_in_chat_from_db(chat_id)
+    if result:
+        return result
     data = _load()
     cid_str = str(chat_id)
-    result = []
     for uid, u in data.get("users", {}).items():
         if _ensure_messages_by_chat(u):
             _save(data)

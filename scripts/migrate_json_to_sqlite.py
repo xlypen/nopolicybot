@@ -89,9 +89,17 @@ def migrate_social_graph(st: SqliteStorage, dry_run: bool) -> dict:
         for ckey, days in (data.get("dialogue_log") or {}).items():
             try:
                 cid = int(ckey)
-                log = dict(days or {})
-                st.set_dialogue_log(cid, log)
-                stats["dialogue_log"] += len(log)
+                for date_str, msgs in (days or {}).items():
+                    for m in msgs or []:
+                        st.append_dialogue_message(
+                            chat_id=cid,
+                            date=date_str,
+                            sender_id=int(m.get("sender_id", 0) or 0),
+                            sender_name=(m.get("sender_name") or "")[:50],
+                            text=(m.get("text") or "")[:300],
+                            reply_to_user_id=int(m["reply_to_user_id"]) if m.get("reply_to_user_id") else None,
+                        )
+                        stats["dialogue_log"] += 1
             except (ValueError, TypeError):
                 pass
         for ckey, dates in (data.get("processed_dates") or {}).items():

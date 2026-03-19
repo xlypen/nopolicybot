@@ -15,6 +15,23 @@ from ai_analyzer import update_user_portrait, assess_tone_toward_bot
 
 logger = logging.getLogger(__name__)
 
+try:
+    from services.storage_cutover import (
+        storage_db_reads_enabled as _db_reads,
+        storage_db_writes_enabled as _db_writes,
+        storage_json_writes_enabled as _json_writes,
+        storage_json_fallback_enabled as _json_fallback,
+    )
+    from services.sqlite_storage import get_storage as _get_storage
+    _STORAGE_AVAILABLE = True
+except ImportError:
+    _STORAGE_AVAILABLE = False
+    def _db_reads() -> bool: return False
+    def _db_writes() -> bool: return False
+    def _json_writes() -> bool: return True
+    def _json_fallback() -> bool: return True
+    def _get_storage(): return None
+
 DATA_DIR = Path(__file__).resolve().parent
 USERS_JSON = DATA_DIR / "user_stats.json"
 DB_PATH = DATA_DIR / "data" / "bot.db"
@@ -113,8 +130,7 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
-    from services.storage_cutover import storage_json_writes_enabled
-    if not storage_json_writes_enabled():
+    if not _json_writes():
         return
     try:
         USERS_JSON.parent.mkdir(parents=True, exist_ok=True)
@@ -177,57 +193,44 @@ def _default_user(user_id: int, display_name: str = "") -> dict:
 
 def _sync_user_to_storage(user_id: int, profile: dict) -> None:
     """Синхронизирует профиль пользователя в storage при storage_db_writes_enabled."""
-    from services.storage_cutover import storage_db_writes_enabled
-    from services.sqlite_storage import get_storage
-    if storage_db_writes_enabled():
-        st = get_storage()
+    if _db_writes():
+        st = _get_storage()
         if st:
             st.set_user_profile(user_id, profile)
 
 
-def _get_user_from_db(user_id: int) -> dict | None:
-    """Данные пользователя из БД: display_name (users), total_messages (messages)."""
-    if not DB_PATH.exists():
+def _get_user_basic_from_storage(user_id: int) -> dict | None:
+    """Базовые данные пользователя (имя, счётчик) из storage."""
+    st = _get_storage()
+    if not st or not _db_reads():
         return None
     try:
-        import sqlite3
-        conn = sqlite3.connect(str(DB_PATH))
-        row = conn.execute(
-            "SELECT first_name, username, last_name FROM users WHERE id = ?",
-            (user_id,),
-        ).fetchone()
-        cnt = conn.execute(
-            "SELECT COUNT(*) FROM messages WHERE user_id = ?",
-            (user_id,),
-        ).fetchone()[0]
-        conn.close()
+        names = st.get_display_names()
+        name = names.get(str(user_id))
+        profile = st.get_user_profile(user_id)
         result = {}
-        if row:
-            name = (row[0] or row[1] or row[2] or "").strip()
-            result["display_name"] = name or str(user_id)
-        if int(cnt) > 0:
-            result["stats"] = {"total_messages": int(cnt)}
+        if name:
+            result["display_name"] = name
+        if profile and profile.get("stats", {}).get("total_messages") is not None:
+            result.setdefault("stats", {})["total_messages"] = profile["stats"]["total_messages"]
         return result if result else None
     except Exception as e:
-        logger.debug("_get_user_from_db: %s", e)
+        logger.debug("_get_user_basic_from_storage: %s", e)
         return None
 
 
 def get_user(user_id: int, display_name: str = "") -> dict:
     """Возвращает данные пользователя. Storage/БД (имя, счётчик сообщений) + JSON fallback (ранг, полит, предупреждения)."""
-    from services.storage_cutover import storage_db_reads_enabled, storage_json_fallback_enabled
-    from services.sqlite_storage import get_storage
-
     key = str(user_id)
-    from_db = _get_user_from_db(user_id)
+    from_db = _get_user_basic_from_storage(user_id)
     out = None
 
-    if storage_db_reads_enabled():
-        st = get_storage()
+    if _db_reads():
+        st = _get_storage()
         if st:
             out = st.get_user_profile(user_id)
 
-    if out is None and storage_json_fallback_enabled():
+    if out is None and (_json_fallback() or _json_writes()):
         data = _load()
         if key not in data["users"]:
             data["users"][key] = _default_user(user_id, display_name)
@@ -284,25 +287,24 @@ def record_chat_message(
     """Сохраняет сообщение пользователя в архив (по чатам) и обновляет total_messages."""
     if not text or not (text := text.strip()):
         return
-    from services.storage_cutover import storage_db_writes_enabled, storage_json_writes_enabled
-    from services.sqlite_storage import get_storage
 
     today_str = date.today().isoformat()
+    db_wrote = False
 
-    if storage_db_writes_enabled():
-        st = get_storage()
+    if _db_writes():
+        st = _get_storage()
         if st and chat_id is not None:
             inserted = st.append_message(user_id, chat_id, text, today_str)
-            if chat_id is not None:
-                st.upsert_chat(chat_id, chat_title or str(chat_id))
+            st.upsert_chat(chat_id, chat_title or str(chat_id))
             if inserted:
+                db_wrote = True
                 u = get_user(user_id, display_name)
                 u.setdefault("stats", {})["total_messages"] = u["stats"].get("total_messages", 0) + 1
                 if display_name:
                     u["display_name"] = display_name
                 st.set_user_profile(user_id, u)
 
-    if storage_json_writes_enabled():
+    if _json_writes():
         data = _load()
         key = str(user_id)
         if key not in data["users"]:
@@ -318,20 +320,20 @@ def record_chat_message(
             by_chat[ckey] = []
         msg = {"text": text[:500], "date": today_str}
         last = by_chat[ckey][-1] if by_chat[ckey] else None
-        if last and last.get("text") == msg["text"] and last.get("date") == today_str:
-            pass
-        else:
-            u["stats"]["total_messages"] = u["stats"].get("total_messages", 0) + 1
+        is_duplicate = last and last.get("text") == msg["text"] and last.get("date") == today_str
+        if not is_duplicate:
+            if not db_wrote:
+                u["stats"]["total_messages"] = u["stats"].get("total_messages", 0) + 1
             by_chat[ckey].append(msg)
             by_chat[ckey] = by_chat[ckey][-MESSAGES_ARCHIVE_LIMIT:]
         if chat_id is not None:
-            ckey = str(int(chat_id))
-            if ckey not in data["chats"]:
-                data["chats"][ckey] = {"title": chat_title or ckey, "last_seen": today_str}
+            ckey_chat = str(int(chat_id))
+            if ckey_chat not in data["chats"]:
+                data["chats"][ckey_chat] = {"title": chat_title or ckey_chat, "last_seen": today_str}
             else:
                 if chat_title:
-                    data["chats"][ckey]["title"] = chat_title
-                data["chats"][ckey]["last_seen"] = today_str
+                    data["chats"][ckey_chat]["title"] = chat_title
+                data["chats"][ckey_chat]["last_seen"] = today_str
         _save(data)
 
 
@@ -414,30 +416,16 @@ def clear_user_images_archive(user_id: int) -> bool:
     return True
 
 
-def _get_display_names_from_db() -> dict[str, str]:
-    """Читает имена из таблицы users (БД). {user_id: display_name}."""
-    if not DB_PATH.exists():
-        return {}
-    try:
-        import sqlite3
-        conn = sqlite3.connect(str(DB_PATH))
-        rows = conn.execute(
-            "SELECT id, first_name, username, last_name FROM users"
-        ).fetchall()
-        conn.close()
-        result = {}
-        for uid, first, username, last in rows:
-            name = (first or username or last or "").strip() or str(uid)
-            result[str(uid)] = name
-        return result
-    except Exception as e:
-        logger.debug("_get_display_names_from_db: %s", e)
-        return {}
-
-
 def get_user_display_names() -> dict[str, str]:
-    """Возвращает {user_id: display_name}. Сначала БД (users), потом JSON."""
-    names = _get_display_names_from_db()
+    """Возвращает {user_id: display_name}. Storage -> JSON."""
+    names: dict[str, str] = {}
+    if _db_reads():
+        st = _get_storage()
+        if st:
+            try:
+                names = st.get_display_names()
+            except Exception as e:
+                logger.debug("get_user_display_names from storage: %s", e)
     data = _load()
     for uid, u in (data.get("users") or {}).items():
         if uid not in names:
@@ -453,29 +441,18 @@ def get_chats() -> list[dict]:
     return sorted(result, key=lambda x: x["chat_id"])
 
 
-def _get_users_in_chat_from_db(chat_id: int) -> list[str]:
-    """Участники чата из таблицы messages (БД)."""
-    if not DB_PATH.exists():
-        return []
-    try:
-        import sqlite3
-        conn = sqlite3.connect(str(DB_PATH))
-        rows = conn.execute(
-            "SELECT DISTINCT user_id FROM messages WHERE chat_id = ? AND user_id IS NOT NULL",
-            (chat_id,),
-        ).fetchall()
-        conn.close()
-        return [str(r[0]) for r in rows]
-    except Exception as e:
-        logger.debug("_get_users_in_chat_from_db: %s", e)
-        return []
-
-
 def get_users_in_chat(chat_id: int) -> list[str]:
-    """Возвращает user_id (str) участников. Сначала БД (messages), потом JSON."""
-    result = _get_users_in_chat_from_db(chat_id)
-    if result:
-        return result
+    """Возвращает user_id (str) участников. Storage -> JSON."""
+    result: list[str] = []
+    if _db_reads():
+        st = _get_storage()
+        if st:
+            try:
+                uids = st.get_users_in_chat(int(chat_id))
+                if uids:
+                    return [str(u) for u in uids]
+            except Exception as e:
+                logger.debug("get_users_in_chat from storage: %s", e)
     data = _load()
     cid_str = str(chat_id)
     for uid, u in data.get("users", {}).items():
@@ -487,66 +464,22 @@ def get_users_in_chat(chat_id: int) -> list[str]:
     return result
 
 
-def _get_user_messages_from_db(user_id: int, chat_id: int | None = None) -> list[dict]:
-    """Архив сообщений пользователя из БД (таблица messages). Формат: [{text, date}, ...] или с chat_id при объединении чатов."""
-    if not DB_PATH.exists():
-        return []
-    try:
-        import sqlite3
-        conn = sqlite3.connect(str(DB_PATH))
-        if chat_id is not None:
-            rows = conn.execute(
-                "SELECT text, sent_at, chat_id FROM messages WHERE user_id = ? AND chat_id = ? AND text IS NOT NULL AND text != '' ORDER BY sent_at ASC LIMIT ?",
-                (user_id, chat_id, MESSAGES_ARCHIVE_LIMIT),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT text, sent_at, chat_id FROM messages WHERE user_id = ? AND text IS NOT NULL AND text != '' ORDER BY sent_at ASC LIMIT ?",
-                (user_id, MESSAGES_ARCHIVE_LIMIT),
-            ).fetchall()
-        conn.close()
-        result = []
-        for row in rows:
-            text = (row[0] or "").strip()
-            sent_at = row[1]
-            cid = row[2] if len(row) > 2 else None
-            if isinstance(sent_at, str) and len(sent_at) >= 10:
-                date_str = sent_at[:10]
-            else:
-                try:
-                    from datetime import datetime
-                    date_str = sent_at.strftime("%Y-%m-%d") if hasattr(sent_at, "strftime") else str(sent_at)[:10]
-                except Exception:
-                    date_str = ""
-            msg = {"text": text, "date": date_str}
-            if cid is not None and chat_id is None:
-                msg["chat_id"] = int(cid)
-            result.append(msg)
-        return result
-    except Exception as e:
-        logger.debug("_get_user_messages_from_db: %s", e)
-        return []
-
-
 def get_user_messages_archive(user_id: int, chat_id: int | None = None) -> list[dict]:
-    """Возвращает архив сообщений. Storage -> БД (messages) -> JSON. Формат: [{text, date}] или [{text, date, chat_id}] при объединении."""
-    from services.storage_cutover import storage_db_reads_enabled, storage_json_fallback_enabled
-    from services.sqlite_storage import get_storage
-
+    """Возвращает архив сообщений. Storage -> БД (messages) -> JSON."""
     result = []
 
-    if storage_db_reads_enabled():
-        st = get_storage()
+    if _db_reads():
+        st = _get_storage()
         if st:
-            cid = int(chat_id) if chat_id is not None else None
-            result = st.get_user_messages(user_id, cid, MESSAGES_ARCHIVE_LIMIT)
+            try:
+                cid = int(chat_id) if chat_id is not None else None
+                result = st.get_user_messages(user_id, cid, MESSAGES_ARCHIVE_LIMIT)
+                if result:
+                    return result
+            except Exception as e:
+                logger.debug("get_user_messages_archive from storage: %s", e)
 
-    if not result:
-        from_db = _get_user_messages_from_db(user_id, chat_id)
-        if from_db:
-            return from_db
-
-    if not result and storage_json_fallback_enabled():
+    if _json_fallback():
         data = _load()
         u = data.get("users", {}).get(str(user_id))
         if u:
@@ -749,31 +682,20 @@ def record_message(user_id: int, text_snippet: str, sentiment: str, is_political
     _sync_user_to_storage(user_id, u)
 
 
-def _increment_user_warnings_in_db(user_id: int) -> None:
-    """Увеличивает счётчик замечаний в БД (users.warnings_received)."""
-    if not DB_PATH.exists():
-        return
-    try:
-        import sqlite3
-        conn = sqlite3.connect(str(DB_PATH))
-        conn.execute(
-            "UPDATE users SET warnings_received = COALESCE(warnings_received, 0) + 1 WHERE id = ?",
-            (user_id,),
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.debug("_increment_user_warnings_in_db: %s", e)
-
-
 def record_warning(user_id: int) -> None:
-    """Учитывает выданное пользователю замечание. Пишет в JSON и в БД (users.warnings_received)."""
+    """Учитывает выданное пользователю замечание. Storage + JSON."""
+    if _db_writes():
+        st = _get_storage()
+        if st:
+            try:
+                st.increment_warnings(int(user_id))
+            except Exception as e:
+                logger.debug("increment_warnings in storage: %s", e)
     data = _load()
     key = str(user_id)
     if key not in data["users"]:
         data["users"][key] = _default_user(user_id)
     data["users"][key]["stats"]["warnings_received"] = data["users"][key]["stats"].get("warnings_received", 0) + 1
-    _increment_user_warnings_in_db(user_id)
     _save(data)
 
 
@@ -906,10 +828,28 @@ def get_portrait_for_reply_fast(user_id: int, display_name: str = "") -> str:
     return portrait
 
 
+def _schedule_daily_update(user_id: int) -> None:
+    """
+    Запускает daily_update_user в фоне.
+    В asyncio-контексте — через run_in_executor.
+    В синхронном контексте — напрямую (блокирует, но это редкий случай).
+    """
+    import threading
+    try:
+        import asyncio
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(None, daily_update_user, user_id)
+        return
+    except RuntimeError:
+        pass
+    t = threading.Thread(target=daily_update_user, args=(user_id,), daemon=True)
+    t.start()
+
+
 def get_portrait_for_reply(user_id: int, display_name: str = "") -> str:
     """
     Возвращает актуальный портрет пользователя для ответа.
-    Если портрет не обновлялся сегодня — перед возвратом запускает ежедневное обновление по буферу.
+    Если портрет не обновлялся сегодня — запускает daily_update_user в фоне (неблокирующе).
     """
     data = _load()
     key = str(user_id)
@@ -920,13 +860,14 @@ def get_portrait_for_reply(user_id: int, display_name: str = "") -> str:
     if display_name:
         u["display_name"] = display_name
         _save(data)
+
     today = date.today().isoformat()
     if u.get("portrait_updated_date") != today:
-        daily_update_user(user_id)
-        data = _load()
-        u = data["users"][key]
+        _schedule_daily_update(user_id)
+
     _update_tone_to_bot(u)
     _save(data)
+
     portrait = u.get("portrait", "")
     tone = (u.get("tone_override") or "").strip() or (u.get("tone_to_bot") or "").strip()
     if tone:

@@ -55,6 +55,16 @@ def _run_sync(fn, *args, **kwargs) -> Any:
     return asyncio.to_thread(fn, *args, **kwargs)
 
 
+def start_admin_cache_warmer() -> None:
+    """Запуск подогрева кэша админки. Пока заглушка — кэш заполняется по первому запросу."""
+    pass
+
+
+async def stop_admin_cache_warmer() -> None:
+    """Остановка подогрева кэша при shutdown. Пока заглушка."""
+    pass
+
+
 @router.get("/dashboard")
 async def get_admin_dashboard(
     chat_id: str | None = Query(default="all"),

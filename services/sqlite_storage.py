@@ -49,6 +49,18 @@ def _ensure_tables(conn) -> None:
             data_json TEXT NOT NULL DEFAULT '[]',
             PRIMARY KEY (chat_id, date)
         );
+        CREATE TABLE IF NOT EXISTS dialogue_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            sender_id INTEGER NOT NULL,
+            sender_name TEXT NOT NULL DEFAULT '',
+            text TEXT NOT NULL,
+            reply_to_user_id INTEGER,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_dlg_chat_date ON dialogue_messages(chat_id, date);
+        CREATE INDEX IF NOT EXISTS idx_dlg_chat_sender ON dialogue_messages(chat_id, sender_id);
         CREATE TABLE IF NOT EXISTS storage_settings (
             id INTEGER PRIMARY KEY,
             data_json TEXT NOT NULL DEFAULT '{}'
@@ -105,6 +117,33 @@ class SqliteStorage:
         try:
             if chat_id is not None:
                 rows = conn.execute(
+                    """SELECT text, sent_at, chat_id FROM messages
+                       WHERE user_id = ? AND chat_id = ?
+                       AND text IS NOT NULL AND text != ''
+                       ORDER BY sent_at ASC LIMIT ?""",
+                    (int(user_id), int(chat_id), limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT text, sent_at, chat_id FROM messages
+                       WHERE user_id = ? AND text IS NOT NULL AND text != ''
+                       ORDER BY sent_at ASC LIMIT ?""",
+                    (int(user_id), limit),
+                ).fetchall()
+            result = []
+            for row in rows:
+                text = (row[0] or "").strip()
+                sent_at = row[1]
+                cid = row[2] if len(row) > 2 else None
+                date_str = str(sent_at)[:10] if sent_at else ""
+                msg = {"text": text, "date": date_str}
+                if cid is not None and chat_id is None:
+                    msg["chat_id"] = int(cid)
+                result.append(msg)
+            if result:
+                return result
+            if chat_id is not None:
+                rows = conn.execute(
                     "SELECT text, date FROM user_message_archive "
                     "WHERE user_id = ? AND chat_id = ? ORDER BY date, id LIMIT ?",
                     (int(user_id), int(chat_id), limit),
@@ -116,6 +155,44 @@ class SqliteStorage:
                 (int(user_id), limit),
             ).fetchall()
             return [{"text": r[0], "date": r[1], "chat_id": r[2]} for r in rows]
+        finally:
+            conn.close()
+
+    def get_display_names(self) -> dict[str, str]:
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT id, first_name, username, last_name FROM users"
+            ).fetchall()
+            result = {}
+            for uid, first, username, last in rows:
+                name = (first or username or last or "").strip() or str(uid)
+                result[str(uid)] = name
+            return result
+        finally:
+            conn.close()
+
+    def get_users_in_chat(self, chat_id: int) -> list[int]:
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT user_id FROM messages WHERE chat_id = ? AND user_id IS NOT NULL",
+                (int(chat_id),),
+            ).fetchall()
+            return [r[0] for r in rows]
+        finally:
+            conn.close()
+
+    def increment_warnings(self, user_id: int) -> None:
+        if not storage_db_writes_enabled():
+            return
+        conn = self._conn()
+        try:
+            conn.execute(
+                "UPDATE users SET warnings_received = COALESCE(warnings_received, 0) + 1 WHERE id = ?",
+                (int(user_id),),
+            )
+            conn.commit()
         finally:
             conn.close()
 
@@ -171,34 +248,90 @@ class SqliteStorage:
         finally:
             conn.close()
 
-    def get_dialogue_log(self, chat_id: int) -> dict:
-        conn = self._conn()
-        try:
-            rows = conn.execute(
-                "SELECT date, data_json FROM dialogue_log WHERE chat_id = ?",
-                (int(chat_id),),
-            ).fetchall()
-            out = {}
-            for date_str, raw in rows:
-                data = json.loads(raw) if isinstance(raw, str) else (raw or [])
-                out[date_str] = data
-            return out
-        finally:
-            conn.close()
-
-    def set_dialogue_log(self, chat_id: int, log: dict) -> None:
+    def append_dialogue_message(
+        self,
+        chat_id: int,
+        date: str,
+        sender_id: int,
+        sender_name: str,
+        text: str,
+        reply_to_user_id: int | None = None,
+    ) -> None:
         if not storage_db_writes_enabled():
             return
         conn = self._conn()
         try:
-            conn.execute("DELETE FROM dialogue_log WHERE chat_id = ?", (int(chat_id),))
-            for date_str, msgs in (log or {}).items():
-                payload = json.dumps(msgs, ensure_ascii=False)
-                conn.execute(
-                    "INSERT INTO dialogue_log (chat_id, date, data_json) VALUES (?, ?, ?)",
-                    (int(chat_id), date_str, payload),
-                )
+            conn.execute(
+                """INSERT INTO dialogue_messages
+                   (chat_id, date, sender_id, sender_name, text, reply_to_user_id)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    int(chat_id),
+                    date,
+                    int(sender_id),
+                    (sender_name or "")[:50],
+                    text[:300],
+                    int(reply_to_user_id) if reply_to_user_id else None,
+                ),
+            )
             conn.commit()
+        finally:
+            conn.close()
+
+    def get_dialogue_messages(self, chat_id: int, date: str) -> list[dict]:
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                """SELECT sender_id, sender_name, text, reply_to_user_id
+                   FROM dialogue_messages
+                   WHERE chat_id = ? AND date = ?
+                   ORDER BY id""",
+                (int(chat_id), date),
+            ).fetchall()
+            return [
+                {
+                    "sender_id": r[0],
+                    "sender_name": r[1],
+                    "text": r[2],
+                    "reply_to_user_id": r[3],
+                }
+                for r in rows
+            ]
+        finally:
+            conn.close()
+
+    def get_distinct_dialogue_dates(self, chat_id: int, before_date: str) -> list[str]:
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                """SELECT DISTINCT date FROM dialogue_messages
+                   WHERE chat_id = ? AND date < ?
+                   ORDER BY date""",
+                (int(chat_id), before_date),
+            ).fetchall()
+            return [r[0] for r in rows]
+        finally:
+            conn.close()
+
+    def get_all_dialogue_chat_ids(self) -> list[int]:
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT chat_id FROM dialogue_messages"
+            ).fetchall()
+            return [r[0] for r in rows]
+        finally:
+            conn.close()
+
+    def delete_dialogue_before(self, chat_id: int, cutoff_date: str) -> int:
+        conn = self._conn()
+        try:
+            cur = conn.execute(
+                "DELETE FROM dialogue_messages WHERE chat_id = ? AND date < ?",
+                (int(chat_id), cutoff_date),
+            )
+            conn.commit()
+            return cur.rowcount
         finally:
             conn.close()
 

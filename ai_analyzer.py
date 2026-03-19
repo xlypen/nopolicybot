@@ -828,28 +828,69 @@ def should_pause_dialog(context_and_message: str) -> bool:
     return False
 
 
+_RESUME_DIALOG_PROMPT = """Пользователь написал после того как попросил бота замолчать.
+Определи, хочет ли он возобновить нормальное общение — явно или неявно.
+
+Верни should_resume=true если это:
+- Извинение или примирение (явное или косвенное).
+- Нейтральный перезапуск диалога без агрессии.
+- Вопрос или просьба без враждебного тона.
+
+Верни should_resume=false если это:
+- Продолжение агрессии или грубости.
+- Нейтральная фраза без признаков примирения.
+
+Ответ СТРОГО JSON: {"should_resume": true|false}"""
+
+
 def should_resume_dialog(context_and_message: str) -> bool:
     """
     Определяет, просит ли пользователь снять паузу общения (в т.ч. неявно).
+    Двухуровневая проверка: быстрые маркеры → ИИ для неоднозначных случаев.
     """
     if not context_and_message or not context_and_message.strip():
         return False
+
     text = sanitize_for_prompt(context_and_message, max_len=1200)
     lowered = text.lower()
-    # Быстрая эвристика на случай недоступности модели.
-    soft_markers = (
+
+    EXPLICIT_MARKERS = (
         "извини", "извиняй", "прости", "простите", "сорян", "сори", "виноват",
         "был не прав", "была не права", "погоряч", "давай нормально", "мир?",
         "не злись", "без обид", "ладно, мир", "ладно мир",
     )
-    # Важно: не размораживаем на нейтральных "эй/ок/кайф" и т.п.
-    # Сначала нужен хотя бы один маркер примирения в текущем сообщении.
-    if not any(m in lowered for m in soft_markers):
-        return False
-    return True
 
-    # Недостижимая ветка оставлена осознанно как страховка на будущее расширение логики.
-    # return False
+    if any(m in lowered for m in EXPLICIT_MARKERS):
+        return True
+
+    if len(lowered.split()) <= 2:
+        return False
+
+    ck = _cache_key("resume_dialog", text)
+    cached = _cache_get(ck)
+    if isinstance(cached, bool):
+        return cached
+
+    for attempt in range(2):
+        try:
+            raw, _ = chat_complete_with_fallback(
+                [
+                    {"role": "system", "content": _RESUME_DIALOG_PROMPT},
+                    {"role": "user", "content": f"Сообщение пользователя:\n{text}"},
+                ],
+                temperature=0.1,
+                prefer_free=prefer_free_mode(),
+            )
+            data = parse_json((raw or "").strip())
+            if isinstance(data, dict):
+                result = bool(data.get("should_resume", False))
+                _cache_set(ck, result)
+                return result
+        except Exception:
+            if attempt < 1:
+                time.sleep(2)
+
+    return False
 
 
 def analyze_batch_style(messages_text: str) -> tuple[str, bool, str]:
@@ -1089,26 +1130,29 @@ def assess_aggression_score(messages: list[str], last_n: int = 15) -> dict:
     Оценка эмоций по последним N сообщениям: шкала -10 (сверх позитив) … +10 (максимальная агрессия).
     Возвращает: score (-10..10), positivity (0..10), aggression (0..10).
     """
+    _default = {"score": 0.0, "positivity": 5.0, "aggression": 0.0}
     if not messages:
-        return {"score": 0.0, "positivity": 5.0, "aggression": 0.0}
+        return _default
     texts = [t.strip() for t in messages if (t or "").strip()][-last_n:]
     if not texts:
-        return {"score": 0.0, "positivity": 5.0, "aggression": 0.0}
+        return _default
     block = "\n".join(f"- {t[:300]}" for t in texts)
     msgs = [
         {"role": "system", "content": AGGRESSION_SCORE_PROMPT},
         {"role": "user", "content": f"Последние сообщения пользователя:\n{block}"},
     ]
     try:
-        response = chat_complete_with_fallback(msgs, temperature=0.2, max_tokens=150)
-        if not response or not getattr(response, "choices", None):
-            return {"score": 0.0, "positivity": 5.0, "aggression": 0.0}
-        raw = (response.choices[0].message.content or "").strip()
+        raw, _ = chat_complete_with_fallback(
+            msgs,
+            temperature=0.2,
+            prefer_free=prefer_free_mode(),
+        )
         if not raw:
-            return {"score": 0.0, "positivity": 5.0, "aggression": 0.0}
+            return _default
+        raw = raw.strip()
         data = parse_json(raw)
         if not isinstance(data, dict):
-            return {"score": 0.0, "positivity": 5.0, "aggression": 0.0}
+            return _default
         score = float(data.get("score", 0))
         score = max(-10.0, min(10.0, score))
         pos = float(data.get("positivity", 5.0))
@@ -1118,7 +1162,7 @@ def assess_aggression_score(messages: list[str], last_n: int = 15) -> dict:
         return {"score": round(score, 1), "positivity": round(pos, 1), "aggression": round(agg, 1)}
     except Exception as e:
         logger.debug("assess_aggression_score: %s", e)
-        return {"score": 0.0, "positivity": 5.0, "aggression": 0.0}
+        return _default
 
 
 def _get_reply_models() -> list[str]:

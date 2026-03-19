@@ -316,8 +316,51 @@ def append_dialogue_message(
     sender_name: str = "",
     chat_title: str = "",
 ) -> None:
-    """No-op: диалоги теперь пишутся через ingest_message_event → таблица messages."""
-    pass
+    """Добавляет сообщение в лог диалогов. Атомарно через storage."""
+    if not text or not (text := text.strip()):
+        return
+    if sender_id == reply_to_user_id:
+        return
+
+    from services.storage_cutover import storage_db_writes_enabled, storage_json_writes_enabled
+    from services.sqlite_storage import get_storage
+
+    today = date.today().isoformat()
+
+    if storage_db_writes_enabled():
+        st = get_storage()
+        if st:
+            st.append_dialogue_message(
+                chat_id=int(chat_id),
+                date=today,
+                sender_id=int(sender_id),
+                sender_name=sender_name,
+                text=text,
+                reply_to_user_id=int(reply_to_user_id) if reply_to_user_id else None,
+            )
+            return
+
+    if storage_json_writes_enabled():
+        data = _load()
+        ckey = str(int(chat_id))
+        if ckey not in data["dialogue_log"]:
+            data["dialogue_log"][ckey] = {}
+        if today not in data["dialogue_log"][ckey]:
+            data["dialogue_log"][ckey][today] = []
+        data["dialogue_log"][ckey][today].append({
+            "sender_id": int(sender_id),
+            "text": text[:300],
+            "reply_to_user_id": int(reply_to_user_id) if reply_to_user_id else None,
+            "sender_name": (sender_name or "")[:50],
+        })
+        if ckey in data["dialogue_log"]:
+            cutoff = (date.today() - timedelta(days=DIALOGUE_LOG_DAYS)).isoformat()
+            data["dialogue_log"][ckey] = {
+                d: msgs
+                for d, msgs in data["dialogue_log"][ckey].items()
+                if d >= cutoff
+            }
+        _save(data)
 
 
 def _get_unprocessed_dates(data: dict) -> list[tuple[str, str]]:
@@ -499,34 +542,52 @@ def _summarize_dialogue_pair(messages: list[dict], user_names: dict[str, str]) -
         return ""
 
 
+def _process_day_messages(st, chat_id: int, day: str, msgs: list[dict], names: dict) -> None:
+    """Обрабатывает сообщения одного дня для одного чата (storage-версия)."""
+    pairs: dict[str, list[dict]] = {}
+    for m in msgs:
+        rid = m.get("reply_to_user_id")
+        sid = m.get("sender_id")
+        if rid and sid and sid != rid:
+            pk = _pair_key(sid, rid)
+            pairs.setdefault(pk, []).append(m)
+    for pk, pair_msgs in pairs.items():
+        if len(pair_msgs) < 2:
+            continue
+        summary = _summarize_dialogue_pair(pair_msgs, names)
+        if not summary:
+            continue
+        existing = st.get_connection(chat_id, pk) or {}
+        updated = _merge_connection_entry(
+            data={},
+            ckey=str(chat_id),
+            pk=pk,
+            day=day,
+            source="daily",
+            summary=summary,
+            pair_msgs_count=len(pair_msgs),
+        )
+        if existing:
+            updated["message_count"] = existing.get("message_count", 0) + len(pair_msgs)
+            prev_sbd = list(existing.get("summary_by_date") or [])
+            new_sbd = list(updated.get("summary_by_date") or [])
+            merged_sbd = prev_sbd + [e for e in new_sbd if e not in prev_sbd]
+            updated["summary_by_date"] = merged_sbd[-60:]
+        st.upsert_connection(chat_id, pk, updated)
+
+
 def process_pending_days(user_display_names: dict[str, str] | None = None) -> int:
     """
     Обрабатывает все необработанные дни: саммари диалогов и обновление связей.
-    Читает диалоги из БД (таблица messages). JSON dialogue_log как fallback.
-    Возвращает количество обработанных (chat_id, date) пар.
+    Storage (dialogue_messages) или JSON dialogue_log как fallback.
     """
     import os
     try:
         os.chdir(DATA_DIR)
     except OSError:
         pass
-    data = _load()
-    processed_dates = _get_processed_dates_from_db()
-    for ckey, dates in (data.get("processed_dates") or {}).items():
-        processed_dates.setdefault(ckey, [])
-        for d in dates:
-            if d not in processed_dates[ckey]:
-                processed_dates[ckey].append(d)
-    pending_db = _get_unprocessed_dates_from_db(processed_dates)
-    pending_json = _get_unprocessed_dates(data)
-    seen = set()
-    pending = []
-    for item in pending_db + pending_json:
-        if item not in seen:
-            seen.add(item)
-            pending.append(item)
-    if not pending:
-        return 0
+
+    today = date.today().isoformat()
     if user_display_names is None:
         try:
             from user_stats import get_user_display_names
@@ -535,12 +596,56 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
             names = {}
     else:
         names = user_display_names
+
+    from services.storage_cutover import storage_db_reads_enabled
+    from services.sqlite_storage import get_storage
+
+    if storage_db_reads_enabled():
+        st = get_storage()
+        if st:
+            processed = 0
+            for chat_id in st.get_all_dialogue_chat_ids():
+                dates = st.get_distinct_dialogue_dates(chat_id, before_date=today)
+                processed_set = st.get_processed_dates_for_chat(chat_id)
+                for day in dates:
+                    if day in processed_set:
+                        continue
+                    try:
+                        msgs = st.get_dialogue_messages(chat_id, day)
+                        if msgs:
+                            _process_day_messages(st, chat_id, day, msgs, names)
+                        st.set_processed_date(chat_id, day)
+                        processed += 1
+                    except Exception as e:
+                        logger.warning("Ошибка обработки дня %s чата %s: %s", day, chat_id, e)
+            if processed > 0:
+                st.set_last_processed_date(today)
+            return processed
+
+    data = _load()
+    processed_dates = _get_processed_dates_from_db()
+    for ckey, dates in (data.get("processed_dates") or {}).items():
+        processed_dates.setdefault(ckey, [])
+        for d in dates:
+            if d not in processed_dates[ckey]:
+                processed_dates[ckey].append(d)
+    pending_json = _get_unprocessed_dates(data)
+    pending_db = _get_unprocessed_dates_from_db(processed_dates)
+    seen = set()
+    pending = []
+    for item in pending_db + pending_json:
+        if item not in seen:
+            seen.add(item)
+            pending.append(item)
+    if not pending:
+        return 0
+
     processed_count = 0
     for ckey, day in sorted(pending):
         try:
             msgs = _load_dialogue_from_db(ckey, day)
             if not msgs:
-                msgs = data["dialogue_log"].get(ckey, {}).get(day, [])
+                msgs = data.get("dialogue_log", {}).get(ckey, {}).get(day, [])
             if not msgs:
                 data.setdefault("processed_dates", {})
                 if ckey not in data["processed_dates"]:
@@ -549,23 +654,19 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
                     data["processed_dates"][ckey].append(day)
                 processed_count += 1
                 continue
-            # Группируем по парам (sender, reply_to)
             pairs: dict[str, list[dict]] = {}
             for m in msgs:
                 rid = m.get("reply_to_user_id")
                 sid = m.get("sender_id")
                 if rid and sid and sid != rid:
                     pk = _pair_key(sid, rid)
-                    if pk not in pairs:
-                        pairs[pk] = []
-                    pairs[pk].append(m)
-            # Обновляем связи
+                    pairs.setdefault(pk, []).append(m)
             data.setdefault("connections", {})
             if ckey not in data["connections"]:
                 data["connections"][ckey] = {}
             for pk, pair_msgs in pairs.items():
                 if len(pair_msgs) < 2:
-                    continue  # мало для саммари
+                    continue
                 summary = _summarize_dialogue_pair(pair_msgs, names)
                 if not summary:
                     continue
@@ -589,7 +690,7 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
             processed_count += 1
         except Exception as e:
             logger.warning("Ошибка обработки дня %s чата %s: %s", day, ckey, e)
-    data[LAST_PROCESSED_KEY] = date.today().isoformat()
+    data[LAST_PROCESSED_KEY] = today
     _save(data)
     return processed_count
 

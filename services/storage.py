@@ -22,7 +22,19 @@ class IStorage(Protocol):
     def get_user_messages(
         self, user_id: int, chat_id: int | None = None, limit: int = 1000
     ) -> list[dict]:
-        """Return messages for user: [{text, date}] or [{text, date, chat_id}] when chat_id is None."""
+        """Return messages: [{text, date}] or [{text, date, chat_id}] from messages table."""
+        ...
+
+    def get_display_names(self) -> dict[str, str]:
+        """Return {user_id_str: display_name} for all users."""
+        ...
+
+    def get_users_in_chat(self, chat_id: int) -> list[int]:
+        """Return list of user_ids who have messages in chat."""
+        ...
+
+    def increment_warnings(self, user_id: int) -> None:
+        """Increment warnings_received counter for user."""
         ...
 
     def append_message(
@@ -39,13 +51,23 @@ class IStorage(Protocol):
         """Upsert chat."""
         ...
 
-    def get_dialogue_log(self, chat_id: int) -> dict:
-        """Return dialogue_log for chat: {date: [msgs], ...}."""
-        ...
+    def append_dialogue_message(
+        self,
+        chat_id: int,
+        date: str,
+        sender_id: int,
+        sender_name: str,
+        text: str,
+        reply_to_user_id: int | None = None,
+    ) -> None: ...
 
-    def set_dialogue_log(self, chat_id: int, log: dict) -> None:
-        """Replace dialogue_log for chat."""
-        ...
+    def get_dialogue_messages(self, chat_id: int, date: str) -> list[dict]: ...
+
+    def get_distinct_dialogue_dates(self, chat_id: int, before_date: str) -> list[str]: ...
+
+    def get_all_dialogue_chat_ids(self) -> list[int]: ...
+
+    def delete_dialogue_before(self, chat_id: int, cutoff_date: str) -> int: ...
 
     def get_connection(self, chat_id: int, pair_key: str) -> dict | None:
         """Return connection data for pair_key (e.g. '123|456') or None."""

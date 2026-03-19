@@ -343,9 +343,15 @@
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({ user_id: Number(USER_ID), chat_id: String(CHAT_ID) }),
       });
-      const body = await resp.json();
+      const raw = await resp.text();
+      let body = null;
+      try { body = raw ? JSON.parse(raw) : null; } catch (_) { body = null; }
       if (!resp.ok || !body || !body.ok) {
-        throw new Error((body && body.error) || ("HTTP " + resp.status));
+        let msg = (body && body.error) || ("HTTP " + resp.status);
+        if (!body && /<html|<!doctype/i.test(raw)) {
+          msg = "Сервер вернул страницу ошибки (таймаут или API не запущен). Проверьте сервис telegram-bot-api (порт 8001).";
+        }
+        throw new Error(msg);
       }
       setProfileFeedback("Портрет обновлён. Перезагрузите страницу для актуального текста.", "#10b981");
     } catch (e) {

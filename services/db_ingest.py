@@ -77,6 +77,16 @@ async def ingest_message_event(
                 is_active=True,
                 last_seen=sent_at,
             )
+            if replied_to_user_id and int(replied_to_user_id) and int(replied_to_user_id) != int(user_id):
+                await user_repo.get_or_create(
+                    int(replied_to_user_id),
+                    int(chat_id),
+                    username="",
+                    first_name="",
+                    last_name="",
+                    is_active=True,
+                    last_seen=sent_at,
+                )
 
             telegram_id = _combined_telegram_id(int(chat_id), int(message_id))
             try:

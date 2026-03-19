@@ -42,13 +42,20 @@ def proxy_to_fastapi(
     req = urllib.request.Request(url, method=method, data=data)
     req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Content-Type", request.content_type or "application/json")
+    req.add_header("Accept", "application/json")
 
     try:
-        with urllib.request.urlopen(req, timeout=180) as resp:
+        with urllib.request.urlopen(req, timeout=300) as resp:
             body = resp.read()
             try:
                 return json.loads(body.decode("utf-8")), resp.status
             except json.JSONDecodeError:
+                # Upstream returned non-JSON (e.g. HTML error page or nginx 502/504) — always return JSON to client
+                if body.lstrip().startswith(b"<") or b"<html" in body[:500].lower() or b"<!doctype" in body[:100].lower():
+                    return {
+                        "ok": False,
+                        "error": "Сервер вернул страницу вместо JSON (возможно API не запущен или таймаут). Проверьте сервис telegram-bot-api (порт 8001).",
+                    }, 502
                 return body, resp.status
     except urllib.error.HTTPError as e:
         try:

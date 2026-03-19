@@ -177,7 +177,8 @@ def _extract_topics(texts: list[str], *, top_n: int = 10) -> list[dict]:
 
 
 def _aggregate_health(chat_ids: list[int], *, days: int) -> dict:
-    rows = [marketing_metrics.get_chat_health(cid, days=days) for cid in chat_ids[:40]]
+    # Ограничиваем числом чатов, чтобы дашборд «все чаты» не грузился минутами
+    rows = [marketing_metrics.get_chat_health(cid, days=days) for cid in chat_ids[:12]]
     if not rows:
         return {
             "participants": 0,

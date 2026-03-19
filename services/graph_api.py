@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import urllib.request
 from collections import defaultdict
 
 import social_graph
@@ -193,6 +196,53 @@ def _compute_graph_analytics(node_ids: list[int], edges: list[dict]) -> dict:
         return _fallback_graph_analytics(node_ids, edges)
 
 
+def _fetch_telegram_user_name(chat_id: int, user_id: int) -> str | None:
+    """Запрос имени по Telegram API getChatMember. Возвращает first_name или username или None."""
+    token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    if not token or not chat_id or not user_id:
+        return None
+    try:
+        url = f"https://api.telegram.org/bot{token}/getChatMember?chat_id={chat_id}&user_id={user_id}"
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.load(resp)
+        if not data.get("ok"):
+            return None
+        user = (data.get("result") or {}).get("user") or {}
+        first = (user.get("first_name") or "").strip()
+        last = (user.get("last_name") or "").strip()
+        username = (user.get("username") or "").strip()
+        name = (first + " " + last).strip() or username or None
+        return name if name else None
+    except Exception:
+        return None
+
+
+def _enrich_display_names_for_nodes(names: dict, node_ids: set, chat_id: int | None = None) -> None:
+    """Для узлов графа, у которых в names только id, подставить display_name из user_stats или Telegram API."""
+    for uid in node_ids or []:
+        if not uid:
+            continue
+        key = str(uid)
+        if names.get(key, key) == key:
+            try:
+                u = user_stats.get_user(int(uid))
+                dn = (u.get("display_name") or "").strip()
+                if dn and dn != key:
+                    names[key] = dn
+                    continue
+            except Exception:
+                pass
+            if chat_id:
+                tg_name = _fetch_telegram_user_name(int(chat_id), int(uid))
+                if tg_name:
+                    names[key] = tg_name
+                else:
+                    names[key] = f"Участник (ID: {uid})"
+            else:
+                names[key] = f"Участник (ID: {uid})"
+
+
 def _build_payload_from_rows(chat_id, rows, names, period: str = "all", ego_user=None, limit=None, rank_by_user=None):
     rank_by_user = rank_by_user or {}
     period_key = str(period or "all").lower()
@@ -242,6 +292,7 @@ def _build_payload_from_rows(chat_id, rows, names, period: str = "all", ego_user
     if limit:
         edges.sort(key=lambda e: float(e.get("weight_period", 0.0)), reverse=True)
         edges = edges[: max(1, int(limit))]
+    _enrich_display_names_for_nodes(names, node_ids, chat_id=chat_id if isinstance(chat_id, int) else None)
     analytics = _compute_graph_analytics(list(node_ids), edges)
     comm = analytics.get("communities") or {}
     comm_stats = analytics.get("stats") or {}

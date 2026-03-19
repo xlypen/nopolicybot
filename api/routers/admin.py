@@ -2,10 +2,12 @@
 
 import asyncio
 import subprocess
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import APIRouter, Body, Depends, Query
+from fastapi.responses import JSONResponse
 
 from api.dependencies import require_auth
 from services.admin_dashboards import (
@@ -18,6 +20,26 @@ from services.admin_dashboards import (
 from services.audit_log import write_event
 
 router = APIRouter()
+
+# Кэш ответов админки (TTL 45 сек), чтобы дашборд не грузился минутами при каждом открытии/переключении чата
+_ADMIN_CACHE_TTL_SEC = 45
+_admin_cache: dict[tuple, tuple[Any, float]] = {}
+
+
+def _cache_key(*parts: Any) -> tuple:
+    return tuple(parts)
+
+
+def _cached(key: tuple, builder: Callable[[], Any]) -> Any:
+    now = time.monotonic()
+    if key in _admin_cache:
+        val, expiry = _admin_cache[key]
+        if now < expiry:
+            return val
+        del _admin_cache[key]
+    val = builder()
+    _admin_cache[key] = (val, now + _ADMIN_CACHE_TTL_SEC)
+    return val
 
 
 def _parse_chat_id(chat_id: str | None) -> tuple[int | None, str | None]:
@@ -42,7 +64,14 @@ async def get_admin_dashboard(
     cid, err = _parse_chat_id(chat_id)
     if err:
         return {"ok": False, "error": err}
-    payload = await _run_sync(build_chat_health_dashboard, cid, days=days)
+    try:
+        key = _cache_key("dashboard", cid, days)
+        payload = await _run_sync(_cached, key, lambda: build_chat_health_dashboard(cid, days=days))
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"dashboard: {e!s}"},
+        )
     return {"ok": True, "dashboard": payload}
 
 
@@ -56,9 +85,16 @@ async def get_community_structure(
     cid, err = _parse_chat_id(chat_id)
     if err:
         return {"ok": False, "error": err}
-    payload = await _run_sync(
-        build_community_structure_dashboard, cid, period=period, limit=limit
-    )
+    try:
+        key = _cache_key("community", cid, period, limit)
+        payload = await _run_sync(
+            _cached, key, lambda: build_community_structure_dashboard(cid, period=period, limit=limit)
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"community: {e!s}"},
+        )
     return {"ok": True, "community": payload}
 
 
@@ -87,13 +123,16 @@ async def get_leaderboard(
     cid, err = _parse_chat_id(chat_id)
     if err:
         return {"ok": False, "error": err}
-    payload = await _run_sync(
-        build_user_leaderboard_dashboard,
-        cid,
-        metric=metric,
-        limit=limit,
-        days=days,
-    )
+    try:
+        key = _cache_key("leaderboard", cid, metric, days, limit)
+        payload = await _run_sync(
+            _cached, key, lambda: build_user_leaderboard_dashboard(cid, metric=metric, limit=limit, days=days)
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"leaderboard: {e!s}"},
+        )
     return {"ok": True, "leaderboard": payload}
 
 
@@ -108,13 +147,16 @@ async def get_at_risk_users(
     cid, err = _parse_chat_id(chat_id)
     if err:
         return {"ok": False, "error": err}
-    payload = await _run_sync(
-        build_at_risk_users_dashboard,
-        cid,
-        threshold=threshold,
-        days=days,
-        limit=limit,
-    )
+    try:
+        key = _cache_key("at_risk", cid, days, limit, threshold)
+        payload = await _run_sync(
+            _cached, key, lambda: build_at_risk_users_dashboard(cid, threshold=threshold, days=days, limit=limit)
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": f"at_risk: {e!s}"},
+        )
     return {"ok": True, "at_risk": payload}
 
 

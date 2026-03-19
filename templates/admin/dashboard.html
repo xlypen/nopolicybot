@@ -315,14 +315,20 @@ function esc(text) {
 
 async function requestJson(url, options) {
   const response = await fetch(url, options || {});
+  const raw = await response.text();
   let body = null;
   try {
-    body = await response.json();
+    body = raw ? JSON.parse(raw) : null;
   } catch (_e) {
     body = null;
   }
   if (!response.ok || !body || body.ok === false) {
-    throw new Error((body && body.error) || `HTTP ${response.status}`);
+    let msg = (body && body.error) || null;
+    if (!msg && body === null && /<html|<!doctype/i.test(raw)) {
+      msg = 'Сервер вернул страницу ошибки (возможно таймаут или API не запущен). Проверьте сервис telegram-bot-api (порт 8001).';
+    }
+    if (!msg) msg = `Ответ не JSON (HTTP ${response.status})`;
+    throw new Error(msg);
   }
   return body;
 }
@@ -383,7 +389,10 @@ function renderGraphNodePanel(snapshot) {
   const uid = Number(node.id || 0);
   const chatSel = document.getElementById('chatSel');
   const chat = String((chatSel && chatSel.value) || 'all');
-  const name = String(node.label || node.username || uid);
+  let name = String(node.label || node.username || uid);
+  if (name === String(uid) || /^\d+$/.test(name)) {
+    name = `Участник (ID: ${uid})`;
+  }
   const rank = String(node.rank || node.tier || 'unknown');
   const influence = Number(node.influence_score || 0);
   const degree = Number(node.degree || graphNodeDegree(uid));
@@ -936,8 +945,14 @@ async function loadRecommendations(chat) {
   list.innerHTML = '<li>Загрузка...</li>';
   _recommendationByDomKey.clear();
   _recommendationRawKeyByDomKey.clear();
-  const r = await fetch(`/api/recommendations?chat_id=${encodeURIComponent(chat)}&days=30&limit=10`);
-  const b = await r.json();
+  const r = await fetch(`/api/v2/recommendations?chat_id=${encodeURIComponent(chat)}&days=30&limit=10`);
+  const raw = await r.text();
+  let b = null;
+  try { b = raw ? JSON.parse(raw) : null; } catch (_) { b = null; }
+  if (!r.ok || !b || !b.ok) {
+    list.innerHTML = '<li style="color:var(--text-secondary);">Ошибка загрузки рекомендаций.</li>';
+    return;
+  }
   const items = (((b || {}).recommendations || {}).items) || [];
   if (!items.length) {
     list.innerHTML = '<li>Рекомендаций пока нет.</li>';
@@ -1131,8 +1146,12 @@ async function loadAdminHealth(chat) {
   if (!main || !topics) return;
   main.textContent = 'Загрузка...';
   topics.textContent = '';
-  const r = await fetch(`/api/v2/admin/dashboard?chat_id=${encodeURIComponent(chat)}&days=30`);
-  const b = await r.json();
+  const slowHint = setTimeout(() => { if (main.textContent === 'Загрузка...') main.textContent = 'Загрузка… (подождите)'; }, 4000);
+  let b;
+  try {
+    const r = await fetch(`/api/v2/admin/dashboard?chat_id=${encodeURIComponent(chat)}&days=30`);
+    b = await r.json();
+  } finally { clearTimeout(slowHint); }
   const d = (b && b.dashboard) || {};
   const targets = d.targets || {};
   const healthTarget = Number(targets.health_score || 0.4);
@@ -1217,8 +1236,15 @@ async function loadAdminLeaderboard(chat) {
   if (!body || !metricSel) return;
   const metric = String(metricSel.value || 'engagement');
   body.innerHTML = '<tr><td colspan="4" style="padding:6px;color:var(--text-secondary);">Загрузка...</td></tr>';
-  const r = await fetch(`/api/v2/admin/leaderboard?chat_id=${encodeURIComponent(chat)}&metric=${encodeURIComponent(metric)}&limit=12&days=30`);
-  const b = await r.json();
+  const slowHint = setTimeout(() => {
+    const cell = body.querySelector('td');
+    if (cell && cell.textContent === 'Загрузка...') cell.textContent = 'Загрузка… (подождите)';
+  }, 4000);
+  let b;
+  try {
+    const r = await fetch(`/api/v2/admin/leaderboard?chat_id=${encodeURIComponent(chat)}&metric=${encodeURIComponent(metric)}&limit=12&days=30`);
+    b = await r.json();
+  } finally { clearTimeout(slowHint); }
   const users = (((b || {}).leaderboard || {}).users) || [];
   if (!users.length) {
     body.innerHTML = '<tr><td colspan="4" style="padding:6px;color:var(--text-secondary);">Нет данных.</td></tr>';
@@ -1252,11 +1278,15 @@ async function loadAdminPanel(chat) {
   if (!sel || !body) return;
   const view = String(sel.value || 'at-risk-users');
   body.textContent = 'Загрузка...';
-  const endpoint = view === 'at-risk-users'
-    ? `/api/v2/admin/at-risk-users?chat_id=${encodeURIComponent(chat)}&days=30&limit=12&threshold=0.6`
-    : `/api/admin/${encodeURIComponent(view)}?chat_id=${encodeURIComponent(chat)}&period_days=30&lookback_days=30&horizon_days=7&limit=12`;
-  const r = await fetch(endpoint);
-  const b = await r.json();
+  const slowHint = setTimeout(() => { if (body.textContent === 'Загрузка...') body.textContent = 'Загрузка… (подождите)'; }, 4000);
+  let b;
+  try {
+    const endpoint = view === 'at-risk-users'
+      ? `/api/v2/admin/at-risk-users?chat_id=${encodeURIComponent(chat)}&days=30&limit=12&threshold=0.6`
+      : `/api/admin/${encodeURIComponent(view)}?chat_id=${encodeURIComponent(chat)}&period_days=30&lookback_days=30&horizon_days=7&limit=12`;
+    const r = await fetch(endpoint);
+    b = await r.json();
+  } finally { clearTimeout(slowHint); }
   if (!b || !b.ok) {
     body.textContent = 'Ошибка загрузки.';
     return;

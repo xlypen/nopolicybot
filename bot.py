@@ -13,8 +13,9 @@ import sys
 import logging
 import random
 import socket
+import threading
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from html import escape
 from io import BytesIO
 from pathlib import Path
@@ -408,10 +409,16 @@ INSULTS_LEVEL_3_PLUS = [
 ]
 
 
+# Кэш bot.get_me() на 2 мин, чтобы не дергать Telegram API на каждое сообщение
+_ME_CACHE: tuple[object, float] | None = None
+_ME_CACHE_TTL_SEC = 120
+
+
 class IsDirectedAtBotFilter(BaseFilter):
     """Сообщение обращено к боту: личка, ответ на бота, упоминание @username бота, фото или голос в ответ боту."""
 
     async def __call__(self, message: Message, bot: Bot) -> bool:
+        global _ME_CACHE
         has_text = bool((message.text or message.caption or "").strip())
         has_photo = bool(message.photo)
         has_voice = bool(message.voice)
@@ -420,7 +427,12 @@ class IsDirectedAtBotFilter(BaseFilter):
         # В личке любое сообщение — к боту
         if getattr(message.chat, "type", None) == "private":
             return True
-        me = await bot.get_me()
+        now = time.monotonic()
+        if _ME_CACHE is not None and now < _ME_CACHE[1]:
+            me = _ME_CACHE[0]
+        else:
+            me = await bot.get_me()
+            _ME_CACHE = (me, now + _ME_CACHE_TTL_SEC)
         if message.reply_to_message and message.reply_to_message.from_user and message.reply_to_message.from_user.is_bot:
             return True
         if has_text:
@@ -1058,13 +1070,72 @@ async def check_and_reply(message: Message) -> None:
                 e or "(без сообщения)",
                 exc_info=True,
             )
-    if not text and not has_photo:
-        return
-
+    display_text = text or ("[фото]" if has_photo else ("[голос]" if has_voice else ""))
     user_name = message.from_user.username or message.from_user.first_name or "Участник"
     first_name = _safe_name((message.from_user.first_name or message.from_user.username or "Участник"))
     chat_id = message.chat.id
-    display_text = text or ("[фото]" if has_photo else ("[голос]" if has_voice else ""))
+    reply_to = message.reply_to_message
+    reply_to_user_id = (
+        int(reply_to.from_user.id)
+        if reply_to and reply_to.from_user and not reply_to.from_user.is_bot
+        else None
+    )
+
+    # Возраст сообщения: если старше 3 минут (накопленная очередь после простоя),
+    # пишем в БД, но не даём реакций ни в общих чатах, ни в личке.
+    try:
+        msg_dt = message.date
+        if msg_dt.tzinfo is None:
+            msg_dt = msg_dt.replace(tzinfo=timezone.utc)
+        age_sec = (datetime.now(tz=timezone.utc) - msg_dt).total_seconds()
+    except Exception:
+        age_sec = 0
+    if age_sec > 180:
+        try:
+            media_type = "photo" if has_photo else ("voice" if has_voice else "text")
+            _spawn_task(
+                ingest_message_event(
+                    chat_id=int(chat_id),
+                    user_id=int(message.from_user.id),
+                    message_id=int(message.message_id),
+                    text=display_text,
+                    username=(message.from_user.username or "") if message.from_user else "",
+                    first_name=(message.from_user.first_name or "") if message.from_user else "",
+                    last_name=(message.from_user.last_name or "") if message.from_user else "",
+                    media_type=media_type,
+                    replied_to_user_id=reply_to_user_id,
+                    sentiment=None,
+                    is_political=False,
+                )
+            )
+        except Exception as e:
+            logger.warning("db ingest (old msg) failed: %s", e)
+        logger.info("[чат %s] Пропуск реакции: старое сообщение (%s сек)", chat_id, int(age_sec))
+        return
+
+    if not text and not has_photo:
+        try:
+            media_type = "photo" if has_photo else ("voice" if has_voice else "text")
+            _spawn_task(
+                ingest_message_event(
+                    chat_id=int(chat_id),
+                    user_id=int(message.from_user.id),
+                    message_id=int(message.message_id),
+                    text=display_text,
+                    username=(message.from_user.username or "") if message.from_user else "",
+                    first_name=(message.from_user.first_name or "") if message.from_user else "",
+                    last_name=(message.from_user.last_name or "") if message.from_user else "",
+                    media_type=media_type,
+                    replied_to_user_id=reply_to_user_id,
+                    sentiment=None,
+                    is_political=False,
+                )
+            )
+        except Exception as e:
+            logger.debug("db ingest (voice-only) failed: %s", e)
+        return
+
+    user_name = message.from_user.username or message.from_user.first_name or "Участник"
     _apply_reset_political_count(chat_id)
     add_to_history(
         chat_id, user_name, display_text,
@@ -1296,9 +1367,13 @@ async def on_bot_added_to_chat(message: Message) -> None:
 async def on_message_to_bot(message: Message) -> None:
     """Ответ на обращение к боту: язвительный/грубый ответ через нейросеть."""
     if not bot_settings.get("reply_to_bot_enabled"):
+        logger.info("[личка] Пропуск: reply_to_bot_enabled выключен")
         return
     if message.from_user and message.from_user.is_bot:
         return
+    chat_type = getattr(message.chat, "type", None)
+    if chat_type == "private":
+        logger.info("[личка] Сообщение от %s (id=%s)", message.from_user.first_name or message.from_user.username, message.from_user.id)
     text = (message.text or message.caption or "").strip()
     has_photo = bool(message.photo)
     has_voice = bool(message.voice)
@@ -1349,6 +1424,8 @@ async def on_message_to_bot(message: Message) -> None:
         if reply_to and reply_to.from_user and not reply_to.from_user.is_bot
         else None
     )
+
+    # Всегда логируем личные сообщения к боту в БД
     try:
         media_type = "photo" if has_photo else ("voice" if has_voice else "text")
         _spawn_task(
@@ -1368,6 +1445,19 @@ async def on_message_to_bot(message: Message) -> None:
         )
     except Exception as e:
         logger.warning("db ingest scheduling failed (on_message_to_bot): %s", e)
+
+    # В личке отвечаем на сообщения до 10 минут (после перезапуска/OOM накопленная очередь всё ещё получает ответ).
+    # В группах порог 3 мин — см. check_and_reply.
+    try:
+        msg_dt = message.date
+        if msg_dt.tzinfo is None:
+            msg_dt = msg_dt.replace(tzinfo=timezone.utc)
+        age_sec = (datetime.now(tz=timezone.utc) - msg_dt).total_seconds()
+    except Exception:
+        age_sec = 0
+    if age_sec > 600:
+        logger.info("[личка %s] Пропуск ответа: старое сообщение (%s сек)", chat_id, int(age_sec))
+        return
 
     user_id = message.from_user.id
     now_mono = time.monotonic()
@@ -1427,9 +1517,10 @@ async def on_message_to_bot(message: Message) -> None:
                 _debug_log("QOD_ENGAGING", chat_id=chat_id, user=first_name, detail="ответ на вопрос дня")
                 _spawn_task(_update_portrait_background(user_id, first_name))
                 return
-            # Иначе — «и так сойдёт»: не отвечаем
+            # Иначе — короткий ответ, чтобы пользователь не оставался без ответа
             logger.info("Чат %s: ответ на вопрос дня от %s — без участливости (короткий/не по теме/грубый)", chat_id, first_name)
             _debug_log("QOD_SKIP", chat_id=chat_id, user=first_name, detail="и так сойдёт")
+            await message.reply("ок.", parse_mode="HTML")
             return
 
         # Если пользователь явно не хочет общаться — жёстко отвечаем и ставим паузу 3 минуты.
@@ -1551,6 +1642,17 @@ async def on_message_to_bot(message: Message) -> None:
         logger.exception("Ошибка при генерации ответа: %s", e)
         _reply = await _last_resort_gemini_reply(context, display_text, first_name, message.from_user.id)
         await message.reply(_reply, parse_mode="HTML")
+
+
+async def on_private_other(message: Message) -> None:
+    """Личка: сообщения без текста/фото/голоса (стикер, документ и т.д.) — короткий ответ."""
+    if getattr(message.chat, "type", None) != "private":
+        return
+    logger.info("[личка] Сообщение без текста/фото/голоса от id=%s", message.from_user.id if message.from_user else None)
+    try:
+        await message.reply("Напиши текстом или отправь фото — тогда отвечу.")
+    except Exception as e:
+        logger.warning("Ответ в личку (other): %s", e)
 
 
 async def cmd_start(message: Message) -> None:
@@ -1775,12 +1877,18 @@ def _sd_notify(msg: str) -> None:
         pass
 
 
-async def _watchdog_loop() -> None:
-    """Send WATCHDOG=1 to systemd every 60s so it knows the bot is alive."""
-    _sd_notify("READY=1")
+def _watchdog_thread_fn() -> None:
+    """Send WATCHDOG=1 to systemd every 60s from a separate thread (survives event loop blocking)."""
     while True:
-        await asyncio.sleep(60)
         _sd_notify("WATCHDOG=1")
+        time.sleep(60)
+
+
+def _start_watchdog_thread() -> None:
+    """Start background thread that pings systemd watchdog; send READY=1 once."""
+    _sd_notify("READY=1")
+    t = threading.Thread(target=_watchdog_thread_fn, daemon=True, name="watchdog")
+    t.start()
 
 
 async def _state_persistence_loop() -> None:
@@ -1853,6 +1961,7 @@ async def main() -> None:
     dp.message.register(on_bot_added_to_chat, F.new_chat_members)
     dp.message.register(on_message_to_bot, F.text | F.caption | F.photo | F.voice, IsDirectedAtBotFilter())
     dp.message.register(check_and_reply, F.text | F.caption | F.photo | F.voice)
+    dp.message.register(on_private_other, F.chat.type == "private")
 
     # Устанавливаем аватарку бота (Путин), если файл есть
     if AVATAR_PATH.is_file():
@@ -1882,7 +1991,7 @@ async def main() -> None:
     )
     logger.info("Бот запущен. ИИ: %s", os.getenv("OPENAI_BASE_URL", "(не задан)"))
     _debug_log("SESSION_START", detail=f"ИИ={os.getenv('OPENAI_BASE_URL', '—')}")
-    _spawn_task(_watchdog_loop())
+    _start_watchdog_thread()
     _spawn_task(restart_checker(RESTART_FLAG_PATH, logger))
     _spawn_task(_state_persistence_loop())
     _spawn_task(_question_of_day_scheduler(bot))

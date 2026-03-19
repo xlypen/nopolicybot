@@ -441,8 +441,52 @@ def get_users_in_chat(chat_id: int) -> list[str]:
     return result
 
 
+def _get_user_messages_from_db(user_id: int, chat_id: int | None = None) -> list[dict]:
+    """Архив сообщений пользователя из БД (таблица messages). Формат: [{text, date}, ...] или с chat_id при объединении чатов."""
+    if not DB_PATH.exists():
+        return []
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(DB_PATH))
+        if chat_id is not None:
+            rows = conn.execute(
+                "SELECT text, sent_at, chat_id FROM messages WHERE user_id = ? AND chat_id = ? AND text IS NOT NULL AND text != '' ORDER BY sent_at ASC LIMIT ?",
+                (user_id, chat_id, MESSAGES_ARCHIVE_LIMIT),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT text, sent_at, chat_id FROM messages WHERE user_id = ? AND text IS NOT NULL AND text != '' ORDER BY sent_at ASC LIMIT ?",
+                (user_id, MESSAGES_ARCHIVE_LIMIT),
+            ).fetchall()
+        conn.close()
+        result = []
+        for row in rows:
+            text = (row[0] or "").strip()
+            sent_at = row[1]
+            cid = row[2] if len(row) > 2 else None
+            if isinstance(sent_at, str) and len(sent_at) >= 10:
+                date_str = sent_at[:10]
+            else:
+                try:
+                    from datetime import datetime
+                    date_str = sent_at.strftime("%Y-%m-%d") if hasattr(sent_at, "strftime") else str(sent_at)[:10]
+                except Exception:
+                    date_str = ""
+            msg = {"text": text, "date": date_str}
+            if cid is not None and chat_id is None:
+                msg["chat_id"] = int(cid)
+            result.append(msg)
+        return result
+    except Exception as e:
+        logger.debug("_get_user_messages_from_db: %s", e)
+        return []
+
+
 def get_user_messages_archive(user_id: int, chat_id: int | None = None) -> list[dict]:
-    """Возвращает архив сообщений. Если chat_id задан — только из этого чата. Формат: [{text, date}] или [{text, date, chat_id}] при объединении."""
+    """Возвращает архив сообщений. Сначала БД (messages), при отсутствии данных — JSON. Формат: [{text, date}] или [{text, date, chat_id}] при объединении."""
+    from_db = _get_user_messages_from_db(user_id, chat_id)
+    if from_db:
+        return from_db
     data = _load()
     u = data.get("users", {}).get(str(user_id))
     if not u:
@@ -642,6 +686,23 @@ def record_message(user_id: int, text_snippet: str, sentiment: str, is_political
         "date": date.today().isoformat(),
     })
     _save(data)
+
+
+def _increment_user_warnings_in_db(user_id: int) -> None:
+    """Увеличивает счётчик замечаний в БД (users.warnings_received)."""
+    if not DB_PATH.exists():
+        return
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.execute(
+            "UPDATE users SET warnings_received = COALESCE(warnings_received, 0) + 1 WHERE id = ?",
+            (user_id,),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.debug("_increment_user_warnings_in_db: %s", e)
 
 
 def record_warning(user_id: int) -> None:

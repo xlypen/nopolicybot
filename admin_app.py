@@ -690,7 +690,7 @@ def api_v2_personality_proxy(subpath: str):
 @login_required
 def api_v2_portrait_proxy(subpath: str):
     """Прокси portrait API в FastAPI v2."""
-    data = request.get_data() if request.method == "POST" and request.is_json else None
+    data = request.get_data() if request.method in ("POST", "PUT", "PATCH") else None
     body, status = proxy_to_fastapi(f"/api/v2/portrait/{subpath}", method=request.method, data=data)
     return proxy_response(body, status)
 
@@ -927,6 +927,15 @@ def admin_user_profile(user_id):
             c = chats_data.get(str(chat_id), {})
             chats_list.append({"chat_id": int(chat_id), "title": c.get("title") or str(chat_id)})
 
+    portrait_text = (u.get("portrait") or "").strip()
+    communication_style = ""
+    if "## Психологический портрет" in portrait_text:
+        start = portrait_text.find("## Психологический портрет") + len("## Психологический портрет")
+        end = portrait_text.find("\n## ", start)
+        communication_style = (portrait_text[start:end] if end > 0 else portrait_text[start:]).strip()[:1200]
+    elif portrait_text:
+        communication_style = portrait_text[:800].strip()
+    effective_tone_val = _get_effective_tone(u)
     return render_template(
         "admin/user_profile.html",
         user_id=str(uid),
@@ -934,7 +943,8 @@ def admin_user_profile(user_id):
         chat_id=chat_id,
         chats=chats_list,
         rank_labels=RANK_LABELS,
-        effective_tone=_get_effective_tone(u),
+        effective_tone=effective_tone_val,
+        communication_style=communication_style,
         my_connections=my_connections,
         portrait_exists=portrait_exists,
         portrait_image_mtime=portrait_image_mtime,

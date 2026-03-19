@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from pathlib import Path
 
 from services.storage_cutover import storage_db_writes_enabled
@@ -73,42 +74,53 @@ class SqliteStorage:
 
     def __init__(self, db_path: Path | None = None):
         self._path = db_path or _DB_PATH
+        self._local = threading.local()
 
     def _conn(self):
         import sqlite3
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self._path))
-        _ensure_tables(conn)
-        return conn
+        if not hasattr(self._local, "conn") or self._local.conn is None:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(self._path), check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            _ensure_tables(conn)
+            conn.commit()
+            self._local.conn = conn
+        return self._local.conn
+
+    def close(self) -> None:
+        """Закрыть соединение текущего потока."""
+        conn = getattr(self._local, "conn", None)
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            self._local.conn = None
 
     def get_user_profile(self, user_id: int) -> dict | None:
         conn = self._conn()
-        try:
-            row = conn.execute(
-                "SELECT profile_json FROM user_profiles WHERE user_id = ?",
-                (int(user_id),),
-            ).fetchone()
-            if not row:
-                return None
-            raw = row[0]
-            return json.loads(raw) if isinstance(raw, str) else (raw or {})
-        finally:
-            conn.close()
+        row = conn.execute(
+            "SELECT profile_json FROM user_profiles WHERE user_id = ?",
+            (int(user_id),),
+        ).fetchone()
+        if not row:
+            return None
+        raw = row[0]
+        return json.loads(raw) if isinstance(raw, str) else (raw or {})
 
     def set_user_profile(self, user_id: int, profile: dict) -> None:
         if not storage_db_writes_enabled():
             return
         conn = self._conn()
-        try:
-            payload = json.dumps(profile, ensure_ascii=False)
-            conn.execute(
-                "INSERT INTO user_profiles (user_id, profile_json) VALUES (?, ?) "
-                "ON CONFLICT(user_id) DO UPDATE SET profile_json = excluded.profile_json",
-                (int(user_id), payload),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        payload = json.dumps(profile, ensure_ascii=False)
+        conn.execute(
+            "INSERT INTO user_profiles (user_id, profile_json) VALUES (?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET profile_json = excluded.profile_json",
+            (int(user_id), payload),
+        )
+        conn.commit()
 
     def get_user_messages(
         self, user_id: int, chat_id: int | None = None, limit: int = 1000
@@ -156,21 +168,18 @@ class SqliteStorage:
             ).fetchall()
             return [{"text": r[0], "date": r[1], "chat_id": r[2]} for r in rows]
         finally:
-            conn.close()
+            pass
 
     def get_display_names(self) -> dict[str, str]:
         conn = self._conn()
-        try:
-            rows = conn.execute(
-                "SELECT id, first_name, username, last_name FROM users"
-            ).fetchall()
-            result = {}
-            for uid, first, username, last in rows:
-                name = (first or username or last or "").strip() or str(uid)
-                result[str(uid)] = name
-            return result
-        finally:
-            conn.close()
+        rows = conn.execute(
+            "SELECT id, first_name, username, last_name FROM users"
+        ).fetchall()
+        result = {}
+        for uid, first, username, last in rows:
+            name = (first or username or last or "").strip() or str(uid)
+            result[str(uid)] = name
+        return result
 
     def get_users_in_chat(self, chat_id: int) -> list[int]:
         conn = self._conn()
@@ -181,7 +190,7 @@ class SqliteStorage:
             ).fetchall()
             return [r[0] for r in rows]
         finally:
-            conn.close()
+            pass
 
     def increment_warnings(self, user_id: int) -> None:
         if not storage_db_writes_enabled():
@@ -194,7 +203,7 @@ class SqliteStorage:
             )
             conn.commit()
         finally:
-            conn.close()
+            pass
 
     def append_message(
         self, user_id: int, chat_id: int, text: str, date: str, *, dedupe: bool = True
@@ -218,7 +227,7 @@ class SqliteStorage:
             conn.commit()
             return True
         finally:
-            conn.close()
+            pass
 
     def get_chat(self, chat_id: int) -> dict | None:
         conn = self._conn()
@@ -231,7 +240,7 @@ class SqliteStorage:
                 return None
             return {"chat_id": row[0], "title": row[1] or "", "last_seen": row[2] or ""}
         finally:
-            conn.close()
+            pass
 
     def upsert_chat(self, chat_id: int, title: str) -> None:
         if not storage_db_writes_enabled():
@@ -246,7 +255,7 @@ class SqliteStorage:
             )
             conn.commit()
         finally:
-            conn.close()
+            pass
 
     def append_dialogue_message(
         self,
@@ -276,7 +285,7 @@ class SqliteStorage:
             )
             conn.commit()
         finally:
-            conn.close()
+            pass
 
     def get_dialogue_messages(self, chat_id: int, date: str) -> list[dict]:
         conn = self._conn()
@@ -298,7 +307,7 @@ class SqliteStorage:
                 for r in rows
             ]
         finally:
-            conn.close()
+            pass
 
     def get_distinct_dialogue_dates(self, chat_id: int, before_date: str) -> list[str]:
         conn = self._conn()
@@ -311,7 +320,7 @@ class SqliteStorage:
             ).fetchall()
             return [r[0] for r in rows]
         finally:
-            conn.close()
+            pass
 
     def get_all_dialogue_chat_ids(self) -> list[int]:
         conn = self._conn()
@@ -321,7 +330,7 @@ class SqliteStorage:
             ).fetchall()
             return [r[0] for r in rows]
         finally:
-            conn.close()
+            pass
 
     def delete_dialogue_before(self, chat_id: int, cutoff_date: str) -> int:
         conn = self._conn()
@@ -333,7 +342,7 @@ class SqliteStorage:
             conn.commit()
             return cur.rowcount
         finally:
-            conn.close()
+            pass
 
     def _pair_to_users(self, pair_key: str) -> tuple[int, int]:
         parts = pair_key.split("|")
@@ -363,7 +372,7 @@ class SqliteStorage:
                 "user_b": ub,
             }
         finally:
-            conn.close()
+            pass
 
     def upsert_connection(self, chat_id: int, pair_key: str, data: dict) -> None:
         if not storage_db_writes_enabled():
@@ -401,9 +410,6 @@ class SqliteStorage:
                 conn.commit()
             except Exception as e2:
                 logger.warning("upsert_connection: %s", e2)
-        finally:
-            conn.close()
-
     def get_all_connections(self, chat_id: int | None) -> list[dict]:
         conn = self._conn()
         try:
@@ -427,7 +433,7 @@ class SqliteStorage:
                 })
             return out
         finally:
-            conn.close()
+            pass
 
     def get_last_processed_date(self) -> str | None:
         conn = self._conn()
@@ -441,7 +447,7 @@ class SqliteStorage:
             data = json.loads(row[0]) if isinstance(row[0], str) else (row[0] or {})
             return data.get("last_processed_date") or None
         finally:
-            conn.close()
+            pass
 
     def set_last_processed_date(self, date: str) -> None:
         if not storage_db_writes_enabled():
@@ -465,7 +471,7 @@ class SqliteStorage:
             )
             conn.commit()
         finally:
-            conn.close()
+            pass
 
     def get_processed_dates_for_chat(self, chat_id: int) -> set[str]:
         conn = self._conn()
@@ -477,9 +483,6 @@ class SqliteStorage:
             return {r[0] for r in rows}
         except Exception:
             return set()
-        finally:
-            conn.close()
-
     def set_processed_date(self, chat_id: int, date: str) -> None:
         if not storage_db_writes_enabled():
             return
@@ -492,9 +495,6 @@ class SqliteStorage:
             conn.commit()
         except Exception as e:
             logger.debug("set_processed_date: %s", e)
-        finally:
-            conn.close()
-
     def get_global_settings(self) -> dict:
         conn = self._conn()
         try:
@@ -506,7 +506,7 @@ class SqliteStorage:
             raw = row[0]
             return json.loads(raw) if isinstance(raw, str) else (raw or {})
         finally:
-            conn.close()
+            pass
 
     def set_global_settings(self, data: dict) -> None:
         if not storage_db_writes_enabled():
@@ -521,7 +521,7 @@ class SqliteStorage:
             )
             conn.commit()
         finally:
-            conn.close()
+            pass
 
 
 def get_storage() -> SqliteStorage | None:
@@ -546,9 +546,6 @@ def init_storage() -> SqliteStorage | None:
         return None
     _storage_instance = SqliteStorage()
     conn = _storage_instance._conn()
-    try:
-        _ensure_tables(conn)
-        conn.commit()
-    finally:
-        conn.close()
+    _ensure_tables(conn)
+    conn.commit()
     return _storage_instance

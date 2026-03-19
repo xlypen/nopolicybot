@@ -846,10 +846,41 @@ def _schedule_daily_update(user_id: int) -> None:
     t.start()
 
 
+def _schedule_tone_update(user_id: int) -> None:
+    """
+    Обновляет tone_to_bot и emotion_score в фоне.
+    Не блокирует event loop.
+    """
+    import threading
+
+    def _do():
+        try:
+            data = _load()
+            key = str(user_id)
+            if key not in data["users"]:
+                return
+            u = data["users"][key]
+            _update_tone_to_bot(u)
+            _save(data)
+            _sync_user_to_storage(user_id, u)
+        except Exception as e:
+            logger.debug("_schedule_tone_update: %s", e)
+
+    try:
+        import asyncio
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(None, _do)
+        return
+    except RuntimeError:
+        pass
+    threading.Thread(target=_do, daemon=True).start()
+
+
 def get_portrait_for_reply(user_id: int, display_name: str = "") -> str:
     """
     Возвращает актуальный портрет пользователя для ответа.
-    Если портрет не обновлялся сегодня — запускает daily_update_user в фоне (неблокирующе).
+    Все тяжёлые операции (ИИ, запись на диск) запускаются в фоне.
+    Сама функция не блокирует event loop.
     """
     data = _load()
     key = str(user_id)
@@ -857,7 +888,7 @@ def get_portrait_for_reply(user_id: int, display_name: str = "") -> str:
         data["users"][key] = _default_user(user_id, display_name)
         _save(data)
     u = data["users"][key]
-    if display_name:
+    if display_name and u.get("display_name") != display_name:
         u["display_name"] = display_name
         _save(data)
 
@@ -865,17 +896,9 @@ def get_portrait_for_reply(user_id: int, display_name: str = "") -> str:
     if u.get("portrait_updated_date") != today:
         _schedule_daily_update(user_id)
 
-    _update_tone_to_bot(u)
-    _save(data)
+    _schedule_tone_update(user_id)
 
-    portrait = u.get("portrait", "")
-    tone = (u.get("tone_override") or "").strip() or (u.get("tone_to_bot") or "").strip()
-    if tone:
-        portrait = (portrait + "\n\nНастроение обращений к боту: " + tone).strip()
-    score = u.get("emotion_score")
-    if score is not None:
-        portrait = (portrait + f"\nEMOTION_SCORE: {score}").strip()
-    return portrait
+    return get_portrait_for_reply_fast(user_id, display_name)
 
 
 def set_deep_portrait(user_id: int, portrait: str, rank: str = "neutral") -> bool:

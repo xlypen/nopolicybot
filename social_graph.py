@@ -459,37 +459,6 @@ def _get_db_chat_ids_with_today_messages(today: str) -> set[str]:
         return set()
 
 
-def _load_dialogue_from_db(chat_id: str, day: str) -> list[dict]:
-    """Загрузить сообщения за день из таблицы messages."""
-    import sqlite3
-    db_path = DATA_DIR / "data" / "bot.db"
-    if not db_path.exists():
-        return []
-    try:
-        conn = sqlite3.connect(str(db_path))
-        rows = conn.execute(
-            "SELECT user_id, text, replied_to, sent_at FROM messages "
-            "WHERE CAST(chat_id AS TEXT) = ? AND date(sent_at) = ? "
-            "ORDER BY sent_at",
-            (chat_id, day),
-        ).fetchall()
-        conn.close()
-    except Exception as e:
-        logger.warning("_load_dialogue_from_db: %s", e)
-        return []
-    msgs = []
-    for uid, text, replied_to, sent_at in rows:
-        if not text or not text.strip():
-            continue
-        msgs.append({
-            "sender_id": int(uid) if uid else 0,
-            "text": (text or "")[:300],
-            "reply_to_user_id": int(replied_to) if replied_to else None,
-            "sender_name": "",
-        })
-    return msgs
-
-
 def _summarize_dialogue_pair(messages: list[dict], user_names: dict[str, str]) -> str:
     """Саммари диалога между парой через ИИ."""
     if not messages:
@@ -623,7 +592,12 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
             return processed
 
     data = _load()
-    processed_dates = _get_processed_dates_from_db()
+    from services.sqlite_storage import get_storage as _sg
+    st_local = _sg()
+    processed_dates: dict[str, list[str]] = {}
+    if st_local:
+        for cid in st_local.get_all_dialogue_chat_ids():
+            processed_dates[str(cid)] = list(st_local.get_processed_dates_for_chat(cid))
     for ckey, dates in (data.get("processed_dates") or {}).items():
         processed_dates.setdefault(ckey, [])
         for d in dates:
@@ -643,7 +617,9 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
     processed_count = 0
     for ckey, day in sorted(pending):
         try:
-            msgs = _load_dialogue_from_db(ckey, day)
+            msgs = []
+            if st_local and ckey.lstrip("-").isdigit():
+                msgs = st_local.get_dialogue_messages(int(ckey), day)
             if not msgs:
                 msgs = data.get("dialogue_log", {}).get(ckey, {}).get(day, [])
             if not msgs:
@@ -680,13 +656,18 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
                     pair_msgs_count=len(pair_msgs),
                 )
                 data["connections"][ckey][pk] = entry
-                _sync_connection_to_db(int(ckey), entry)
             data.setdefault("processed_dates", {})
             if ckey not in data["processed_dates"]:
                 data["processed_dates"][ckey] = []
             if day not in data["processed_dates"][ckey]:
                 data["processed_dates"][ckey].append(day)
-                _mark_date_processed_in_db(int(ckey), day)
+                if st_local and ckey.lstrip("-").isdigit():
+                    st_local.set_processed_date(int(ckey), day)
+                cutoff = (date.today() - timedelta(days=60)).isoformat()
+                data["processed_dates"][ckey] = [
+                    d for d in data["processed_dates"][ckey]
+                    if d >= cutoff
+                ]
             processed_count += 1
         except Exception as e:
             logger.warning("Ошибка обработки дня %s чата %s: %s", day, ckey, e)
@@ -734,8 +715,10 @@ def process_realtime_updates(
     json_chats = set((data.get("dialogue_log") or {}).keys())
     all_chats = db_chats | json_chats
 
+    from services.sqlite_storage import get_storage as _sg_realtime
+    st_realtime = _sg_realtime()
     for ckey in all_chats:
-        msgs = _load_dialogue_from_db(ckey, today)
+        msgs = st_realtime.get_dialogue_messages(int(ckey), today) if st_realtime else []
         if not msgs:
             msgs = (data.get("dialogue_log") or {}).get(ckey, {}).get(today, [])
         if not msgs:
@@ -777,7 +760,6 @@ def process_realtime_updates(
                 pair_msgs_count=len(pair_msgs),
             )
             data["connections"][ckey][pk] = entry
-            _sync_connection_to_db(int(ckey), entry)
             chat_cursor[pk] = len(pair_msgs)
             updated += 1
             updated_by_chat[ckey] = int(updated_by_chat.get(ckey, 0) or 0) + 1

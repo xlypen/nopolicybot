@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Анализ чата{% endblock %}
+{% block body %}
+<div class="page">
+  <div class="header">
+    <h1>Аналитика чата {{ chat_id }}</h1>
+    <div class="actions">
+      <a class="btn btn-secondary" href="/admin?chat={{ current_chat }}">/admin</a>
+      <a class="btn btn-secondary" href="/social-graph?chat={{ current_chat }}">Граф</a>
+      <a class="btn btn-secondary" href="/logout">Выйти</a>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="title">Health</div>
+      <ul>
+        <li>DAU: {{ health.dau }}</li>
+        <li>WAU: {{ health.wau }}</li>
+        <li>MAU: {{ health.mau }}</li>
+        <li>Stickiness: {{ health.stickiness }}</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="title">Moderation Risk</div>
+      <ul>
+        <li>Risk messages 7d: {{ risk.risk_messages_7d }}</li>
+        <li>Tone risk: {{ risk.tone_risk_score_pct }}%</li>
+        <li>Top flags: {{ risk.top_red_flags|length }}</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="title">Топ флаги</div>
+    <pre>{{ risk.top_red_flags | tojson(indent=2) }}</pre>
+  </div>
+
+  <div class="card">
+    <div class="title">Forecast 7d</div>
+    <pre>{{ health.forecast_7d | tojson(indent=2) }}</pre>
+  </div>
+
+  <div class="card">
+    <div class="title">Tone Context</div>
+    <pre>{{ health.tone_context | tojson(indent=2) }}</pre>
+  </div>
+
+  <div class="card">
+    <div class="title">Логи бота (last 120)</div>
+    <pre id="logsOut">Загрузка...</pre>
+  </div>
+
+  <script>
+  fetch('/api/v2/admin/log-tail?lines=120').then(r => r.json()).then(body => {
+    const lines = (body && body.lines) || [];
+    document.getElementById('logsOut').textContent = lines.join('\n');
+  }).catch((e) => {
+    document.getElementById('logsOut').textContent = 'Ошибка логов: ' + e;
+  });
+  </script>
+</div>
+{% endblock %}

@@ -1,0 +1,9 @@
+Analyze the following {messages_count} Telegram messages from user @{username} (ID: {user_id}).
+Analysis period: last {period_days} days.
+Chat context: {chat_description}
+
+Messages (chronological order, format: [timestamp] message_text):
+{messages_text}
+
+Return the personality profile as a single JSON object matching this exact schema:
+{schema_json}

@@ -35,9 +35,15 @@ function apiFetch(url, opts) {
     fetchOpts.body = JSON.stringify(body);
   }
   return fetch(url, fetchOpts)
-    .then(function(r) { return r.json(); })
+    .then(function(r) {
+      var ct = (r.headers.get('Content-Type') || '').toLowerCase();
+      if (!ct.includes('application/json')) {
+        return Promise.reject(new Error(r.status === 401 ? 'Нужна авторизация' : r.status === 404 ? 'Не найдено' : 'Ошибка ' + r.status));
+      }
+      return r.json();
+    })
     .then(function(d) {
-      if (!d.ok && d.error) {
+      if (d && !d.ok && d.error) {
         return Promise.reject(new Error(d.error));
       }
       return d;
@@ -75,3 +81,31 @@ function initSectionTabs(containerSelector) {
 document.addEventListener('DOMContentLoaded', function() {
   initAvatarFallbacks();
 });
+
+function showModal(title, message, onConfirm, onCancel) {
+  var existing = document.getElementById('adminModal');
+  if (existing) existing.remove();
+  var overlay = document.createElement('div');
+  overlay.id = 'adminModal';
+  overlay.className = 'modal-overlay active';
+  overlay.innerHTML = '<div class="modal-box"><h3>' + (title || 'Подтверждение') + '</h3><p>' + (message || '') + '</p><div class="modal-actions"><button class="btn btn-secondary" id="modalCancel">Отмена</button><button class="btn btn-primary" id="modalConfirm">Подтвердить</button></div></div>';
+  document.body.appendChild(overlay);
+  document.getElementById('modalCancel').onclick = function() { overlay.remove(); if (onCancel) onCancel(); };
+  document.getElementById('modalConfirm').onclick = function() { overlay.remove(); if (onConfirm) onConfirm(); };
+  overlay.onclick = function(e) { if (e.target === overlay) { overlay.remove(); if (onCancel) onCancel(); } };
+}
+
+function showSkeleton(el, lines) {
+  if (!el) return;
+  lines = lines || 3;
+  var html = '';
+  for (var i = 0; i < lines; i++) html += '<div class="skeleton skeleton-line" style="width:' + (60 + Math.random() * 40) + '%"></div>';
+  el.innerHTML = html;
+}
+
+function showRetry(el, message, retryFn) {
+  if (!el) return;
+  el.innerHTML = '<span style="color:#ef4444;">' + (message || 'Ошибка загрузки') + '</span> <button class="retry-btn" type="button">Повторить</button>';
+  var btn = el.querySelector('.retry-btn');
+  if (btn && retryFn) btn.onclick = retryFn;
+}

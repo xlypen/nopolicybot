@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Общий анализ — {{ chat_title }} — Политмонитор{% endblock %}
+{% block head_extra %}
+<style>
+.analysis-section{margin-bottom:1.5rem;padding:1rem;background:var(--bg-input);border:1px solid var(--border-card);border-radius:8px}
+.analysis-section h3{margin:0 0 0.5rem;font-size:1rem;color:var(--text-secondary)}
+.analysis-controls{display:flex;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:1rem}
+</style>
+{% endblock %}
+{% block body %}
+<div class="header">
+<h1>Общий анализ чата</h1>
+<div class="flex gap-sm align-center">
+<a href="{{ url_for('admin', chat=current_chat) }}" class="btn btn-secondary">← К списку</a>
+<a href="{{ url_for('social_graph') }}" class="btn btn-secondary">Дерево связей</a>
+<a href="{{ url_for('settings') }}" class="btn btn-secondary">Настройки</a>
+{% if session.get('admin_logged_in') %}<a href="{{ url_for('logout') }}" class="logout">Выйти</a>{% endif %}
+</div>
+</div>
+
+<div class="tabs">
+<a href="{{ url_for('admin', chat='all') }}" class="tab">Все</a>
+{% for c in chats %}
+<a href="{{ url_for('admin', chat=c['chat_id']) }}" class="tab {% if current_chat == c['chat_id']|string %}active{% endif %}">{{ (c['title'] or c['chat_id'])[:30] }}{% if (c['title'] or c['chat_id'])|length > 30 %}…{% endif %}</a>
+{% endfor %}
+</div>
+
+<div class="analysis-controls">
+<form method="get" action="{{ url_for('chat_analysis_page', chat_id=chat_id) }}" style="display:flex;align-items:center;gap:0.5rem;">
+<label class="text-sm">Период (дней):</label>
+<input type="number" name="period" value="{{ period_days }}" min="1" max="30" style="width:60px;padding:0.35rem;">
+<button type="submit" class="btn btn-sm">Применить</button>
+</form>
+<span class="text-sm text-muted">Портрет чата генерируется автоматически.</span>
+</div>
+
+<div class="card">
+<div id="chat-analysis-content">{{ analysis_html|safe }}</div>
+</div>
+{% endblock %}

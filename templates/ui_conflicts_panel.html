@@ -1,0 +1,22 @@
+<!-- Compact conflicts panel (sw collapsible cards) -->
+<div class="conflicts-panel" id="conflicts-panel">
+  <div class="conflicts-summary">
+    <span>Конфликты</span>
+    <span class="badge" id="conflicts-count">0</span>
+    <button id="recalc-conflicts" class="btn">Пересчитать</button>
+  </div>
+  <div class="conflict-cards" id="conflict-cards">
+    <!-- Cards will be injected by JS from datahub.get_connections() -->
+  </div>
+</div>
+
+<!-- Live UI bindings -->
+<script src="/static/js/ui_conflicts.js"></script>
+<script>
+  // Initialize panel after DOM is ready
+  document.addEventListener('DOMContentLoaded', function(){
+    if (typeof initConflictsPanel === 'function') {
+      initConflictsPanel();
+    }
+  });
+</script>

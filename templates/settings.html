@@ -6,21 +6,21 @@
 </style>
 {% endblock %}
 {% block body %}
-<div class="mb-2"><a href="{{ url_for('index') }}">← Назад к списку</a></div>
+<div class="mb-2"><a href="{{ url_for('admin') }}">← Назад к списку</a></div>
 <form method="post" action="{{ url_for('settings') }}">
 <div class="mb-1">
 <input id="settings-search" type="text" placeholder="Поиск по настройкам..." style="width:100%;max-width:480px;padding:0.55rem 0.7rem;">
 </div>
-<div class="tabs" style="position:sticky;top:0;background:var(--bg-body);z-index:5;padding-bottom:0.5rem;border-bottom:1px solid var(--bg-input);">
-<button type="button" class="tab active" data-tab="moderation">Модерация</button>
-<button type="button" class="tab" data-tab="reactions">Реакции</button>
-<button type="button" class="tab" data-tab="question">Вопрос дня</button>
-<button type="button" class="tab" data-tab="dm">Личка</button>
-<button type="button" class="tab" data-tab="greeting">Приветствие</button>
-<button type="button" class="tab" data-tab="tech">Технические</button>
+<div class="settings-tabs" style="position:sticky;top:0;background:var(--bg-body);z-index:5;padding-bottom:0.5rem;border-bottom:1px solid var(--bg-input);">
+<button type="button" class="section-tab active" data-section="moderation">Модерация</button>
+<button type="button" class="section-tab" data-section="reactions">Реакции</button>
+<button type="button" class="section-tab" data-section="question">Вопрос дня</button>
+<button type="button" class="section-tab" data-section="dm">Личка</button>
+<button type="button" class="section-tab" data-section="greeting">Приветствие</button>
+<button type="button" class="section-tab" data-section="tech">Технические</button>
 </div>
 
-<div id="moderation" class="section-panel active">
+<div id="moderation" class="settings-panel">
 <div class="card"><h2>Модерация политики</h2>
 <p class="text-sm text-muted mb-1">Когда бот начнёт писать замечания в чате.</p>
 <div class="setting-row" style="background:#1a2a4a;border-radius:8px;padding:1rem;margin-bottom:0.5rem;border:2px solid var(--bg-accent);">
@@ -30,6 +30,8 @@
 <label><input type="checkbox" name="moderation_enabled" value="1" {% if settings.get('moderation_enabled', True) %}checked{% endif %}><span>Вкл.</span></label></div>
 <div class="setting-row"><div class="setting-label">Анализ картинок<span class="hint">Анализировать фото на политический контент (мемы, флаги и т.п.)</span></div>
 <label><input type="checkbox" name="analyze_images" value="1" {% if settings.get('analyze_images', True) %}checked{% endif %}><span>Вкл.</span></label></div>
+<div class="setting-row"><div class="setting-label">Анализ голосовых<span class="hint">Транскрибировать голосовые сообщения (Whisper) и обрабатывать как текст</span></div>
+<label><input type="checkbox" name="analyze_voice" value="1" {% if settings.get('analyze_voice', True) %}checked{% endif %}><span>Вкл.</span></label></div>
 <div class="setting-row"><div class="setting-label">Реакции на фото<span class="hint">Ставить подходящие по контексту эмодзи на фото</span></div>
 <label><input type="checkbox" name="reactions_on_photos" value="1" {% if settings.get('reactions_on_photos', True) %}checked{% endif %}><span>Вкл.</span></label></div>
 <div class="setting-row"><div class="setting-label">Сообщений до первого замечания<span class="hint">С 1-го по (N−1)-е — только лайки. С N-го — текст замечания (1–20)</span></div>
@@ -48,9 +50,27 @@
 <label><input type="checkbox" name="article_line_enabled" value="1" {% if settings.get('article_line_enabled', True) %}checked{% endif %}><span>Вкл.</span></label></div>
 <div class="setting-row"><div class="setting-label">Персональные замечания (ИИ)</div>
 <label><input type="checkbox" name="use_personalized_remarks" value="1" {% if settings.get('use_personalized_remarks', True) %}checked{% endif %}><span>Вкл.</span></label></div>
+</div>
+<div class="card"><h2>Факт-чек</h2>
+<p class="text-sm text-muted mb-1">Проверка высказываний по открытым источникам при политических сообщениях.</p>
+<div class="setting-row"><div class="setting-label">Факт-чек включён<span class="hint">Глобально: проверять полит. высказывания (ИИ + DuckDuckGo + верификация)</span></div>
+<label><input type="checkbox" name="factcheck_enabled" value="1" {% if settings.get('factcheck_enabled') %}checked{% endif %}><span>Вкл.</span></label></div>
+<div class="setting-row"><div class="setting-label">Мин. интервал (сек)<span class="hint">Не чаще одного факт-чека в чате за интервал (60–3600)</span></div>
+<input type="number" name="factcheck_min_interval_sec" value="{{ settings.get('factcheck_min_interval_sec', 300) }}" min="60" max="3600"></div>
+<div class="setting-row"><div class="setting-label">Макс. длина текста<span class="hint">Не проверять сообщения длиннее (100–1000)</span></div>
+<input type="number" name="factcheck_max_text_len" value="{{ settings.get('factcheck_max_text_len', 500) }}" min="100" max="1000"></div>
+<div class="setting-row"><div class="setting-label">Кэш факт-чека<span class="hint">Очистить кэш (48 ч), чтобы перепроверить те же сообщения</span></div>
+<button type="button" class="btn btn-sm" id="btn-factcheck-clear-cache">Очистить кэш</button>
+<span id="factcheck-clear-result" class="text-sm" style="margin-left:0.5rem"></span>
 </div></div>
+<div class="card"><h2>Картинки портретов</h2>
+<div class="setting-row"><div class="setting-label">Кеш модели FLUX<span class="hint">Выгрузить модель из памяти (освободить VRAM)</span></div>
+<button type="button" class="btn btn-sm" id="btn-portrait-clear-cache">Очистить кеш</button>
+<span id="portrait-clear-result" class="text-sm" style="margin-left:0.5rem"></span>
+</div></div>
+</div>
 
-<div id="reactions" class="section-panel">
+<div id="reactions" class="settings-panel">
 <div class="card"><h2>Поощрения</h2>
 <div class="setting-row"><div class="setting-label">Поощрения включены</div>
 <label><input type="checkbox" name="encouragement_enabled" value="1" {% if settings.get('encouragement_enabled', True) %}checked{% endif %}><span>Вкл.</span></label></div>
@@ -82,7 +102,7 @@
 <input type="text" name="spontaneous_emojis" value="{{ _fmt_emoji_list(settings.get('spontaneous_emojis'), '👍,❤️,🇷🇺,🔥') }}" style="min-width:120px"></div>
 </div></div>
 
-<div id="question" class="section-panel">
+<div id="question" class="settings-panel">
 <div class="card"><h2>Вопрос дня</h2>
 <p class="text-sm text-muted mb-1">Периодический вопрос: «вопрос дня» — в заданное окно времени.</p>
 <div class="setting-row"><div class="setting-label">Включить</div>
@@ -97,7 +117,7 @@
 <label><input type="checkbox" name="qod_graph_mode_enabled" value="1" {% if settings.get('qod_graph_mode_enabled', False) %}checked{% endif %}><span>Вкл.</span></label></div>
 </div></div>
 
-<div id="dm" class="section-panel">
+<div id="dm" class="settings-panel">
 <div class="card"><h2>Ответы в личку</h2>
 <p class="text-sm text-muted mb-1">Как бот отвечает в личные сообщения.</p>
 <div class="setting-row"><div class="setting-label">Отвечать на обращения</div>
@@ -124,7 +144,7 @@
 <input type="text" name="reply_fallback_on_error" value="{{ settings.get('reply_fallback_on_error', 'сейчас не в настроении, напиши потом.') }}" style="min-width:220px"></div>
 </div></div>
 
-<div id="greeting" class="section-panel">
+<div id="greeting" class="settings-panel">
 <div class="card"><h2>Приветствие и команды</h2>
 <div class="setting-row"><div class="setting-label">Приветствие при добавлении</div>
 <label><input type="checkbox" name="greeting_on_join" value="1" {% if settings.get('greeting_on_join', True) %}checked{% endif %}><span>Вкл.</span></label></div>
@@ -136,7 +156,7 @@
 <label><input type="checkbox" name="cmd_stats_enabled" value="1" {% if settings.get('cmd_stats_enabled', True) %}checked{% endif %}><span>Вкл.</span></label></div>
 </div></div>
 
-<div id="tech" class="section-panel">
+<div id="tech" class="settings-panel">
 <div class="card"><h2>Технические</h2>
 <p class="text-sm text-muted mb-1">Параметры API, кэширования и контекста.</p>
 <div class="setting-row"><div class="setting-label">Мин. интервал ИИ (сек)</div>
@@ -208,22 +228,85 @@
 {% endblock %}
 {% block scripts %}
 <script>
-document.querySelectorAll('.tabs .tab').forEach(function(btn){
-btn.addEventListener('click',function(){
-document.querySelectorAll('.tabs .tab').forEach(function(b){b.classList.remove('active')});
-document.querySelectorAll('.section-panel').forEach(function(p){p.classList.remove('active')});
-btn.classList.add('active');
-var id=btn.getAttribute('data-tab');
-var panel=document.getElementById(id);
-if(panel)panel.classList.add('active');
+var _sTabs = document.querySelectorAll('.settings-tabs .section-tab');
+var _sPanels = document.querySelectorAll('.settings-panel');
+function _sShow(id) {
+  for (var i = 0; i < _sPanels.length; i++) {
+    _sPanels[i].style.display = (_sPanels[i].id === id) ? 'block' : 'none';
+  }
+  for (var j = 0; j < _sTabs.length; j++) {
+    if (_sTabs[j].getAttribute('data-section') === id) {
+      _sTabs[j].className = 'section-tab active';
+    } else {
+      _sTabs[j].className = 'section-tab';
+    }
+  }
+}
+for (var k = 0; k < _sTabs.length; k++) {
+  _sTabs[k].onclick = (function(tab) {
+    return function() { _sShow(tab.getAttribute('data-section')); };
+  })(_sTabs[k]);
+}
+_sShow('moderation');
+
+var _searchInput = document.getElementById('settings-search');
+var _searchActive = false;
+_searchInput.addEventListener('input', function() {
+  var q = this.value.trim().toLowerCase();
+  _searchActive = !!q;
+  if (!_searchActive) {
+    // restore tab view
+    for (var i = 0; i < _sPanels.length; i++) {
+      _sPanels[i].style.display = '';
+    }
+    var activeTab = document.querySelector('.section-tab.active');
+    _sShow(activeTab ? activeTab.getAttribute('data-section') : 'moderation');
+    var allRows = document.querySelectorAll('.setting-row');
+    for (var r = 0; r < allRows.length; r++) allRows[r].style.display = '';
+    var allCards = document.querySelectorAll('.settings-panel .card');
+    for (var c = 0; c < allCards.length; c++) allCards[c].style.display = '';
+    return;
+  }
+  // show all panels, filter rows
+  for (var i = 0; i < _sPanels.length; i++) _sPanels[i].style.display = 'block';
+  var cards = document.querySelectorAll('.settings-panel .card');
+  for (var ci = 0; ci < cards.length; ci++) {
+    var rows = cards[ci].querySelectorAll('.setting-row');
+    var anyVisible = false;
+    for (var ri = 0; ri < rows.length; ri++) {
+      var text = rows[ri].textContent.toLowerCase();
+      var match = text.includes(q);
+      rows[ri].style.display = match ? '' : 'none';
+      if (match) anyVisible = true;
+    }
+    cards[ci].style.display = anyVisible ? '' : 'none';
+  }
 });
-});
-document.getElementById('settings-search').addEventListener('input', function(){
-var q = (this.value || '').toLowerCase().trim();
-document.querySelectorAll('.setting-row').forEach(function(row){
-var txt = row.innerText.toLowerCase();
-row.style.display = (!q || txt.indexOf(q) !== -1) ? '' : 'none';
-});
-});
+</script>
+<script>
+var _fcBtn = document.getElementById('btn-factcheck-clear-cache');
+if (_fcBtn) {
+  _fcBtn.onclick = function() {
+    var sp = document.getElementById('factcheck-clear-result');
+    _fcBtn.disabled = true;
+    sp.textContent = '...';
+    apiFetch('{{ url_for("api_factcheck_clear_cache") }}', {method:'POST', body:{}})
+      .then(function(d) { sp.textContent = d.cleared + ' removed'; sp.style.color = '#4ade80'; })
+      .catch(function(e) { sp.textContent = e.message || 'Error'; sp.style.color = '#e94560'; })
+      .finally(function() { _fcBtn.disabled = false; });
+  };
+}
+var _pcBtn = document.getElementById('btn-portrait-clear-cache');
+if (_pcBtn) {
+  _pcBtn.onclick = function() {
+    var sp = document.getElementById('portrait-clear-result');
+    _pcBtn.disabled = true;
+    sp.textContent = '...';
+    apiFetch('/api/v2/portrait/portrait-clear-cache', {method:'POST', body:{}})
+      .then(function(d) { sp.textContent = d.cleared ? 'Очищено' : 'Пусто'; sp.style.color = '#4ade80'; })
+      .catch(function(e) { sp.textContent = e.message || 'Ошибка'; sp.style.color = '#e94560'; })
+      .finally(function() { _pcBtn.disabled = false; });
+  };
+}
 </script>
 {% endblock %}

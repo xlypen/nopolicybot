@@ -1,0 +1,20 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: "nopolicybot-flask-admin"
+    metrics_path: /api/monitoring/metrics
+    params:
+      format: ["prom"]
+    static_configs:
+      - targets: ["127.0.0.1:5000"]
+
+  - job_name: "nopolicybot-fastapi-v2"
+    metrics_path: /api/v2/metrics
+    params:
+      format: ["prom"]
+    # FastAPI /api/v2/metrics requires ADMIN_TOKEN in Authorization.
+    # Use a file-based bearer token or reverse-proxy auth strategy.
+    bearer_token_file: /etc/prometheus/secrets/nopolicybot_api_token
+    static_configs:
+      - targets: ["127.0.0.1:8001"]

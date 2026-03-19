@@ -17,8 +17,10 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parent
 USERS_JSON = DATA_DIR / "user_stats.json"
+DB_PATH = DATA_DIR / "data" / "bot.db"
 MESSAGES_ARCHIVE_LIMIT = 1000
 IMAGES_ARCHIVE_LIMIT = 100
+CLOSE_ATTENTION_VIEWS_LIMIT = 200
 
 RANKS = ("loyal", "neutral", "opposition", "unknown")
 
@@ -58,6 +60,39 @@ def _migrate_images_archive(data: dict) -> bool:
     return modified
 
 
+def _migrate_close_attention(data: dict) -> bool:
+    """Добавляет close_attention_enabled и close_attention_views для старых записей."""
+    modified = False
+    for u in data.get("users", {}).values():
+        if "close_attention_enabled" not in u:
+            u["close_attention_enabled"] = False
+            modified = True
+        if "close_attention_views" not in u:
+            u["close_attention_views"] = []
+            modified = True
+    return modified
+
+
+def _migrate_factcheck(data: dict) -> bool:
+    """Добавляет factcheck_enabled для старых записей."""
+    modified = False
+    for u in data.get("users", {}).values():
+        if "factcheck_enabled" not in u:
+            u["factcheck_enabled"] = False
+            modified = True
+    return modified
+
+
+def _migrate_portrait_image(data: dict) -> bool:
+    """Добавляет portrait_image_updated_date для старых записей."""
+    modified = False
+    for u in data.get("users", {}).values():
+        if "portrait_image_updated_date" not in u:
+            u["portrait_image_updated_date"] = ""
+            modified = True
+    return modified
+
+
 def _load() -> dict:
     if not USERS_JSON.exists():
         return {"users": {}, "chats": {}}
@@ -78,6 +113,9 @@ def _load() -> dict:
 
 
 def _save(data: dict) -> None:
+    from services.storage_cutover import storage_json_writes_enabled
+    if not storage_json_writes_enabled():
+        return
     try:
         USERS_JSON.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(data, ensure_ascii=False, indent=2)
@@ -94,6 +132,9 @@ def _apply_migrations(data: dict) -> bool:
     modified = False
     modified = _migrate_question_of_day(data) or modified
     modified = _migrate_images_archive(data) or modified
+    modified = _migrate_close_attention(data) or modified
+    modified = _migrate_factcheck(data) or modified
+    modified = _migrate_portrait_image(data) or modified
     return modified
 
 
@@ -118,27 +159,96 @@ def _default_user(user_id: int, display_name: str = "") -> dict:
         "tone_to_bot": "",
         "tone_override": "",
         "tone_history": [],
+        "emotion_score": None,  # -10..+10 от assess_aggression_score (последние 15 сообщений к боту)
+        "emotion_positivity": None,  # 0..10
+        "emotion_aggression": None,  # 0..10
         "messages_archive": [],  # deprecated, мигрируется в messages_by_chat
         "messages_by_chat": {},  # chat_id -> [{text, date}, ...], до 1000 на чат
         "question_of_day_enabled": False,  # задавать ли боту «вопрос дня» вечером
         "question_of_day_last_asked": "",  # дата последнего вопроса "YYYY-MM-DD"
         "question_of_day_destination": "chat",  # "chat" — в чат, "private" — в личку
         "images_archive": [],  # [{category, description, date, reaction_emoji, is_political}, ...], до IMAGES_ARCHIVE_LIMIT
+        "close_attention_enabled": False,  # режим «пристальное внимание»: глубокий анализ, накопление взглядов, требование доказательств
+        "close_attention_views": [],  # [{date, source, views, needs_evidence, evidence_found}, ...], до 200 записей
+        "factcheck_enabled": False,  # факт-чек высказываний для этого пользователя
+        "portrait_image_updated_date": "",  # дата последней генерации картинки портрета "YYYY-MM-DD"
     }
 
 
+def _sync_user_to_storage(user_id: int, profile: dict) -> None:
+    """Синхронизирует профиль пользователя в storage при storage_db_writes_enabled."""
+    from services.storage_cutover import storage_db_writes_enabled
+    from services.sqlite_storage import get_storage
+    if storage_db_writes_enabled():
+        st = get_storage()
+        if st:
+            st.set_user_profile(user_id, profile)
+
+
+def _get_user_from_db(user_id: int) -> dict | None:
+    """Данные пользователя из БД: display_name (users), total_messages (messages)."""
+    if not DB_PATH.exists():
+        return None
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(DB_PATH))
+        row = conn.execute(
+            "SELECT first_name, username, last_name FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0]
+        conn.close()
+        result = {}
+        if row:
+            name = (row[0] or row[1] or row[2] or "").strip()
+            result["display_name"] = name or str(user_id)
+        if int(cnt) > 0:
+            result["stats"] = {"total_messages": int(cnt)}
+        return result if result else None
+    except Exception as e:
+        logger.debug("_get_user_from_db: %s", e)
+        return None
+
+
 def get_user(user_id: int, display_name: str = "") -> dict:
-    """Возвращает данные пользователя; создаёт запись при первом обращении."""
-    data = _load()
+    """Возвращает данные пользователя. Storage/БД (имя, счётчик сообщений) + JSON fallback (ранг, полит, предупреждения)."""
+    from services.storage_cutover import storage_db_reads_enabled, storage_json_fallback_enabled
+    from services.sqlite_storage import get_storage
+
     key = str(user_id)
-    if key not in data["users"]:
-        data["users"][key] = _default_user(user_id, display_name)
-        _save(data)
-    else:
-        if display_name and not data["users"][key].get("display_name"):
-            data["users"][key]["display_name"] = display_name
+    from_db = _get_user_from_db(user_id)
+    out = None
+
+    if storage_db_reads_enabled():
+        st = get_storage()
+        if st:
+            out = st.get_user_profile(user_id)
+
+    if out is None and storage_json_fallback_enabled():
+        data = _load()
+        if key not in data["users"]:
+            data["users"][key] = _default_user(user_id, display_name)
             _save(data)
-    return data["users"][key].copy()
+        else:
+            if display_name and not data["users"][key].get("display_name"):
+                data["users"][key]["display_name"] = display_name
+                _save(data)
+        out = data["users"][key].copy()
+
+    if out is None:
+        out = _default_user(user_id, display_name)
+
+    if from_db:
+        if from_db.get("display_name"):
+            out["display_name"] = from_db["display_name"]
+        if from_db.get("stats", {}).get("total_messages") is not None:
+            out.setdefault("stats", {})["total_messages"] = from_db["stats"]["total_messages"]
+    if display_name and not out.get("display_name"):
+        out["display_name"] = display_name
+    return out
 
 
 def _ensure_messages_by_chat(u: dict, data: dict | None = None) -> bool:
@@ -174,37 +284,55 @@ def record_chat_message(
     """Сохраняет сообщение пользователя в архив (по чатам) и обновляет total_messages."""
     if not text or not (text := text.strip()):
         return
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
-        data["users"][key] = _default_user(user_id, display_name)
-    u = data["users"][key]
-    if _ensure_messages_by_chat(u):
-        _save(data)
-    if display_name:
-        u["display_name"] = display_name
-    by_chat = u["messages_by_chat"]
-    # Нормализуем ключ чата: всегда строка для консистентности (int -5192849857 -> "-5192849857")
-    ckey = str(int(chat_id)) if chat_id is not None else "unknown"
-    if ckey not in by_chat:
-        by_chat[ckey] = []
+    from services.storage_cutover import storage_db_writes_enabled, storage_json_writes_enabled
+    from services.sqlite_storage import get_storage
+
     today_str = date.today().isoformat()
-    msg = {"text": text[:500], "date": today_str}
-    last = by_chat[ckey][-1] if by_chat[ckey] else None
-    if last and last.get("text") == msg["text"] and last.get("date") == today_str:
-        return
-    u["stats"]["total_messages"] = u["stats"].get("total_messages", 0) + 1
-    by_chat[ckey].append(msg)
-    by_chat[ckey] = by_chat[ckey][-MESSAGES_ARCHIVE_LIMIT:]
-    if chat_id is not None:
-        ckey = str(int(chat_id))
-        if ckey not in data["chats"]:
-            data["chats"][ckey] = {"title": chat_title or ckey, "last_seen": date.today().isoformat()}
+
+    if storage_db_writes_enabled():
+        st = get_storage()
+        if st and chat_id is not None:
+            inserted = st.append_message(user_id, chat_id, text, today_str)
+            if chat_id is not None:
+                st.upsert_chat(chat_id, chat_title or str(chat_id))
+            if inserted:
+                u = get_user(user_id, display_name)
+                u.setdefault("stats", {})["total_messages"] = u["stats"].get("total_messages", 0) + 1
+                if display_name:
+                    u["display_name"] = display_name
+                st.set_user_profile(user_id, u)
+
+    if storage_json_writes_enabled():
+        data = _load()
+        key = str(user_id)
+        if key not in data["users"]:
+            data["users"][key] = _default_user(user_id, display_name)
+        u = data["users"][key]
+        if _ensure_messages_by_chat(u):
+            _save(data)
+        if display_name:
+            u["display_name"] = display_name
+        by_chat = u["messages_by_chat"]
+        ckey = str(int(chat_id)) if chat_id is not None else "unknown"
+        if ckey not in by_chat:
+            by_chat[ckey] = []
+        msg = {"text": text[:500], "date": today_str}
+        last = by_chat[ckey][-1] if by_chat[ckey] else None
+        if last and last.get("text") == msg["text"] and last.get("date") == today_str:
+            pass
         else:
-            if chat_title:
-                data["chats"][ckey]["title"] = chat_title
-            data["chats"][ckey]["last_seen"] = date.today().isoformat()
-    _save(data)
+            u["stats"]["total_messages"] = u["stats"].get("total_messages", 0) + 1
+            by_chat[ckey].append(msg)
+            by_chat[ckey] = by_chat[ckey][-MESSAGES_ARCHIVE_LIMIT:]
+        if chat_id is not None:
+            ckey = str(int(chat_id))
+            if ckey not in data["chats"]:
+                data["chats"][ckey] = {"title": chat_title or ckey, "last_seen": today_str}
+            else:
+                if chat_title:
+                    data["chats"][ckey]["title"] = chat_title
+                data["chats"][ckey]["last_seen"] = today_str
+        _save(data)
 
 
 def record_image_analysis(
@@ -236,6 +364,7 @@ def record_image_analysis(
     })
     u["images_archive"] = archive[-IMAGES_ARCHIVE_LIMIT:]
     _save(data)
+    _sync_user_to_storage(user_id, u)
 
 
 def get_user_images_archive(user_id: int) -> list[dict]:
@@ -285,13 +414,35 @@ def clear_user_images_archive(user_id: int) -> bool:
     return True
 
 
+def _get_display_names_from_db() -> dict[str, str]:
+    """Читает имена из таблицы users (БД). {user_id: display_name}."""
+    if not DB_PATH.exists():
+        return {}
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(DB_PATH))
+        rows = conn.execute(
+            "SELECT id, first_name, username, last_name FROM users"
+        ).fetchall()
+        conn.close()
+        result = {}
+        for uid, first, username, last in rows:
+            name = (first or username or last or "").strip() or str(uid)
+            result[str(uid)] = name
+        return result
+    except Exception as e:
+        logger.debug("_get_display_names_from_db: %s", e)
+        return {}
+
+
 def get_user_display_names() -> dict[str, str]:
-    """Возвращает {user_id: display_name} для всех пользователей (для social_graph)."""
+    """Возвращает {user_id: display_name}. Сначала БД (users), потом JSON."""
+    names = _get_display_names_from_db()
     data = _load()
-    return {
-        uid: (u.get("display_name") or uid)
-        for uid, u in (data.get("users") or {}).items()
-    }
+    for uid, u in (data.get("users") or {}).items():
+        if uid not in names:
+            names[uid] = (u.get("display_name") or uid)
+    return names
 
 
 def get_chats() -> list[dict]:
@@ -302,11 +453,31 @@ def get_chats() -> list[dict]:
     return sorted(result, key=lambda x: x["chat_id"])
 
 
+def _get_users_in_chat_from_db(chat_id: int) -> list[str]:
+    """Участники чата из таблицы messages (БД)."""
+    if not DB_PATH.exists():
+        return []
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(DB_PATH))
+        rows = conn.execute(
+            "SELECT DISTINCT user_id FROM messages WHERE chat_id = ? AND user_id IS NOT NULL",
+            (chat_id,),
+        ).fetchall()
+        conn.close()
+        return [str(r[0]) for r in rows]
+    except Exception as e:
+        logger.debug("_get_users_in_chat_from_db: %s", e)
+        return []
+
+
 def get_users_in_chat(chat_id: int) -> list[str]:
-    """Возвращает user_id (str) участников, у которых есть сообщения в этом чате."""
+    """Возвращает user_id (str) участников. Сначала БД (messages), потом JSON."""
+    result = _get_users_in_chat_from_db(chat_id)
+    if result:
+        return result
     data = _load()
     cid_str = str(chat_id)
-    result = []
     for uid, u in data.get("users", {}).items():
         if _ensure_messages_by_chat(u):
             _save(data)
@@ -316,26 +487,84 @@ def get_users_in_chat(chat_id: int) -> list[str]:
     return result
 
 
-def get_user_messages_archive(user_id: int, chat_id: int | None = None) -> list[dict]:
-    """Возвращает архив сообщений. Если chat_id задан — только из этого чата. Формат: [{text, date}] или [{text, date, chat_id}] при объединении."""
-    data = _load()
-    u = data.get("users", {}).get(str(user_id))
-    if not u:
+def _get_user_messages_from_db(user_id: int, chat_id: int | None = None) -> list[dict]:
+    """Архив сообщений пользователя из БД (таблица messages). Формат: [{text, date}, ...] или с chat_id при объединении чатов."""
+    if not DB_PATH.exists():
         return []
-    if _ensure_messages_by_chat(u):
-        _save(data)
-    by_chat = u.get("messages_by_chat") or {}
-    if chat_id is not None:
-        cid_str = str(chat_id)
-        return list(by_chat.get(cid_str, []))
-    result = []
-    for cid, msgs in by_chat.items():
-        for m in msgs:
-            msg = dict(m)
-            if cid != "unknown":
-                msg["chat_id"] = int(cid) if cid.isdigit() or (cid.startswith("-") and cid[1:].isdigit()) else cid
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(DB_PATH))
+        if chat_id is not None:
+            rows = conn.execute(
+                "SELECT text, sent_at, chat_id FROM messages WHERE user_id = ? AND chat_id = ? AND text IS NOT NULL AND text != '' ORDER BY sent_at ASC LIMIT ?",
+                (user_id, chat_id, MESSAGES_ARCHIVE_LIMIT),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT text, sent_at, chat_id FROM messages WHERE user_id = ? AND text IS NOT NULL AND text != '' ORDER BY sent_at ASC LIMIT ?",
+                (user_id, MESSAGES_ARCHIVE_LIMIT),
+            ).fetchall()
+        conn.close()
+        result = []
+        for row in rows:
+            text = (row[0] or "").strip()
+            sent_at = row[1]
+            cid = row[2] if len(row) > 2 else None
+            if isinstance(sent_at, str) and len(sent_at) >= 10:
+                date_str = sent_at[:10]
+            else:
+                try:
+                    from datetime import datetime
+                    date_str = sent_at.strftime("%Y-%m-%d") if hasattr(sent_at, "strftime") else str(sent_at)[:10]
+                except Exception:
+                    date_str = ""
+            msg = {"text": text, "date": date_str}
+            if cid is not None and chat_id is None:
+                msg["chat_id"] = int(cid)
             result.append(msg)
-    result.sort(key=lambda x: x.get("date", ""))
+        return result
+    except Exception as e:
+        logger.debug("_get_user_messages_from_db: %s", e)
+        return []
+
+
+def get_user_messages_archive(user_id: int, chat_id: int | None = None) -> list[dict]:
+    """Возвращает архив сообщений. Storage -> БД (messages) -> JSON. Формат: [{text, date}] или [{text, date, chat_id}] при объединении."""
+    from services.storage_cutover import storage_db_reads_enabled, storage_json_fallback_enabled
+    from services.sqlite_storage import get_storage
+
+    result = []
+
+    if storage_db_reads_enabled():
+        st = get_storage()
+        if st:
+            cid = int(chat_id) if chat_id is not None else None
+            result = st.get_user_messages(user_id, cid, MESSAGES_ARCHIVE_LIMIT)
+
+    if not result:
+        from_db = _get_user_messages_from_db(user_id, chat_id)
+        if from_db:
+            return from_db
+
+    if not result and storage_json_fallback_enabled():
+        data = _load()
+        u = data.get("users", {}).get(str(user_id))
+        if u:
+            if _ensure_messages_by_chat(u):
+                _save(data)
+            by_chat = u.get("messages_by_chat") or {}
+            if chat_id is not None:
+                cid_str = str(chat_id)
+                result = list(by_chat.get(cid_str, []))
+            else:
+                for cid, msgs in by_chat.items():
+                    for m in msgs:
+                        msg = dict(m)
+                        if cid != "unknown":
+                            msg["chat_id"] = int(cid) if cid.isdigit() or (cid.startswith("-") and cid[1:].isdigit()) else cid
+                        result.append(msg)
+                result.sort(key=lambda x: x.get("date", ""))
+
     return result
 
 
@@ -517,15 +746,34 @@ def record_message(user_id: int, text_snippet: str, sentiment: str, is_political
         "date": date.today().isoformat(),
     })
     _save(data)
+    _sync_user_to_storage(user_id, u)
+
+
+def _increment_user_warnings_in_db(user_id: int) -> None:
+    """Увеличивает счётчик замечаний в БД (users.warnings_received)."""
+    if not DB_PATH.exists():
+        return
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.execute(
+            "UPDATE users SET warnings_received = COALESCE(warnings_received, 0) + 1 WHERE id = ?",
+            (user_id,),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.debug("_increment_user_warnings_in_db: %s", e)
 
 
 def record_warning(user_id: int) -> None:
-    """Учитывает выданное пользователю замечание."""
+    """Учитывает выданное пользователю замечание. Пишет в JSON и в БД (users.warnings_received)."""
     data = _load()
     key = str(user_id)
     if key not in data["users"]:
         data["users"][key] = _default_user(user_id)
     data["users"][key]["stats"]["warnings_received"] = data["users"][key]["stats"].get("warnings_received", 0) + 1
+    _increment_user_warnings_in_db(user_id)
     _save(data)
 
 
@@ -604,7 +852,7 @@ def record_message_to_bot(user_id: int, text: str, display_name: str = "") -> No
 
 
 def _update_tone_to_bot(u: dict) -> None:
-    """Обновляет tone_to_bot по буферу обращений к боту (вызов ИИ)."""
+    """Обновляет tone_to_bot и emotion_score по буферу обращений к боту (вызов ИИ)."""
     buf = u.get("messages_to_bot_buffer") or []
     texts = [x.get("text", "").strip() for x in buf if (x.get("text") or "").strip()]
     if len(texts) < 2:
@@ -612,9 +860,19 @@ def _update_tone_to_bot(u: dict) -> None:
     try:
         tone = assess_tone_toward_bot(texts)
         u["tone_to_bot"] = tone
-        u["messages_to_bot_buffer"] = buf[-5:]
+        u["messages_to_bot_buffer"] = buf[-15:]  # храним 15 для шкалы эмоций
     except Exception as e:
         logger.debug("Оценка тона к боту: %s", e)
+    # Шкала эмоций -10..+10 по последним 15 сообщениям
+    try:
+        from ai_analyzer import assess_aggression_score
+        last_15 = texts[-15:] if len(texts) >= 2 else texts
+        emotion = assess_aggression_score(last_15, last_n=15)
+        u["emotion_score"] = emotion.get("score", 0)
+        u["emotion_positivity"] = emotion.get("positivity")
+        u["emotion_aggression"] = emotion.get("aggression")
+    except Exception as e:
+        logger.debug("Оценка шкалы агрессии: %s", e)
 
 
 def get_yesterday_quotes(user_id: int) -> list[str]:
@@ -642,6 +900,9 @@ def get_portrait_for_reply_fast(user_id: int, display_name: str = "") -> str:
     tone = (u.get("tone_override") or "").strip() or (u.get("tone_to_bot") or "").strip()
     if tone:
         portrait = (portrait + "\n\nНастроение обращений к боту: " + tone).strip()
+    score = u.get("emotion_score")
+    if score is not None:
+        portrait = (portrait + f"\nEMOTION_SCORE: {score}").strip()
     return portrait
 
 
@@ -670,6 +931,9 @@ def get_portrait_for_reply(user_id: int, display_name: str = "") -> str:
     tone = (u.get("tone_override") or "").strip() or (u.get("tone_to_bot") or "").strip()
     if tone:
         portrait = (portrait + "\n\nНастроение обращений к боту: " + tone).strip()
+    score = u.get("emotion_score")
+    if score is not None:
+        portrait = (portrait + f"\nEMOTION_SCORE: {score}").strip()
     return portrait
 
 
@@ -683,6 +947,18 @@ def set_deep_portrait(user_id: int, portrait: str, rank: str = "neutral") -> boo
     u["portrait"] = (portrait or "").strip()[:8000]
     u["rank"] = rank if rank in RANKS else "neutral"
     u["portrait_updated_date"] = date.today().isoformat()
+    _save(data)
+    _sync_user_to_storage(user_id, u)
+    return True
+
+
+def set_portrait_image_updated_date(user_id: int) -> bool:
+    """Обновляет дату последней генерации картинки портрета."""
+    data = _load()
+    key = str(user_id)
+    if key not in data["users"]:
+        return False
+    data["users"][key]["portrait_image_updated_date"] = date.today().isoformat()
     _save(data)
     return True
 
@@ -713,6 +989,114 @@ def save_tone_override(
         u["tone_history"] = hist[:3]
     _save(data)
     return True
+
+
+def get_close_attention_enabled(user_id: int) -> bool:
+    """Включён ли режим «пристальное внимание» для пользователя."""
+    data = _load()
+    u = data.get("users", {}).get(str(user_id))
+    return bool(u.get("close_attention_enabled") if u else False)
+
+
+def get_factcheck_enabled(user_id: int) -> bool:
+    """Включён ли факт-чек для пользователя."""
+    data = _load()
+    u = data.get("users", {}).get(str(user_id))
+    return bool(u.get("factcheck_enabled") if u else False)
+
+
+def set_factcheck_enabled(user_id: int, enabled: bool) -> bool:
+    """Включить/выключить факт-чек для пользователя."""
+    data = _load()
+    key = str(user_id)
+    if key not in data["users"]:
+        data["users"][key] = _default_user(user_id, "")
+    data["users"][key]["factcheck_enabled"] = bool(enabled)
+    _save(data)
+    return True
+
+
+def set_close_attention_enabled(user_id: int, enabled: bool) -> bool:
+    """Включить/выключить режим «пристальное внимание»."""
+    data = _load()
+    key = str(user_id)
+    if key not in data["users"]:
+        data["users"][key] = _default_user(user_id)
+    data["users"][key]["close_attention_enabled"] = bool(enabled)
+    _save(data)
+    return True
+
+
+def get_close_attention_views(user_id: int) -> list[dict]:
+    """Возвращает накопленные взгляды пользователя в режиме пристального внимания."""
+    data = _load()
+    u = data.get("users", {}).get(str(user_id))
+    if not u:
+        return []
+    return list(u.get("close_attention_views") or [])
+
+
+def append_close_attention_view(
+    user_id: int,
+    source: str,
+    views: str,
+    needs_evidence: bool,
+    evidence_found: bool,
+    display_name: str = "",
+) -> None:
+    """Добавляет запись о взглядах пользователя (режим пристального внимания)."""
+    data = _load()
+    key = str(user_id)
+    if key not in data["users"]:
+        data["users"][key] = _default_user(user_id, display_name)
+    u = data["users"][key]
+    if display_name:
+        u["display_name"] = display_name
+    archive = u.get("close_attention_views") or []
+    archive.append({
+        "date": date.today().isoformat(),
+        "source": (source or "")[:300],
+        "views": (views or "")[:1500],
+        "needs_evidence": bool(needs_evidence),
+        "evidence_found": bool(evidence_found),
+    })
+    u["close_attention_views"] = archive[-CLOSE_ATTENTION_VIEWS_LIMIT:]
+    _save(data)
+
+
+def format_close_attention_context(user_id: int, max_items: int = 15) -> str:
+    """Форматирует накопленные взгляды для контекста ИИ (режим пристального внимания)."""
+    views = get_close_attention_views(user_id)
+    if not views:
+        return ""
+    items = list(reversed(views[-max_items:]))
+    lines = []
+    for i, v in enumerate(items, 1):
+        dt = v.get("date", "")
+        src = (v.get("source", "") or "")[:120]
+        vw = (v.get("views", "") or "")[:200]
+        ne = v.get("needs_evidence", False)
+        ef = v.get("evidence_found", False)
+        parts = [f"[{dt}] источник: {src}"]
+        if vw:
+            parts.append(f"взгляды: {vw}")
+        if ne:
+            parts.append(f"требовались доказательства: {'да' if ef else 'нет'}")
+        lines.append(f"  {i}. {'; '.join(parts)}")
+    return "Накопленные взгляды участника (режим пристального внимания):\n" + "\n".join(lines)
+
+
+def get_emotion_score(user_id: int) -> dict | None:
+    """Шкала эмоций по последним 15 сообщениям к боту: score (-10..+10), positivity, aggression. None если не считалось."""
+    data = _load()
+    u = data.get("users", {}).get(str(user_id))
+    if not u or u.get("emotion_score") is None:
+        return None
+    return {
+        "score": u.get("emotion_score"),
+        "positivity": u.get("emotion_positivity"),
+        "aggression": u.get("emotion_aggression"),
+    }
 
 
 def get_effective_tone(u: dict) -> str:

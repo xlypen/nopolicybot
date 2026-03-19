@@ -35,3 +35,22 @@ ALERT_PRIORITY = {
     "rising_activity": 2,
     "new_connection": 1,
 }
+
+TONE_TREND_RU = {
+    "improving": "тон улучшается",
+    "worsening": "тон ухудшается",
+    "stable": "тон стабилен",
+}
+
+PAIR_CONTEXT_RU = {
+    "loyal-loyal": "союзники",
+    "opposition-opposition": "оппозиция",
+    "loyal-opposition": "кросс-линия",
+    "loyal-neutral": "лоял + нейтрал",
+    "opposition-neutral": "оппозиция + нейтрал",
+    "neutral-neutral": "нейтралы",
+    "loyal-unknown": "лоял + без ранга",
+    "opposition-unknown": "оппозиция + без ранга",
+    "neutral-unknown": "нейтрал + без ранга",
+    "unknown-unknown": "без ранга",
+}

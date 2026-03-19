@@ -1,0 +1,22 @@
+[Unit]
+Description=Telegram Political Monitor Bot
+After=network.target
+
+[Service]
+Type=notify
+User=root
+Group=root
+WorkingDirectory=/opt/telegram-political-monitor-bot
+Environment=PATH=/opt/telegram-political-monitor-bot/venv/bin
+Environment=USE_SQLITE=true
+ExecStart=/opt/telegram-political-monitor-bot/venv/bin/python /opt/telegram-political-monitor-bot/bot.py
+Restart=always
+RestartSec=10
+KillSignal=SIGINT
+TimeoutStopSec=20
+WatchdogSec=300
+MemoryMax=512M
+MemorySwapMax=128M
+
+[Install]
+WantedBy=multi-user.target

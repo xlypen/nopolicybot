@@ -6,13 +6,28 @@
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+logger = logging.getLogger(__name__)
+
+_FAST_CACHE_LOCK = threading.Lock()
+
 from openai import OpenAI, RateLimitError, APIError, APIStatusError
-from ai.client import get_client as _shared_get_client, load_project_env
+from ai.client import (
+    get_client as _shared_get_client,
+    load_project_env,
+    _is_402 as _check_402,
+    gemini_chat_complete,
+    gemini_analyze_image,
+    chat_complete_with_fallback,
+    is_credits_exhausted,
+    prefer_free_mode,
+)
 from ai.parsers import normalize_message_type, normalize_sentiment, parse_json
 from ai.prompts import SUBSTANTIVE_REPLY_PROMPT
 from ai.tasks.replies import build_substantive_user_content
@@ -25,11 +40,54 @@ except ImportError:
 
 
 _UNAVAILABLE_REPLY_MODELS: set[str] = set()
+_UNAVAILABLE_VISION_MODELS: set[str] = set()
 _FAST_CACHE_TTL_DEFAULT = int(os.getenv("AI_FAST_CACHE_TTL_SEC", "45"))
 _FAST_CACHE_MAX_ITEMS_DEFAULT = int(os.getenv("AI_FAST_CACHE_MAX_ITEMS", "512"))
 _FAST_CACHE: dict[str, tuple[float, object]] = {}
 
 load_project_env()
+
+_MAX_DISPLAY_NAME_LEN = 100
+_IMAGE_MAX_BYTES = 1_500_000
+_IMAGE_MAX_DIM = 4096
+
+
+def _sanitize_display_name(name: str) -> str:
+    """Очищает display_name для промптов: strip, limit length, remove control chars."""
+    if not name or not isinstance(name, str):
+        return ""
+    s = "".join(c for c in name.strip() if ord(c) >= 32 and ord(c) != 127)
+    return s[:_MAX_DISPLAY_NAME_LEN]
+
+
+def _resize_image_if_needed(image_bytes: bytes) -> bytes:
+    """Уменьшает изображение, если оно слишком большое (bytes или размеры)."""
+    if not image_bytes or len(image_bytes) < 100:
+        return image_bytes
+    try:
+        from io import BytesIO
+        from PIL import Image
+        img = Image.open(BytesIO(image_bytes)).convert("RGB")
+        w, h = img.size
+        need_resize = w > _IMAGE_MAX_DIM or h > _IMAGE_MAX_DIM or len(image_bytes) > _IMAGE_MAX_BYTES
+        if not need_resize:
+            return image_bytes
+        ratio = min(_IMAGE_MAX_DIM / w, _IMAGE_MAX_DIM / h, 1.0)
+        nw, nh = max(1, int(w * ratio)), max(1, int(h * ratio))
+        img = img.resize((nw, nh), Image.Resampling.LANCZOS)
+        out = BytesIO()
+        quality = 85
+        while quality > 20:
+            out.seek(0)
+            out.truncate()
+            img.save(out, format="JPEG", quality=quality, optimize=True)
+            if out.tell() <= _IMAGE_MAX_BYTES:
+                return out.getvalue()
+            quality -= 15
+        return out.getvalue()
+    except Exception as e:
+        logger.debug("_resize_image_if_needed: %s", e)
+        return image_bytes
 
 
 SYSTEM_PROMPT = """Ты модератор чата. Анализируй переписку и определи ДВЕ вещи:
@@ -295,6 +353,22 @@ TONE_TO_BOT_PROMPT = """По списку сообщений, которые п�
 - раздражён, язвит
 """
 
+AGGRESSION_SCORE_PROMPT = """По списку последних сообщений пользователя (обращения к боту или в чате) оцени эмоциональный тон по двум осям.
+
+Шкала эмоций (одно число score):
+- От -10 до 0: позитив (дружелюбие, благодарность, юмор без злобы, нейтральность). -10 = сверх позитив, 0 = нейтрально.
+- От 0 до +10: агрессия (раздражение, сарказм, оскорбления, грубость, троллинг). +10 = максимальная агрессия/враждебность.
+
+Дополнительно оцени по шкале 0–10:
+- positivity: средний уровень позитива/доброжелательности в сообщениях (0 = нет, 10 = очень дружелюбно).
+- aggression: средний уровень агрессии/негатива (0 = нет, 10 = крайняя враждебность).
+
+Учитывай контекст: ирония, шутка, мат без злобы — не обязательно агрессия; явные оскорбления, «пошел нахуй», троллинг — агрессия.
+
+Ответ СТРОГО JSON с числами:
+{"score": число от -10 до 10, "positivity": 0-10, "aggression": 0-10}
+"""
+
 DEEP_PORTRAIT_PROMPT = """Ты — эксперт-аналитик. По корпусу сообщений пользователя в чате (до 1000 последних) составь подробный портрет в трёх измерениях.
 
 На входе: список сообщений пользователя (текст и дата). Имя/ник — для контекста.
@@ -352,14 +426,15 @@ def _cache_get(key: str):
     ttl = _fast_cache_ttl_sec()
     if ttl <= 0:
         return None
-    item = _FAST_CACHE.get(key)
-    if not item:
-        return None
-    ts, value = item
-    if time.time() - ts > ttl:
-        _FAST_CACHE.pop(key, None)
-        return None
-    return value
+    with _FAST_CACHE_LOCK:
+        item = _FAST_CACHE.get(key)
+        if not item:
+            return None
+        ts, value = item
+        if time.time() - ts > ttl:
+            _FAST_CACHE.pop(key, None)
+            return None
+        return value
 
 
 def _cache_set(key: str, value) -> None:
@@ -367,48 +442,45 @@ def _cache_set(key: str, value) -> None:
     max_items = _fast_cache_max_items()
     if ttl <= 0:
         return
-    _FAST_CACHE[key] = (time.time(), value)
-    if len(_FAST_CACHE) <= max_items:
-        return
-    # Ленивая очистка: сначала удаляем протухшие, затем старейшие.
-    now = time.time()
-    expired = [k for k, (ts, _) in _FAST_CACHE.items() if now - ts > ttl]
-    for k in expired:
-        _FAST_CACHE.pop(k, None)
-    if len(_FAST_CACHE) > max_items:
-        for k in sorted(_FAST_CACHE, key=lambda x: _FAST_CACHE[x][0])[: len(_FAST_CACHE) - max_items]:
+    with _FAST_CACHE_LOCK:
+        _FAST_CACHE[key] = (time.time(), value)
+        if len(_FAST_CACHE) <= max_items:
+            return
+        now = time.time()
+        expired = [k for k, (ts, _) in _FAST_CACHE.items() if now - ts > ttl]
+        for k in expired:
             _FAST_CACHE.pop(k, None)
+        if len(_FAST_CACHE) > max_items:
+            for k in sorted(_FAST_CACHE, key=lambda x: _FAST_CACHE[x][0])[: len(_FAST_CACHE) - max_items]:
+                _FAST_CACHE.pop(k, None)
 
 
 def analyze_messages(text: str) -> tuple[bool, str, str]:
     """
     Возвращает (is_political, remark, sentiment).
     sentiment: "positive" / "negative" / "neutral".
-    При 429 — до 3 попыток с паузой.
+    При 429 — до 3 попыток с паузой. При 402 — Gemini fallback.
     """
     if not text or not text.strip():
         return False, "", "neutral"
 
-    client = get_client()
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": f"Переписка:\n\n{text}"},
+    ]
+
     content = ""
     for attempt in range(3):
-        try:
-            response = client.chat.completions.create(
-                model=os.getenv("OPENAI_MODEL", "deepseek-chat"),
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": f"Переписка:\n\n{text}"},
-                ],
-                temperature=0.3,
-            )
-            raw = response.choices[0].message.content
-            content = (raw or "").strip()
+        raw, _ = chat_complete_with_fallback(
+            messages,
+            temperature=0.3,
+            prefer_free=prefer_free_mode(),
+        )
+        content = (raw or "").strip()
+        if content:
             break
-        except RateLimitError:
-            if attempt < 2:
-                time.sleep(10 + attempt * 10)
-            else:
-                raise
+        if attempt < 2:
+            time.sleep(5 + attempt * 5)
     if not content:
         return False, "", "neutral"
 
@@ -430,6 +502,61 @@ def analyze_messages(text: str) -> tuple[bool, str, str]:
         return is_political, remark, sentiment
     except json.JSONDecodeError:
         return False, "", "neutral"
+
+
+CLOSE_ATTENTION_PROMPT = """Ты анализируешь полит. высказывание участника в режиме «пристальное внимание».
+
+Задачи:
+1) views — кратко извлеки и сформулируй его взгляды/позиции (1–3 предложения). Что он утверждает, к чему склоняется.
+2) needs_evidence — true, если высказывание содержит фактические утверждения (цифры, события, обвинения, «все знают», «доказано» и т.п.), которые требуют доказательств. false — если это мнение, шутка, вопрос без утверждений.
+3) evidence_found — true, если в тексте есть ссылки (http, t.me, .ru, .com), цитаты, упоминания источников. false — если утверждения без опоры на источники.
+4) demand_phrase — короткая фраза для ответа бота, если needs_evidence=true и evidence_found=false. Примеры: «Приведи источник», «Откуда данные?», «Ссылку можно?». Пустая строка, если требовать не нужно.
+
+Ответ СТРОГО JSON:
+{"views": "...", "needs_evidence": true|false, "evidence_found": true|false, "demand_phrase": "..."}"""
+
+
+def analyze_close_attention(
+    message_text: str,
+    accumulated_context: str = "",
+) -> dict:
+    """
+    Глубокий анализ полит. высказывания для режима «пристальное внимание».
+    Возвращает {views, needs_evidence, evidence_found, demand_phrase}.
+    """
+    if not message_text or not (message_text := message_text.strip()):
+        return {"views": "", "needs_evidence": False, "evidence_found": False, "demand_phrase": ""}
+
+    user_content = f"Высказывание:\n\n{sanitize_for_prompt(message_text, 1500)}"
+    if accumulated_context:
+        user_content = f"Контекст накопленных взглядов участника:\n{accumulated_context}\n\n{user_content}"
+
+    try:
+        raw, _ = chat_complete_with_fallback(
+            [
+                {"role": "system", "content": CLOSE_ATTENTION_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.2,
+            prefer_free=prefer_free_mode(),
+        )
+        raw = (raw or "").strip()
+        if "```" in raw:
+            parts = raw.split("```")
+            if len(parts) >= 2:
+                raw = parts[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+        raw = raw.strip()
+        data = json.loads(raw)
+        return {
+            "views": (data.get("views") or "").strip()[:1500],
+            "needs_evidence": bool(data.get("needs_evidence", False)),
+            "evidence_found": bool(data.get("evidence_found", False)),
+            "demand_phrase": (data.get("demand_phrase") or "").strip()[:120],
+        }
+    except Exception:
+        return {"views": "", "needs_evidence": False, "evidence_found": False, "demand_phrase": ""}
 
 
 # Только эмодзи, разрешённые Telegram для реакций (REACTION_INVALID иначе).
@@ -471,6 +598,7 @@ def analyze_image(image_bytes: bytes, caption: str = "") -> tuple[bool, str, str
     """
     if not image_bytes or len(image_bytes) < 100:
         return False, "", "neutral", "other", "other", "", "👍", False
+    image_bytes = _resize_image_if_needed(image_bytes)
     b64 = base64.standard_b64encode(image_bytes).decode("ascii")
     mime = "image/jpeg"
     if image_bytes[:8] == b"\x89PNG\r\n\x1a\n":
@@ -478,22 +606,64 @@ def analyze_image(image_bytes: bytes, caption: str = "") -> tuple[bool, str, str
     elif image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
         mime = "image/webp"
     url = f"data:{mime};base64,{b64}"
+    prompt_text = IMAGE_ANALYSIS_PROMPT + (f"\n\nПодпись к изображению от пользователя: {caption}" if caption else "")
+    if prefer_free_mode():
+        raw = gemini_analyze_image(image_bytes, "Ты анализируешь изображения. Отвечай только JSON.\n\n" + prompt_text, mime=mime)
+        if raw:
+            try:
+                data = parse_json(raw)
+                if isinstance(data, dict):
+                    is_political = bool(data.get("is_political", False))
+                    remark = (data.get("remark") or "").strip()
+                    sentiment = normalize_sentiment(data.get("sentiment"))
+                    mt = normalize_message_type(data.get("message_type"))
+                    cat = (data.get("category") or "other").strip().lower()
+                    if cat not in ("political", "vulgar", "technical", "meme", "neutral", "other"):
+                        cat = "other"
+                    desc = (data.get("description") or "").strip()[:500]
+                    reac = (data.get("reaction_emoji") or "👍").strip() or "👍"
+                    if reac not in _ALLOWED_REACTION_EMOJI:
+                        reac = "👍"
+                    is_analysis_screenshot = bool(data.get("is_analysis_screenshot", False))
+                    if not is_analysis_screenshot and _looks_like_archive_screenshot(desc):
+                        is_analysis_screenshot = True
+                    return is_political, remark, sentiment, mt, cat, desc, reac, is_analysis_screenshot
+            except (KeyError, TypeError):
+                pass
+        return False, "", "neutral", "other", "other", "", "👍", False
     client = get_client()
     # Важно: для image-анализa не используем OPENAI_MODEL (часто это текстовая модель -> 404 на vision).
-    # Сначала идём по стабильному рабочему пути (обычно 200), затем по fallback.
+    # Список vision-моделей, пробуем по порядку; сломанные (404/402) помечаем и пропускаем.
+    # OPENAI_VISION_MODELS — через запятую, переопределяет порядок. OPENAI_VISION_MODEL — одна модель в начало.
+    env_models = [m.strip() for m in (os.getenv("OPENAI_VISION_MODELS") or "").split(",") if m.strip()]
     configured_vision = (os.getenv("OPENAI_VISION_MODEL") or "").strip()
-    preferred = ["openai/gpt-4o-mini", "google/gemini-2.0-flash-exp:free", "x-ai/grok-vision-beta"]
-    legacy_default = "x-ai/grok-2-vision-1212"
+    # Актуальные vision-модели OpenRouter (проверено через api/v1/models). Сначала бесплатные.
+    preferred = [
+        "openrouter/free",                           # бесплатный роутер, сам выберет vision
+        "nvidia/nemotron-nano-12b-v2-vl:free",       # бесплатная vision
+        "google/gemini-2.5-flash-lite-preview-09-2025",
+        "google/gemini-2.5-flash",
+        "qwen/qwen3.5-flash-02-23",
+        "qwen/qwen3-vl-8b-instruct",
+        "openai/gpt-4o-mini",                         # требует кредиты
+        "openai/gpt-5-mini",
+        "x-ai/grok-4.1-fast",
+        "anthropic/claude-sonnet-4.6",
+    ]
+    legacy_default = "qwen/qwen3-vl-8b-instruct"  # fallback vision
     vision_models = []
-    for m in preferred:
+    base = env_models if env_models else preferred
+    for m in base:
         if m and m not in vision_models:
             vision_models.append(m)
     if configured_vision and configured_vision not in vision_models:
-        vision_models.append(configured_vision)
+        vision_models.insert(0, configured_vision)
     if legacy_default not in vision_models:
         vision_models.append(legacy_default)
+    vision_models = [m for m in vision_models if m not in _UNAVAILABLE_VISION_MODELS]
+    prompt_text = IMAGE_ANALYSIS_PROMPT + (f"\n\nПодпись к изображению от пользователя: {caption}" if caption else "")
     user_content: list = [
-        {"type": "text", "text": (IMAGE_ANALYSIS_PROMPT + (f"\n\nПодпись к изображению от пользователя: {caption}" if caption else ""))},
+        {"type": "text", "text": "Ты анализируешь изображения. Отвечай только JSON.\n\n" + prompt_text},
         {"type": "image_url", "image_url": {"url": url}},
     ]
     last_error = None
@@ -502,10 +672,7 @@ def analyze_image(image_bytes: bytes, caption: str = "") -> tuple[bool, str, str
             try:
                 response = client.chat.completions.create(
                     model=vision_model,
-                    messages=[
-                        {"role": "system", "content": "Ты анализируешь изображения. Отвечай только JSON."},
-                        {"role": "user", "content": user_content},
-                    ],
+                    messages=[{"role": "user", "content": user_content}],
                     temperature=0.2,
                     max_tokens=500,
                 )
@@ -536,9 +703,35 @@ def analyze_image(image_bytes: bytes, caption: str = "") -> tuple[bool, str, str
                 else:
                     last_error = None
                     break
-            except (APIError, APIStatusError, Exception) as e:
+            except APIStatusError as e:
+                status = getattr(e, "status_code", 0)
                 err_msg = str(e).lower()
-                if "404" in err_msg or "no endpoints" in err_msg or "image" in err_msg:
+                if status == 400 and ("developer instruction" in err_msg or "system" in err_msg):
+                    _UNAVAILABLE_VISION_MODELS.add(vision_model)
+                    logger.info("Vision-модель %s не поддерживает system (400), пробуем следующую", vision_model)
+                    last_error = e
+                    break
+                if status == 402 or "insufficient" in err_msg or "credits" in err_msg:
+                    _UNAVAILABLE_VISION_MODELS.add(vision_model)
+                    logger.info("Vision-модель %s недоступна (402/credits), пробуем следующую", vision_model)
+                    last_error = e
+                    break
+                if status == 404 or "404" in err_msg or "no endpoints" in err_msg or "not found" in err_msg:
+                    _UNAVAILABLE_VISION_MODELS.add(vision_model)
+                    logger.info("Vision-модель %s не найдена (404), пробуем следующую", vision_model)
+                    last_error = e
+                    break
+                raise
+            except (APIError, Exception) as e:
+                err_msg = str(e).lower()
+                if "developer instruction" in err_msg or ("400" in err_msg and "system" in err_msg):
+                    _UNAVAILABLE_VISION_MODELS.add(vision_model)
+                    logger.info("Vision-модель %s не поддерживает system (400), пробуем следующую", vision_model)
+                    last_error = e
+                    break
+                if "404" in err_msg or "no endpoints" in err_msg or "image" in err_msg or "not found" in err_msg:
+                    _UNAVAILABLE_VISION_MODELS.add(vision_model)
+                    logger.info("Vision-модель %s недоступна (%s), пробуем следующую", vision_model, type(e).__name__)
                     last_error = e
                     break
                 raise
@@ -559,18 +752,18 @@ def analyze_message_for_reply(context_and_message: str) -> tuple[bool, str, str,
     cached = _cache_get(ck)
     if isinstance(cached, tuple) and len(cached) == 4:
         return cached
-    client = get_client()
+    messages = [
+        {"role": "system", "content": ANALYZE_FOR_REPLY_PROMPT},
+        {"role": "user", "content": f"Переписка:\n\n{text}"},
+    ]
     for attempt in range(2):
         try:
-            response = client.chat.completions.create(
-                model=os.getenv("OPENAI_MODEL", "deepseek-chat"),
-                messages=[
-                    {"role": "system", "content": ANALYZE_FOR_REPLY_PROMPT},
-                    {"role": "user", "content": f"Переписка:\n\n{text}"},
-                ],
+            raw, _ = chat_complete_with_fallback(
+                messages,
                 temperature=0.2,
+                prefer_free=prefer_free_mode(),
             )
-            raw = (response.choices[0].message.content or "").strip()
+            raw = (raw or "").strip()
             data = parse_json(raw)
             if not isinstance(data, dict):
                 continue
@@ -583,9 +776,9 @@ def analyze_message_for_reply(context_and_message: str) -> tuple[bool, str, str,
             return result
         except (KeyError, TypeError):
             pass
-        except RateLimitError:
+        except Exception:
             if attempt < 1:
-                time.sleep(5)
+                time.sleep(3)
     return False, "neutral", "other", False
 
 
@@ -613,27 +806,25 @@ def should_pause_dialog(context_and_message: str) -> bool:
     cached = _cache_get(ck)
     if isinstance(cached, bool):
         return cached
-    client = get_client()
+    messages = [
+        {"role": "system", "content": STOP_DIALOG_PROMPT},
+        {"role": "user", "content": f"Диалог:\n\n{text}"},
+    ]
     for attempt in range(2):
         try:
-            response = client.chat.completions.create(
-                model=os.getenv("OPENAI_MODEL", "deepseek-chat"),
-                messages=[
-                    {"role": "system", "content": STOP_DIALOG_PROMPT},
-                    {"role": "user", "content": f"Диалог:\n\n{text}"},
-                ],
+            raw, _ = chat_complete_with_fallback(
+                messages,
                 temperature=0.1,
+                prefer_free=prefer_free_mode(),
             )
-            data = parse_json((response.choices[0].message.content or "").strip())
+            data = parse_json((raw or "").strip())
             if isinstance(data, dict):
                 result = bool(data.get("should_pause", False))
                 _cache_set(ck, result)
                 return result
-        except RateLimitError:
+        except Exception:
             if attempt < 1:
                 time.sleep(3)
-        except Exception:
-            pass
     return False
 
 
@@ -737,7 +928,8 @@ def update_user_portrait(current_portrait: str, daily_messages: list, user_displ
         if t:
             lines.append(f"[{s}] {t}")
     day_summary = "\n".join(lines) if lines else "(нет текста)"
-    user_content = f"Текущий портрет:\n{current_portrait or '(пусто)'}\n\nСообщения за день (sentiment: positive/negative/neutral):\n{day_summary}\n\nИмя/ник: {user_display_name or '—'}"
+    safe_name = _sanitize_display_name(user_display_name) or "—"
+    user_content = f"Текущий портрет:\n{current_portrait or '(пусто)'}\n\nСообщения за день (sentiment: positive/negative/neutral):\n{day_summary}\n\nИмя/ник: {safe_name}"
     client = get_client()
     for attempt in range(3):
         try:
@@ -758,7 +950,9 @@ def update_user_portrait(current_portrait: str, daily_messages: list, user_displ
                     if part.startswith("{"):
                         content = part
                         break
-            data = json.loads(content)
+            data = parse_json(content)
+            if data is None or not isinstance(data, dict):
+                continue
             portrait = (data.get("portrait") or current_portrait or "").strip()[:1500]
             rank = (data.get("rank") or "neutral").strip().lower()
             if rank not in ("loyal", "neutral", "opposition"):
@@ -804,7 +998,13 @@ def build_deep_portrait_from_messages(
         return "Недостаточно текста для анализа.", "unknown"
 
     block = "\n".join(lines[-500:])
-    user_content = f"Имя/ник: {user_display_name or '—'}\n\nСообщения пользователя:\n{block}"
+    safe_name = _sanitize_display_name(user_display_name) or "—"
+    user_content = f"Имя/ник: {safe_name}\n\nСообщения пользователя:\n{block}"
+
+    msgs = [
+        {"role": "system", "content": DEEP_PORTRAIT_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
 
     client = get_client()
     content = ""
@@ -812,11 +1012,9 @@ def build_deep_portrait_from_messages(
         try:
             response = client.chat.completions.create(
                 model=os.getenv("OPENAI_MODEL", "deepseek-chat"),
-                messages=[
-                    {"role": "system", "content": DEEP_PORTRAIT_PROMPT},
-                    {"role": "user", "content": user_content},
-                ],
+                messages=msgs,
                 temperature=0.3,
+                max_tokens=2048,
             )
             content = (response.choices[0].message.content or "").strip()
             break
@@ -825,6 +1023,11 @@ def build_deep_portrait_from_messages(
                 time.sleep(10 + attempt * 10)
             else:
                 raise
+        except (APIStatusError, APIError) as e:
+            if _check_402(e):
+                content = gemini_chat_complete(msgs, max_tokens=2048, temperature=0.3) or ""
+                break
+            raise
 
     if not content:
         return "Ошибка анализа ИИ.", "unknown"
@@ -850,15 +1053,16 @@ def assess_tone_toward_bot(messages: list[str]) -> str:
     if not texts:
         return "обращений к боту пока нет"
     block = "\n".join(f"- {t[:200]}" for t in texts)
+    tone_msgs = [
+        {"role": "system", "content": TONE_TO_BOT_PROMPT},
+        {"role": "user", "content": f"Сообщения пользователя боту:\n{block}"},
+    ]
     client = get_client()
     for attempt in range(2):
         try:
             response = client.chat.completions.create(
                 model=os.getenv("OPENAI_MODEL", "deepseek-chat"),
-                messages=[
-                    {"role": "system", "content": TONE_TO_BOT_PROMPT},
-                    {"role": "user", "content": f"Сообщения пользователя боту:\n{block}"},
-                ],
+                messages=tone_msgs,
                 temperature=0.3,
             )
             content = (response.choices[0].message.content or "").strip()[:200]
@@ -870,7 +1074,51 @@ def assess_tone_toward_bot(messages: list[str]) -> str:
                 time.sleep(5)
             else:
                 break
+        except (APIStatusError, APIError) as e:
+            if _check_402(e):
+                result = gemini_chat_complete(tone_msgs, temperature=0.3)
+                if result:
+                    return result[:200]
+                break
+            break
     return "нейтрален"
+
+
+def assess_aggression_score(messages: list[str], last_n: int = 15) -> dict:
+    """
+    Оценка эмоций по последним N сообщениям: шкала -10 (сверх позитив) … +10 (максимальная агрессия).
+    Возвращает: score (-10..10), positivity (0..10), aggression (0..10).
+    """
+    if not messages:
+        return {"score": 0.0, "positivity": 5.0, "aggression": 0.0}
+    texts = [t.strip() for t in messages if (t or "").strip()][-last_n:]
+    if not texts:
+        return {"score": 0.0, "positivity": 5.0, "aggression": 0.0}
+    block = "\n".join(f"- {t[:300]}" for t in texts)
+    msgs = [
+        {"role": "system", "content": AGGRESSION_SCORE_PROMPT},
+        {"role": "user", "content": f"Последние сообщения пользователя:\n{block}"},
+    ]
+    try:
+        response = chat_complete_with_fallback(msgs, temperature=0.2, max_tokens=150)
+        if not response or not getattr(response, "choices", None):
+            return {"score": 0.0, "positivity": 5.0, "aggression": 0.0}
+        raw = (response.choices[0].message.content or "").strip()
+        if not raw:
+            return {"score": 0.0, "positivity": 5.0, "aggression": 0.0}
+        data = parse_json(raw)
+        if not isinstance(data, dict):
+            return {"score": 0.0, "positivity": 5.0, "aggression": 0.0}
+        score = float(data.get("score", 0))
+        score = max(-10.0, min(10.0, score))
+        pos = float(data.get("positivity", 5.0))
+        pos = max(0.0, min(10.0, pos))
+        agg = float(data.get("aggression", 0.0))
+        agg = max(0.0, min(10.0, agg))
+        return {"score": round(score, 1), "positivity": round(pos, 1), "aggression": round(agg, 1)}
+    except Exception as e:
+        logger.debug("assess_aggression_score: %s", e)
+        return {"score": 0.0, "positivity": 5.0, "aggression": 0.0}
 
 
 def _get_reply_models() -> list[str]:
@@ -909,9 +1157,27 @@ def _derive_emotional_mode(user_portrait: str, message_text: str, context: str =
     - forgive: пользователь в целом адекватен/смягчился.
     - angry: устойчиво грубит/провоцирует.
     - balanced: нейтральный режим.
+    - rage: эскалация, жёсткий ответ.
+    Использует шкалу эмоций -10..+10 (EMOTION_SCORE в портрете) и маркеры в тексте.
     """
     p = (user_portrait or "").lower()
     m = (message_text or "").lower()
+
+    # Числовая шкала из портрета: -10 сверх позитив, +10 макс. агрессия
+    emotion_score = None
+    match = re.search(r"EMOTION_SCORE:\s*([-\d.]+)", user_portrait or "")
+    if match:
+        try:
+            emotion_score = float(match.group(1))
+        except ValueError:
+            pass
+    if emotion_score is not None:
+        if emotion_score >= 6:
+            return "rage"
+        if emotion_score >= 3:
+            return "angry"
+        if emotion_score <= -2:
+            return "forgive"
 
     forgive_markers = (
         "адекватен",
@@ -1044,7 +1310,26 @@ def _generate_reply_ensemble(
     Генерирует ответ через несколько моделей:
     1) Получаем 2+ кандидата от разных моделей.
     2) Выбираем лучший отдельной моделью.
+    При AI_PREFER_FREE — сразу Gemini.
     """
+    if prefer_free_mode():
+        raw, _ = chat_complete_with_fallback(
+            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
+            temperature=temperature,
+            prefer_free=True,
+        )
+        if raw:
+            return _normalize_reply_text(raw, max_chars)
+        # Gemini пустой — пробуем OpenRouter (пополненные кредиты)
+        raw, _ = chat_complete_with_fallback(
+            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
+            temperature=temperature,
+            prefer_free=False,
+        )
+        if raw:
+            return _normalize_reply_text(raw, max_chars)
+        return fallback_text
+
     models = _get_reply_models()
     candidates: list[str] = []
     candidate_models = [m for m in models[:3] if m not in _UNAVAILABLE_REPLY_MODELS]
@@ -1070,6 +1355,12 @@ def _generate_reply_ensemble(
             except Exception as e:
                 if _is_model_not_found_error(e):
                     _UNAVAILABLE_REPLY_MODELS.add(model)
+                if _check_402(e):
+                    result = gemini_chat_complete(
+                        [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
+                        temperature=temperature,
+                    )
+                    return _normalize_reply_text(result or "", max_chars) if result else ""
                 return ""
         return ""
 
@@ -1088,7 +1379,14 @@ def _generate_reply_ensemble(
                     candidates.append(content)
                 if len(candidates) >= 2:
                     break
+
     if not candidates:
+        gemini_result = gemini_chat_complete(
+            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_content}],
+            temperature=temperature,
+        )
+        if gemini_result:
+            return _normalize_reply_text(gemini_result, max_chars)
         return fallback_text
     return _select_best_candidate(candidates, user_content)
 
@@ -1318,7 +1616,8 @@ def generate_question_of_day(messages: list[dict], display_name: str, graph_cont
     graph_block = ""
     if graph_context and graph_context.strip():
         graph_block = f"\n\nКонтекст связей/тем:\n{sanitize_for_prompt(graph_context, max_len=900)}"
-    user_content = f"Имя пользователя: {display_name or 'друг'}\n\nСообщения за сегодня:\n{context}{graph_block}"
+    safe_name = _sanitize_display_name(display_name) or "друг"
+    user_content = f"Имя пользователя: {safe_name}\n\nСообщения за сегодня:\n{context}{graph_block}"
     content = _generate_reply_ensemble(
         system_prompt=QUESTION_OF_DAY_PROMPT,
         user_content=user_content,

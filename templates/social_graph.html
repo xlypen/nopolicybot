@@ -23,6 +23,9 @@
 .badge.alert{background:#5a1f2b;color:#ffd6dc}
 .badge.good{background:#1f4d3c;color:#c9f7e0}
 .badge.dim{background:#234b78;color:#d8e7ff}
+.context-chip{font-size:0.72rem;color:#9db4d3;opacity:0.9}
+.cooling-chip{font-size:0.7rem;color:#94a3b8;opacity:0.85}
+.tone-trend-chip{font-size:0.7rem}.tone-trend-chip.improving{color:#4ade80}.tone-trend-chip.worsening{color:#f97316}
 .history{margin-top:0.55rem;padding-top:0.5rem;border-top:1px dashed #2a4c77}
 .history-item{font-size:0.83rem;color:#b5c7df;line-height:1.45;margin-bottom:0.35rem}
 .list-toolbar{display:flex;justify-content:space-between;gap:0.6rem;flex-wrap:wrap;align-items:end;margin-bottom:0.7rem}
@@ -57,8 +60,19 @@
 .view-btn.active{background:#e94560;color:#fff}
 .view-panel{display:none}
 .view-panel.active{display:block}
-.graph-wrap{position:relative;height:560px;background:#0f3460;border-radius:10px;overflow:hidden}
-.graph-svg{position:absolute;inset:0;width:100%;height:100%}
+.graph-wrap{position:relative;height:720px;background:#0f3460;border-radius:10px;overflow:hidden;cursor:grab;touch-action:none}
+.graph-wrap:active{cursor:grabbing}
+.graph-panzoom{position:absolute;inset:0;will-change:transform}
+.graph-panzoom{transform-origin:0 0}
+.graph-svg{position:absolute;inset:0;width:100%;height:100%;shape-rendering:geometricPrecision}
+.graph-svg.force-quality{shape-rendering:optimizeQuality}
+.graph-panzoom.force-quality{backface-visibility:hidden}
+.graph-node.draggable{cursor:grab}
+.graph-node.draggable:active{cursor:grabbing}
+.tone-legend{display:flex;flex-wrap:wrap;gap:0.5rem 1rem;margin-top:0.5rem;font-size:0.76rem;color:#9db4d3;align-items:center}
+.tone-legend-title{font-weight:600;color:#b4c8e0;margin-right:0.25rem}
+.tone-legend-item{display:flex;align-items:center;gap:0.35rem}
+.tone-legend-swatch{width:10px;height:3px;border-radius:1px}
 .graph-node{position:absolute;transform:translate(-50%,-50%);text-align:center;max-width:120px}
 .graph-node.clickable{cursor:pointer}
 .graph-node.is-focused .graph-label{color:#e8f4ff;font-weight:700}
@@ -71,21 +85,30 @@
 .graph-meta{font-size:0.85rem;color:#888;margin-bottom:0.75rem}
 .graph-focus-bar{display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;margin-bottom:0.6rem}
 .graph-focus-note{font-size:0.82rem;color:#9bb0cf}
-.graph-focus-insight{margin-bottom:0.7rem;padding:0.7rem 0.75rem;background:#0d2d53;border:1px solid #275789;border-radius:10px;color:#dbe8ff;display:none}
-.fi-title{font-size:0.9rem;font-weight:700;color:#eef6ff;margin-bottom:0.45rem}
-.fi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:0.45rem;margin-bottom:0.55rem}
-.fi-box{background:#11345c;border:1px solid #2b5f95;border-radius:8px;padding:0.4rem 0.5rem}
-.fi-k{font-size:0.72rem;color:#9fb9da}
-.fi-v{font-size:0.92rem;color:#e8f2ff;font-weight:700}
-.fi-row{display:flex;gap:0.35rem;flex-wrap:wrap;align-items:center;margin-bottom:0.5rem}
-.fi-chip{font-size:0.73rem;padding:0.19rem 0.45rem;border-radius:999px;background:#1a3b65;color:#d5e8ff}
+.graph-focus-insight{margin-bottom:0.7rem;background:#0d2d53;border:1px solid #275789;border-radius:10px;color:#dbe8ff;display:none;overflow:hidden}
+.fi-collapsible{display:block}
+.fi-collapsible summary{display:flex;align-items:center;gap:0.4rem;padding:0.5rem 0.65rem;cursor:pointer;font-weight:700;font-size:0.88rem;color:#eef6ff;background:transparent;list-style:none;user-select:none}
+.fi-collapsible summary::-webkit-details-marker{display:none}
+.fi-collapsible summary::before{content:'';display:inline-block;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid #9bb0cf;transition:transform .2s}
+.fi-collapsible[open] summary::before{transform:rotate(180deg)}
+.fi-collapsible .fi-body{padding:0 0.65rem 0.6rem 0.65rem}
+.fi-title{font-size:0.88rem;font-weight:700;color:#eef6ff}
+.fi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:0.35rem;margin-bottom:0.4rem}
+.fi-box{background:#11345c;border:1px solid #2b5f95;border-radius:6px;padding:0.32rem 0.4rem}
+.fi-k{font-size:0.68rem;color:#9fb9da}
+.fi-v{font-size:0.84rem;color:#e8f2ff;font-weight:700}
+.fi-row{display:flex;gap:0.28rem;flex-wrap:wrap;align-items:center;margin-bottom:0.35rem}
+.fi-chip{font-size:0.7rem;padding:0.15rem 0.38rem;border-radius:999px;background:#1a3b65;color:#d5e8ff}
 .fi-chip.alert{background:#5a1f2b;color:#ffd6dc}
 .fi-chip.good{background:#1f4d3c;color:#d2f7e4}
-.fi-links{display:grid;gap:0.42rem}
-.fi-link{background:#0f2f56;border:1px solid #204e7d;border-radius:8px;padding:0.45rem 0.55rem}
-.fi-link-top{font-size:0.84rem;color:#e6f0ff}
-.fi-link-meta{font-size:0.77rem;color:#aac0dd;margin-top:0.18rem}
-.fi-link-sum{font-size:0.8rem;color:#d2e1f7;margin-top:0.22rem;line-height:1.35}
+.fi-links{display:grid;gap:0.35rem}
+.fi-link{background:#0f2f56;border:1px solid #204e7d;border-radius:6px;padding:0.35rem 0.45rem}
+.fi-link-top{font-size:0.8rem;color:#e6f0ff;margin-bottom:0.08rem}
+.fi-link-meta{font-size:0.72rem;color:#aac0dd;line-height:1.3}
+.fi-link-sum{font-size:0.78rem;color:#d2e1f7;margin-top:0.2rem;line-height:1.4;cursor:pointer}
+.fi-link-sum summary{list-style:none;cursor:pointer;font-size:0.78rem;color:#b8d0f0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-overflow:ellipsis}
+.fi-link-sum summary::-webkit-details-marker{display:none}
+.fi-link-sum-full{margin-top:0.25rem;font-size:0.78rem;color:#c3d7f4;max-height:7rem;overflow-y:auto;line-height:1.45}
 .top-connectors{display:flex;flex-wrap:wrap;gap:0.45rem;margin-bottom:0.8rem}
 .graph-settings{display:flex;flex-wrap:wrap;gap:0.7rem;align-items:end;margin-bottom:1rem;background:#112544;padding:0.75rem;border-radius:10px}
 .graph-settings label{font-size:0.8rem;color:#9bb0cf;display:flex;flex-direction:column;gap:0.25rem}
@@ -132,9 +155,15 @@
   <label class="check"><input type="checkbox" id="sg-advanced" {% if advanced_enabled %}checked{% endif %}> продвинутые инсайты
     <span class="hint-wrap" tabindex="0">?<span class="hint-pop">Включает расширенные метрики и UI: тон, темы, confidence, алерты, фильтры и историю связи.</span></span>
   </label>
-  <label class="check"><input type="checkbox" id="sg-ranked" {% if ranked_layout_enabled %}checked{% endif %}> ранжированный layout
-    <span class="hint-wrap" tabindex="0">?<span class="hint-pop">Узлы в графе сортируются по числу связей: самые связные участники отображаются выше.</span></span>
+  <label>Layout графа
+    <select id="sg-layout">
+      <option value="circular" {% if not ranked_layout_enabled %}selected{% endif %} data-desc="Участники расположены по окружности. Простой и предсказуемый вид, удобен для небольших графов.">круговой</option>
+      <option value="ranked" {% if ranked_layout_enabled %}selected{% endif %} data-desc="Участники сгруппированы по числу связей: самые «связные» — в верхних рядах. Хорошо показывает иерархию активности.">ранжированный</option>
+      <option value="force" data-desc="Физическая симуляция: узлы отталкиваются, связанные — притягиваются. Связанные участники оказываются ближе, кластеры видны наглядно.">силовой (force-directed)</option>
+    </select>
+    <span class="hint-wrap" tabindex="0">?<span class="hint-pop" id="layout-hint-text">Выберите тип раскладки узлов.</span></span>
   </label>
+  <p class="layout-desc" id="layout-desc" style="font-size:0.78rem;color:#8ea5c4;margin-top:0.25rem;line-height:1.35;"></p>
   <label class="check"><input type="checkbox" id="sg-live" {% if realtime_enabled %}checked{% endif %}> live-обновление в фоне
     <span class="hint-wrap" tabindex="0">?<span class="hint-pop">Фоновая задача периодически пересчитывает связи без нажатия кнопки обработки.</span></span>
   </label>
@@ -183,9 +212,11 @@
 <div class="header">
 <h1>Дерево связей</h1>
 <div style="display:flex;gap:0.5rem;align-items:center;">
-<a href="{{ url_for('index') }}" class="btn btn-secondary">← Назад</a>
+<a href="{{ url_for('admin') }}" class="btn btn-secondary">← Назад</a>
 <button type="button" class="btn btn-sm" id="btn-process" style="background:#0f3460;">Обработать накопленные диалоги</button>
 <span id="process-result" style="font-size:0.85rem;margin-left:0.5rem;"></span>
+<span id="realtime-ws-status" style="font-size:0.8rem;color:#9bb0cf;margin-left:0.5rem;">WS: off</span>
+<span id="graph-perf-status" style="font-size:0.8rem;color:#9bb0cf;margin-left:0.5rem;">Layout: init</span>
 </div>
 </div>
 <p style="color:#888;font-size:0.9rem;margin-bottom:1rem;">
@@ -311,7 +342,16 @@
 </div>
 {% endif %}
 <div class="graph-wrap" id="graph-wrap">
+<div class="graph-panzoom" id="graph-panzoom">
 <svg class="graph-svg" id="graph-svg"></svg>
+</div>
+</div>
+<div class="tone-legend" id="tone-legend">
+  <span class="tone-legend-title">Тон связей:</span>
+  <span class="tone-legend-item" title="Дружелюбный, поддерживающий диалог"><span class="tone-legend-swatch" style="background:#4ade80"></span> дружелюбный</span>
+  <span class="tone-legend-item" title="Нейтральный обмен"><span class="tone-legend-swatch" style="background:#6b7280"></span> нейтральный</span>
+  <span class="tone-legend-item" title="Споры, конфликты, напряжённость"><span class="tone-legend-swatch" style="background:#f97316"></span> конфликтный</span>
+  <span class="tone-legend-item" title="Грубости, оскорбления"><span class="tone-legend-swatch" style="background:#ef4444"></span> токсичный</span>
 </div>
 </div>
 <div class="card view-panel" id="panel-list">
@@ -328,6 +368,7 @@
         <option value="freshness">по свежести</option>
         <option value="confidence">по уверенности</option>
         <option value="risk">по риску</option>
+        <option value="alpha">по алфавиту</option>
       </select>
     </label>
     <div class="list-mode-switch">
@@ -345,18 +386,22 @@
   data-sort-trend="{{ conn.sort_trend }}"
   data-sort-freshness="{{ conn.sort_freshness }}"
   data-sort-confidence="{{ conn.sort_confidence }}"
-  data-sort-risk="{{ conn.sort_risk }}">
+  data-sort-risk="{{ conn.sort_risk }}"
+  data-sort-alpha="{{ conn.sort_alpha }}">
 
 <div class="conn-tile">
 <div class="conn-card">
   <div class="conn-card-head">
     <div class="connection-users">{{ conn.name_a }} ↔ {{ conn.name_b }}</div>
-    <div class="conn-card-metrics">
+  <div class="conn-card-metrics">
       <span>{{ period }}: <b>{{ conn.weight_in_period }}</b></span>
       <span>7д: <b>{{ conn.message_count_7d }}</b></span>
       <span>{{ conn.tone_label }}</span>
+      {% if conn.pair_context_label %}<span class="context-chip">{{ conn.pair_context_label }}</span>{% endif %}
+      {% if conn.connection_cooling %}<span class="cooling-chip" title="охлаждение связи">↓</span>{% endif %}
+      {% if conn.tone_trend_label and conn.tone_trend != 'stable' %}<span class="tone-trend-chip {{ conn.tone_trend }}">{{ conn.tone_trend_label }}</span>{% endif %}
       {% if conn.alert_flags_label %}<span style="color:#ffd6dc;">{{ conn.alert_flags_label[0] }}</span>{% endif %}
-    </div>
+  </div>
   </div>
   <div class="conn-card-sum">{{ conn.summary_preview or '—' }}</div>
   {% if advanced_enabled %}
@@ -376,11 +421,14 @@
     {% if advanced_enabled %}
     <div class="badges" style="margin-top:0.35rem;">
       <span class="badge">{{ conn.tone_label }}</span>
+      {% if conn.pair_context_label %}<span class="badge dim">{{ conn.pair_context_label }}</span>{% endif %}
+      {% if conn.connection_cooling %}<span class="badge dim">охлаждение</span>{% endif %}
+      {% if conn.tone_trend_label and conn.tone_trend != 'stable' %}<span class="badge {% if conn.tone_trend == 'improving' %}good{% else %}alert{% endif %}">{{ conn.tone_trend_label }}</span>{% endif %}
       <span class="badge dim">confidence {{ conn.confidence_pct }}% · {{ conn.confidence_label }}</span>
       {% for fl in conn.alert_flags_label %}<span class="badge alert">{{ fl }}</span>{% endfor %}
     </div>
     {% endif %}
-    <div class="connection-summary" style="margin-top:0.4rem;">{{ conn.summary or '—' }}</div>
+    <div class="connection-summary" style="margin-top:0.4rem;">{{ conn.summary_latest_full or conn.summary or '—' }}</div>
   </div>
 </div>
 </div>
@@ -398,6 +446,7 @@
     {% if advanced_enabled %}
     <div class="badges">
       <span class="badge">{{ conn.tone_label }}</span>
+      {% if conn.pair_context_label %}<span class="badge dim">{{ conn.pair_context_label }}</span>{% endif %}
       <span class="badge dim">confidence {{ conn.confidence_pct }}% · {{ conn.confidence_label }}</span>
       {% for t in conn.topics_label %}<span class="badge good">{{ t }}</span>{% endfor %}
       {% for fl in conn.alert_flags_label %}<span class="badge alert">{{ fl }}</span>{% endfor %}
@@ -405,10 +454,10 @@
     {% endif %}
   </div>
   <div>
-    <div class="connection-summary">{{ conn.summary_preview or conn.summary or '—' }}</div>
-    {% if conn.summary_has_more %}
+    <div class="connection-summary">{{ conn.summary_preview or conn.summary_latest_full or conn.summary or '—' }}</div>
+    {% if conn.summary_has_more or conn.summary_latest_full %}
     <details class="summary-more"><summary>Показать полностью</summary>
-    <div class="connection-summary connection-summary-full">{{ conn.summary }}</div></details>
+    <div class="connection-summary connection-summary-full">{{ conn.summary_latest_full or conn.summary }}</div></details>
     {% endif %}
     {% if advanced_enabled and conn.history_preview %}
     <details class="summary-more"><summary>История по датам</summary>
@@ -445,6 +494,7 @@
 {% endif %}
 {% endblock %}
 {% block scripts %}
+<script src="{{ url_for('static', filename='js/realtime_graph_client.js') }}"></script>
 <script>
 function openSidePanel(){
   var p=document.getElementById('side-panel');
@@ -466,7 +516,11 @@ function toggleSidePanel(){
 var graphNodes = {{ graph_nodes|tojson }};
 var graphEdges = {{ graph_edges|tojson }};
 var graphFocusRows = {{ graph_focus_rows|tojson }};
+var realtimeWsChatIds = {{ realtime_chat_ids|tojson }};
+var realtimeWsClient = null;
+var realtimeReloadTimer = null;
 var rankedLayoutEnabled = {{ ranked_layout_enabled|tojson }};
+var graphLayout = (function(){ try{ var s=localStorage.getItem('sg_layout'); if(s==='force'||s==='ranked'||s==='circular')return s; }catch(_e){} return rankedLayoutEnabled?'ranked':'circular'; })();
 var graphFocusUserId = null;
 var graphNodeNameById = {};
 graphNodes.forEach(function(n){graphNodeNameById[n.id]=n.label;});
@@ -523,20 +577,22 @@ function _renderFocusInsight(uid){
   var data = _buildFocusInsightText(uid);
   if(!data){
     insight.style.display = 'block';
-    insight.innerHTML = '<div class=\"fi-title\">Недостаточно данных для анализа этого участника.</div>';
+    insight.innerHTML = '<details class=\"fi-collapsible\"><summary><span class=\"fi-title\">Недостаточно данных</span></summary><div class=\"fi-body\"><p style=\"font-size:0.82rem;color:#9bb0cf;margin:0;\">Нет связей для анализа этого участника.</p></div></details>';
     return;
   }
+  var userName = _escapeHtml(graphNodeNameById[uid] || uid);
   var topRows = data.rows.slice(0, 3).map(function(r){
     var otherName = (r.user_a === uid) ? r.name_b : r.name_a;
     var topics = (r.topics_label || []).slice(0, 2).join(', ');
     var alerts = (r.alert_flags_label || []).map(function(a){return '<span class=\"fi-chip alert\">'+_escapeHtml(a)+'</span>';}).join(' ');
+    var fullSum = String(r.summary_full || r.summary_preview || '').trim();
+    var shortSum = fullSum.length > 180 ? (fullSum.slice(0, 180).trim() + '…') : fullSum;
     return [
       '<div class=\"fi-link\">',
       '<div class=\"fi-link-top\"><strong>'+_escapeHtml(otherName)+'</strong></div>',
-      '<div class=\"fi-link-meta\">вес('+_escapeHtml('{{ period }}')+')='+Number(r.weight_in_period||0)+' · 24ч='+Number(r.message_count_24h||0)+' · 7д='+Number(r.message_count_7d||0)+' · 30д='+Number(r.message_count_30d||0)+' · тон='+_escapeHtml(r.tone_label||'нейтральный')+'</div>',
-      topics ? '<div class=\"fi-link-meta\">темы: '+_escapeHtml(topics)+'</div>' : '',
-      alerts ? '<div class=\"fi-row\" style=\"margin-top:0.2rem;\">'+alerts+'</div>' : '',
-      (r.summary_preview ? '<div class=\"fi-link-sum\">'+_escapeHtml(r.summary_preview)+'</div>' : ''),
+      '<div class=\"fi-link-meta\">вес('+_escapeHtml('{{ period }}')+')='+Number(r.weight_in_period||0)+' · 24ч='+Number(r.message_count_24h||0)+' · 7д='+Number(r.message_count_7d||0)+' · 30д='+Number(r.message_count_30d||0)+' · '+_escapeHtml(r.tone_label||'нейтральный')+(topics ? ' · '+_escapeHtml(topics) : '')+'</div>',
+      alerts ? '<div class=\"fi-row\" style=\"margin-top:0.15rem;\">'+alerts+'</div>' : '',
+      (fullSum ? '<details class=\"fi-link-sum\"><summary>'+_escapeHtml(shortSum || 'Показать подробности диалога')+'</summary><div class=\"fi-link-sum-full\">'+_escapeHtml(fullSum)+'</div></details>' : ''),
       '</div>'
     ].join('');
   }).join('');
@@ -545,20 +601,42 @@ function _renderFocusInsight(uid){
     ? data.topTopics.map(function(t){return '<span class=\"fi-chip good\">'+_escapeHtml(t)+'</span>';}).join(' ')
     : '<span class=\"fi-chip\">тем пока мало</span>';
 
-  insight.innerHTML = [
-    '<div class=\"fi-title\">Анализ связей: '+_escapeHtml(graphNodeNameById[uid] || uid)+'</div>',
+  var body = [
     '<div class=\"fi-grid\">',
     '<div class=\"fi-box\"><div class=\"fi-k\">Связей</div><div class=\"fi-v\">'+data.rows.length+'</div></div>',
-    '<div class=\"fi-box\"><div class=\"fi-k\">Активность ('+_escapeHtml('{{ period }}')+')</div><div class=\"fi-v\">'+data.sumPeriod+'</div></div>',
+    '<div class=\"fi-box\"><div class=\"fi-k\">Активность</div><div class=\"fi-v\">'+data.sumPeriod+'</div></div>',
     '<div class=\"fi-box\"><div class=\"fi-k\">24ч / 7д / 30д</div><div class=\"fi-v\">'+data.sum24+' / '+data.sum7+' / '+data.sum30+'</div></div>',
-    '<div class=\"fi-box\"><div class=\"fi-k\">Средний confidence</div><div class=\"fi-v\">'+data.avgConf+'%</div></div>',
-    '<div class=\"fi-box\"><div class=\"fi-k\">Доминирующий тон</div><div class=\"fi-v\">'+_escapeHtml(data.dominantTone)+'</div></div>',
-    '<div class=\"fi-box\"><div class=\"fi-k\">Риск по алертам</div><div class=\"fi-v\">'+_escapeHtml(data.risk)+'</div></div>',
+    '<div class=\"fi-box\"><div class=\"fi-k\">Confidence</div><div class=\"fi-v\">'+data.avgConf+'%</div></div>',
+    '<div class=\"fi-box\"><div class=\"fi-k\">Тон</div><div class=\"fi-v\">'+_escapeHtml(data.dominantTone)+'</div></div>',
+    '<div class=\"fi-box\"><div class=\"fi-k\">Риск</div><div class=\"fi-v\">'+_escapeHtml(data.risk)+'</div></div>',
     '</div>',
-    '<div class=\"fi-row\"><span class=\"fi-chip\">неактивных ≥7д: '+data.stale+'</span>'+topicChips+'</div>',
+    '<div class=\"fi-row\"><span class=\"fi-chip\">неактив. ≥7д: '+data.stale+'</span>'+topicChips+'</div>',
     '<div class=\"fi-links\">'+topRows+'</div>'
   ].join('');
+
+  insight.innerHTML = '<details class=\"fi-collapsible\"><summary><span class=\"fi-title\">Анализ связей: '+userName+'</span></summary><div class=\"fi-body\">'+body+'</div></details>';
   insight.style.display = 'block';
+}
+
+function updateGraphFocusOnly(){
+  var panzoom = document.getElementById('graph-panzoom');
+  if(!panzoom){return;}
+  var focusNeighbors = {};
+  if(graphFocusUserId !== null){
+    graphEdges.forEach(function(e){
+      if(e.source === graphFocusUserId){focusNeighbors[e.target]=true;}
+      if(e.target === graphFocusUserId){focusNeighbors[e.source]=true;}
+    });
+  }
+  panzoom.querySelectorAll('.graph-node').forEach(function(d){
+    var nid = parseInt(d.getAttribute('data-node-id'), 10);
+    if(isNaN(nid)){return;}
+    var isFocused = graphFocusUserId !== null && nid === graphFocusUserId;
+    var isRelated = graphFocusUserId === null || nid === graphFocusUserId || !!focusNeighbors[nid];
+    d.classList.toggle('is-focused', isFocused);
+    d.classList.toggle('is-muted', graphFocusUserId !== null && !isRelated);
+  });
+  if(window.redrawGraphLines){ window.redrawGraphLines(graphCurrentPos); }
 }
 
 function updateGraphFocusUi(){
@@ -583,12 +661,95 @@ function updateGraphFocusUi(){
   }
 }
 
+function runForceLayout(nodes, edges, width, height){
+  var n = nodes.length;
+  if(!n){return {};}
+  var cx = width/2, cy = height/2;
+  var pos = {};
+  var vx = {}, vy = {};
+  var radius = Math.min(width, height)/2 - 80;
+  nodes.forEach(function(node, i){
+    var a = (2*Math.PI*i)/n;
+    pos[node.id] = {x: cx + radius*Math.cos(a), y: cy + radius*Math.sin(a)};
+    vx[node.id] = 0; vy[node.id] = 0;
+  });
+  var repulsion = 1200, stiffness = 0.08, damping = 0.85, iterations = 120;
+  var nodeById = {};
+  nodes.forEach(function(node){ nodeById[node.id] = node; });
+  for(var iter = 0; iter < iterations; iter++){
+    var fx = {}, fy = {};
+    nodes.forEach(function(node){ fx[node.id]=0; fy[node.id]=0; });
+    for(var i = 0; i < nodes.length; i++){
+      for(var j = i+1; j < nodes.length; j++){
+        var a = nodes[i], b = nodes[j];
+        var pa = pos[a.id], pb = pos[b.id];
+        var dx = pb.x - pa.x, dy = pb.y - pa.y;
+        var d = Math.sqrt(dx*dx + dy*dy) || 0.1;
+        var f = repulsion / (d*d);
+        var fxVal = (dx/d)*f, fyVal = (dy/d)*f;
+        fx[a.id] = (fx[a.id]||0) - fxVal; fy[a.id] = (fy[a.id]||0) - fyVal;
+        fx[b.id] = (fx[b.id]||0) + fxVal; fy[b.id] = (fy[b.id]||0) + fyVal;
+      }
+    }
+    edges.forEach(function(e){
+      var pa = pos[e.source], pb = pos[e.target];
+      if(!pa || !pb){return;}
+      var dx = pb.x - pa.x, dy = pb.y - pa.y;
+      var d = Math.sqrt(dx*dx + dy*dy) || 0.1;
+      var idealLen = 80;
+      var f = (d - idealLen) * stiffness;
+      var fxVal = (dx/d)*f, fyVal = (dy/d)*f;
+      fx[e.source] = (fx[e.source]||0) + fxVal; fy[e.source] = (fy[e.source]||0) + fyVal;
+      fx[e.target] = (fx[e.target]||0) - fxVal; fy[e.target] = (fy[e.target]||0) - fyVal;
+    });
+    nodes.forEach(function(node){
+      vx[node.id] = (vx[node.id]||0)*damping + (fx[node.id]||0)*0.3;
+      vy[node.id] = (vy[node.id]||0)*damping + (fy[node.id]||0)*0.3;
+      pos[node.id].x += vx[node.id];
+      pos[node.id].y += vy[node.id];
+    });
+  }
+  var minX=1e9, maxX=-1e9, minY=1e9, maxY=-1e9;
+  nodes.forEach(function(node){
+    var p = pos[node.id];
+    if(p.x < minX) minX=p.x; if(p.x > maxX) maxX=p.x;
+    if(p.y < minY) minY=p.y; if(p.y > maxY) maxY=p.y;
+  });
+  var pad = 60;
+  var rangeX = Math.max(1, maxX - minX), rangeY = Math.max(1, maxY - minY);
+  var scale = Math.min((width - 2*pad)/rangeX, (height - 2*pad)/rangeY);
+  var out = {};
+  nodes.forEach(function(node){
+    var p = pos[node.id];
+    out[node.id] = {
+      x: pad + (p.x - minX) * scale,
+      y: pad + (p.y - minY) * scale
+    };
+  });
+  return out;
+}
+var graphCustomPositions = {};
+var graphCurrentPos = {};
 function renderGraph(){
   var wrap=document.getElementById('graph-wrap');
   var svg=document.getElementById('graph-svg');
   if(!wrap || !svg){return;}
+  graphLayout = (layoutSelect && layoutSelect.value) || graphLayout;
+  var requestedLayout = graphLayout;
+  var forceNodeLimit = 180;
+  var forceEdgeLimit = 1200;
+  var forceHeavy = graphNodes.length > forceNodeLimit || graphEdges.length > forceEdgeLimit;
+  var activeLayout = requestedLayout;
+  if(requestedLayout === 'force' && forceHeavy){
+    activeLayout = rankedLayoutEnabled ? 'ranked' : 'circular';
+    setGraphPerfStatus('force auto->' + activeLayout + ' (large graph)', true);
+  }else{
+    setGraphPerfStatus(activeLayout + (forceHeavy ? ' (large graph)' : ''), false);
+  }
+  if(activeLayout === 'force'){ graphCustomPositions = {}; }
   svg.innerHTML='';
-  wrap.querySelectorAll('.graph-node').forEach(function(n){n.remove();});
+  var panzoom = document.getElementById('graph-panzoom');
+  if(panzoom){ panzoom.querySelectorAll('.graph-node').forEach(function(n){n.remove();}); }
   var w=wrap.clientWidth||900, h=wrap.clientHeight||560;
   var cx=w/2, cy=h/2;
   var n=graphNodes.length;
@@ -601,7 +762,10 @@ function renderGraph(){
       if(e.target === graphFocusUserId){focusNeighbors[e.source]=true;}
     });
   }
-  if(rankedLayoutEnabled){
+  if(activeLayout === 'force'){
+    var forcePos = runForceLayout(graphNodes, graphEdges, w, h);
+    graphNodes.forEach(function(node){ pos[node.id] = forcePos[node.id] || {x:cx,y:cy}; });
+  }else if(activeLayout === 'ranked' || rankedLayoutEnabled){
     var sorted=[].concat(graphNodes).sort(function(a,b){return (b.degree||0)-(a.degree||0);});
     var degreeGroups={};
     sorted.forEach(function(node){var d=(node.degree||0); if(!degreeGroups[d])degreeGroups[d]=[]; degreeGroups[d].push(node);});
@@ -627,24 +791,71 @@ function renderGraph(){
       pos[node.id]={x:x,y:y};
     });
   }
-  graphEdges.forEach(function(e){
-    if(!pos[e.source] || !pos[e.target]){return;}
-    var line=document.createElementNS('http://www.w3.org/2000/svg','line');
-    line.setAttribute('x1', pos[e.source].x);
-    line.setAttribute('y1', pos[e.source].y);
-    line.setAttribute('x2', pos[e.target].x);
-    line.setAttribute('y2', pos[e.target].y);
-    var connectedToFocus = graphFocusUserId === null || e.source === graphFocusUserId || e.target === graphFocusUserId;
-    line.setAttribute('stroke', connectedToFocus ? '#4ade80' : '#36516f');
-    line.setAttribute('stroke-opacity', connectedToFocus ? '0.65' : '0.14');
-    line.setAttribute('stroke-width', String(connectedToFocus ? Math.max(1, Math.min(8, 1 + (e.weight||0)/8)) : 1));
-    svg.appendChild(line);
+  if(activeLayout !== 'force'){
+    graphNodes.forEach(function(node){
+      var cp = graphCustomPositions[node.id];
+      if(cp){ pos[node.id] = {x:cp.x, y:cp.y}; }
+    });
+  }
+  graphCurrentPos = pos;
+  var canDrag = (activeLayout === 'circular' || activeLayout === 'ranked');
+  if(svg){ svg.classList.toggle('force-quality', activeLayout === 'force'); }
+  var pz = document.getElementById('graph-panzoom');
+  if(pz){ pz.classList.toggle('force-quality', activeLayout === 'force'); }
+  var toneColor = { friendly: '#4ade80', neutral: '#6b7280', conflict: '#f97316', toxic: '#ef4444' };
+  var defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
+  Object.keys(toneColor).forEach(function(t){
+    var m=document.createElementNS('http://www.w3.org/2000/svg','marker');
+    m.setAttribute('id','arrow-'+t);
+    m.setAttribute('markerWidth','10'); m.setAttribute('markerHeight','10');
+    m.setAttribute('refX','9'); m.setAttribute('refY','5');
+    m.setAttribute('orient','auto');
+    m.setAttribute('markerUnits','userSpaceOnUse');
+    var p=document.createElementNS('http://www.w3.org/2000/svg','polygon');
+    p.setAttribute('points','0 0, 10 5, 0 10');
+    p.setAttribute('fill',toneColor[t]);
+    m.appendChild(p);
+    defs.appendChild(m);
   });
+  svg.appendChild(defs);
+  var linesGroup = document.createElementNS('http://www.w3.org/2000/svg','g');
+  linesGroup.setAttribute('id','graph-lines');
+  svg.appendChild(linesGroup);
+  function drawLines(positions){
+    linesGroup.innerHTML='';
+    graphEdges.forEach(function(e){
+    if(!positions[e.source] || !positions[e.target]){return;}
+    var x1=positions[e.source].x, y1=positions[e.source].y, x2=positions[e.target].x, y2=positions[e.target].y;
+    if(e.arrow_to === 'source'){ var t=x1;x1=x2;x2=t; t=y1;y1=y2;y2=t; }
+    var line=document.createElementNS('http://www.w3.org/2000/svg','line');
+    line.setAttribute('x1',x1); line.setAttribute('y1',y1);
+    line.setAttribute('x2',x2); line.setAttribute('y2',y2);
+    var connectedToFocus = graphFocusUserId === null || e.source === graphFocusUserId || e.target === graphFocusUserId;
+    var tone = String(e.tone || 'neutral').toLowerCase();
+    var strokeColor = toneColor[tone] || toneColor.neutral;
+    line.setAttribute('stroke', strokeColor);
+    line.setAttribute('stroke-opacity', connectedToFocus ? 0.7 : 0.25);
+    var ew = Number(e.weight_period || e.weight || 0);
+    line.setAttribute('stroke-width', String(Math.max(0.7, Math.min(2.2, 0.7 + ew/40))));
+    line.setAttribute('vector-effect','non-scaling-stroke');
+    if(e.arrow_to){ var mid='arrow-'+(toneColor[tone]?tone:'neutral'); line.setAttribute('marker-end','url(#'+mid+')'); }
+    var tip = [e.pair_context_label, e.tone_trend_label, e.connection_cooling ? 'охлаждение' : null].filter(Boolean).join(' · ');
+    if(tip){ var t=document.createElementNS('http://www.w3.org/2000/svg','title'); t.textContent=tip; line.appendChild(t); }
+    linesGroup.appendChild(line);
+  });
+  }
+  drawLines(pos);
+  window.redrawGraphLines = function(pos){
+    var g = document.getElementById('graph-lines');
+    if(g){ drawLines(pos || graphCurrentPos); }
+  };
+  var rankColor = { loyal: '#3b82f6', neutral: '#6b7280', opposition: '#ef4444', unknown: '#6b7280' };
   graphNodes.forEach(function(node){
     var p=pos[node.id];
     if(!p){return;}
     var d=document.createElement('div');
     d.className='graph-node clickable';
+    d.setAttribute('data-node-id', String(node.id));
     var isFocused = graphFocusUserId !== null && node.id === graphFocusUserId;
     var isRelated = graphFocusUserId !== null && (node.id === graphFocusUserId || !!focusNeighbors[node.id]);
     if(isFocused){d.classList.add('is-focused');}
@@ -652,18 +863,27 @@ function renderGraph(){
     d.style.left=p.x+'px';
     d.style.top=p.y+'px';
 
+    var rank = String(node.rank || 'unknown').toLowerCase();
+    var borderColor = rankColor[rank] || rankColor.unknown;
+    var deg = Number(node.degree || 0);
+    var size = Math.max(38, Math.min(54, 40 + Math.min(14, deg * 2)));
+
     var avatarWrap=document.createElement('div');
     avatarWrap.className='graph-avatar-shell';
+    avatarWrap.style.width=size+'px';
+    avatarWrap.style.height=size+'px';
 
     var img=document.createElement('img');
     img.className='graph-avatar';
     img.src=node.avatar;
     img.alt='';
+    if(!isFocused){img.style.borderColor=borderColor;}
 
     var fb=document.createElement('div');
     fb.className='graph-avatar-fallback';
     fb.style.display='none';
     fb.textContent=getInitials(node.label);
+    if(!isFocused){fb.style.borderColor=borderColor;}
 
     img.onerror=function(){
       img.style.display='none';
@@ -683,15 +903,94 @@ function renderGraph(){
 
     d.appendChild(avatarWrap);
     d.appendChild(label);
-    d.addEventListener('click', function(){
+    if(canDrag){ d.classList.add('draggable'); }
+    d.addEventListener('click', function(e){
+      if(d.getAttribute('data-dragged') === '1'){ return; }
       graphFocusUserId = (graphFocusUserId === node.id) ? null : node.id;
       updateGraphFocusUi();
-      renderGraph();
+      if(canDrag){
+        updateGraphFocusOnly();
+      }else{
+        renderGraph();
+      }
     });
-    wrap.appendChild(d);
+    if(canDrag){
+      var dragStartX, dragStartY, nodeStartX, nodeStartY, didDrag = false;
+      d.addEventListener('mousedown', function(e){
+        if(e.button !== 0){ return; }
+        e.preventDefault();
+        e.stopPropagation();
+        didDrag = false;
+        dragStartX = e.clientX; dragStartY = e.clientY;
+        nodeStartX = p.x; nodeStartY = p.y;
+        function onMove(ev){
+          didDrag = true;
+          var scale = graphZoomState.scale || 1;
+          var dx = (ev.clientX - dragStartX) / scale, dy = (ev.clientY - dragStartY) / scale;
+          var nx = nodeStartX + dx, ny = nodeStartY + dy;
+          graphCustomPositions[node.id] = {x:nx, y:ny};
+          graphCurrentPos[node.id] = {x:nx, y:ny};
+          d.style.left = nx + 'px';
+          d.style.top = ny + 'px';
+          if(window.redrawGraphLines){ window.redrawGraphLines(graphCurrentPos); }
+        }
+        function onUp(){
+          window.removeEventListener('mousemove', onMove);
+          window.removeEventListener('mouseup', onUp);
+          if(didDrag){ d.setAttribute('data-dragged','1'); }
+        }
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+      });
+      d.addEventListener('click', function(e){
+        if(d.getAttribute('data-dragged') === '1'){
+          d.removeAttribute('data-dragged');
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+      }, true);
+    }
+    (document.getElementById('graph-panzoom')||wrap).appendChild(d);
   });
 }
 
+var graphZoomState = { scale: 1, tx: 0, ty: 0 };
+function setupGraphZoomPan(){
+  var wrap = document.getElementById('graph-wrap');
+  var panzoom = document.getElementById('graph-panzoom');
+  if(!wrap || !panzoom){return;}
+  function applyTransform(){
+    panzoom.style.transform = 'translate('+graphZoomState.tx+'px,'+graphZoomState.ty+'px) scale('+graphZoomState.scale+')';
+  }
+  window.applyGraphTransform = applyTransform;
+  wrap.addEventListener('wheel', function(e){
+    e.preventDefault();
+    var rect = wrap.getBoundingClientRect();
+    var factor = e.deltaY > 0 ? 0.9 : 1.1;
+    var newScale = Math.max(0.3, Math.min(3, graphZoomState.scale * factor));
+    var x = e.clientX - rect.left, y = e.clientY - rect.top;
+    graphZoomState.tx = x - (x - graphZoomState.tx) * (newScale / graphZoomState.scale);
+    graphZoomState.ty = y - (y - graphZoomState.ty) * (newScale / graphZoomState.scale);
+    graphZoomState.scale = newScale;
+    applyTransform();
+  }, { passive: false });
+  var dragging = false, startX, startY, startTx, startTy;
+  wrap.addEventListener('mousedown', function(e){
+    if(e.target.closest('.graph-node')){return;}
+    dragging = true;
+    startX = e.clientX; startY = e.clientY;
+    startTx = graphZoomState.tx; startTy = graphZoomState.ty;
+  });
+  window.addEventListener('mousemove', function(e){
+    if(!dragging){return;}
+    graphZoomState.tx = startTx + (e.clientX - startX);
+    graphZoomState.ty = startTy + (e.clientY - startY);
+    applyTransform();
+  });
+  window.addEventListener('mouseup', function(){ dragging = false; });
+  applyTransform();
+}
 function getInitials(label){
   var s=(label||'').trim();
   if(!s){return '?';}
@@ -700,6 +999,69 @@ function getInitials(label){
     return parts[0].slice(0,1).toUpperCase();
   }
   return (parts[0].slice(0,1)+parts[1].slice(0,1)).toUpperCase();
+}
+
+function setRealtimeWsStatus(text, isError){
+  var el = document.getElementById('realtime-ws-status');
+  if(!el){return;}
+  el.textContent = 'WS: ' + String(text || 'off');
+  el.style.color = isError ? '#e94560' : '#9bb0cf';
+}
+
+function setGraphPerfStatus(text, isWarn){
+  var el = document.getElementById('graph-perf-status');
+  if(!el){return;}
+  el.textContent = 'Layout: ' + String(text || '');
+  el.style.color = isWarn ? '#f59e0b' : '#9bb0cf';
+}
+
+function scheduleRealtimeReload(){
+  if(realtimeReloadTimer){return;}
+  realtimeReloadTimer = setTimeout(function(){
+    realtimeReloadTimer = null;
+    location.reload();
+  }, 1000);
+}
+
+function stopRealtimeClient(){
+  if(realtimeWsClient && realtimeWsClient.stop){
+    realtimeWsClient.stop();
+  }
+  realtimeWsClient = null;
+}
+
+function startRealtimeClientIfNeeded(){
+  var liveToggle = document.getElementById('sg-live');
+  if(!liveToggle || !liveToggle.checked){
+    stopRealtimeClient();
+    setRealtimeWsStatus('disabled');
+    return;
+  }
+  if(!Array.isArray(realtimeWsChatIds) || !realtimeWsChatIds.length){
+    setRealtimeWsStatus('no chats', true);
+    return;
+  }
+  if(!window.createGraphRealtimeClient){
+    setRealtimeWsStatus('unavailable', true);
+    return;
+  }
+  stopRealtimeClient();
+  realtimeWsClient = window.createGraphRealtimeClient({
+    chatIds: realtimeWsChatIds,
+    pollUrl: '{{ url_for("api_social_graph_version") }}',
+    pollIntervalMs: 4500,
+    throttleMs: 900,
+    onStatus: function(statusText){
+      setRealtimeWsStatus(statusText, String(statusText || '').indexOf('error') >= 0);
+    },
+    onDelta: function(evt){
+      var n = Number((evt || {}).updated_pairs || 0);
+      var src = String((evt || {}).source || 'ws');
+      setRealtimeWsStatus('delta +' + (Number.isFinite(n) ? n : 0) + ' (' + src + ')');
+      scheduleRealtimeReload();
+    }
+  });
+  realtimeWsClient.start();
 }
 
 function activateView(view){
@@ -726,6 +1088,7 @@ if(savedView === 'list' || savedView === 'graph'){
 }else{
   renderGraph();
 }
+setupGraphZoomPan();
 updateGraphFocusUi();
 window.addEventListener('resize', function(){
   var graphPanel = document.getElementById('panel-graph');
@@ -758,10 +1121,19 @@ function applyListControls(){
     trend: 'data-sort-trend',
     freshness: 'data-sort-freshness',
     confidence: 'data-sort-confidence',
-    risk: 'data-sort-risk'
+    risk: 'data-sort-risk',
+    alpha: 'data-sort-alpha'
   };
   var key = keyMap[mode] || keyMap.activity;
-  cards.sort(function(a, b){return _numAttr(b, key) - _numAttr(a, key);});
+  if(mode === 'alpha'){
+    cards.sort(function(a, b){
+      var sa = (a.getAttribute(key) || '').toLowerCase();
+      var sb = (b.getAttribute(key) || '').toLowerCase();
+      return sa.localeCompare(sb);
+    });
+  }else{
+    cards.sort(function(a, b){return _numAttr(b, key) - _numAttr(a, key);});
+  }
   cards.forEach(function(c){root.appendChild(c);});
 
   var visible = 0;
@@ -833,12 +1205,33 @@ btn.disabled=false;
 }).catch(function(){span.textContent='Ошибка сети';span.style.color='#e94560';btn.disabled=false;});
 };
 
+var layoutSelect = document.getElementById('sg-layout');
+var layoutDesc = document.getElementById('layout-desc');
+var layoutHint = document.getElementById('layout-hint-text');
+function updateLayoutDesc(){
+  if(!layoutSelect || !layoutDesc){return;}
+  var opt = layoutSelect.options[layoutSelect.selectedIndex];
+  var desc = opt ? (opt.getAttribute('data-desc') || '') : '';
+  layoutDesc.textContent = desc;
+  if(layoutHint){ layoutHint.textContent = desc || 'Выберите тип раскладки узлов.'; }
+}
+if(layoutSelect){
+  layoutSelect.value = graphLayout;
+  layoutSelect.onchange = function(){
+    graphLayout = this.value;
+    try{ localStorage.setItem('sg_layout', graphLayout); }catch(_e){}
+    updateLayoutDesc();
+    renderGraph();
+  };
+  updateLayoutDesc();
+}
 document.getElementById('btn-save-graph-settings').onclick=function(){
 var btn=this, out=document.getElementById('graph-settings-result');
 btn.disabled=true; out.textContent='сохраняю…'; out.style.color='#9bb0cf';
+var layoutSel = document.getElementById('sg-layout');
 var payload={
   social_graph_advanced_insights_enabled: document.getElementById('sg-advanced').checked,
-  social_graph_ranked_layout_enabled: document.getElementById('sg-ranked').checked,
+  social_graph_ranked_layout_enabled: (layoutSel && layoutSel.value === 'ranked'),
   social_graph_realtime_enabled: document.getElementById('sg-live').checked,
   social_graph_conflict_forecast_enabled: document.getElementById('sg-forecast').checked,
   social_graph_roles_enabled: document.getElementById('sg-roles').checked,
@@ -846,7 +1239,7 @@ var payload={
   social_graph_realtime_interval_sec: Number(document.getElementById('sg-live-interval').value||90),
   social_graph_realtime_min_new_messages: Number(document.getElementById('sg-live-min-new').value||1)
 };
-fetch('{{ url_for("api_settings") }}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+fetch('/api/v2/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
 .then(function(r){return r.json();})
 .then(function(d){
   if(d.ok){out.textContent='сохранено'; out.style.color='#4ade80'; setTimeout(function(){location.reload();}, 500);}
@@ -860,6 +1253,21 @@ if(_btnOpen){_btnOpen.onclick=toggleSidePanel;}
 if(_btnClose){_btnClose.onclick=closeSidePanel;}
 document.addEventListener('keydown', function(e){
   if(e.key === 'Escape'){closeSidePanel();}
+});
+var _sgLiveToggle = document.getElementById('sg-live');
+if(_sgLiveToggle){
+  _sgLiveToggle.addEventListener('change', function(){
+    if(_sgLiveToggle.checked){
+      startRealtimeClientIfNeeded();
+    }else{
+      stopRealtimeClient();
+      setRealtimeWsStatus('disabled');
+    }
+  });
+}
+startRealtimeClientIfNeeded();
+window.addEventListener('beforeunload', function(){
+  stopRealtimeClient();
 });
 {% if recommender_enabled %}
 document.getElementById('btn-topic-generate').onclick=function(){

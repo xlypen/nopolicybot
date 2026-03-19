@@ -1,0 +1,614 @@
+{% extends "admin/base.html" %}
+{% block title %}Профиль пользователя {{ u.get('display_name', user_id) }}{% endblock %}
+{% block head_extra %}
+<style>
+.user-grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 1rem; }
+.main-card-layout { display: flex; gap: 1.5rem; align-items: flex-start; flex-wrap: wrap; }
+.main-card-image { flex: 1; min-width: 220px; max-width: 320px; position: relative; }
+.main-card-image img { width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--border-card); object-fit: cover; aspect-ratio: 1; display: block; }
+.main-card-image .img-placeholder { width: 100%; aspect-ratio: 1; border-radius: 12px; border: 1px solid var(--border-card); background: var(--bg-tertiary); display: flex; align-items: center; justify-content: center; font-size: 2.5rem; font-weight: 600; color: var(--text-tertiary); }
+.img-toggle { display: flex; gap: 0; border-radius: 8px; overflow: hidden; border: 1px solid var(--border-card); margin-bottom: 6px; }
+.img-toggle button { flex: 1; padding: 4px 0; font-size: 0.75rem; border: none; cursor: pointer; background: var(--bg-tertiary); color: var(--text-secondary); transition: background 0.15s, color 0.15s; }
+.img-toggle button.active { background: var(--accent-blue, #3b82f6); color: #fff; font-weight: 600; }
+.main-card-actions { flex: 1; min-width: 200px; max-width: 320px; display: flex; flex-direction: column; gap: 6px; }
+.main-card-actions .btn, .main-card-actions a.btn { width: auto; max-width: 100%; text-align: left; }
+.main-card-actions .main-card-select { padding: 5px 10px; font-size: 0.82rem; max-width: 100%; }
+.main-card-actions .row { flex-direction: column; }
+.user-compact-list { margin: 0; padding-left: 18px; color: var(--text-secondary); }
+.user-compact-list li { margin-bottom: 0.45rem; }
+.meta-line { color: var(--text-secondary); font-size: 0.86rem; }
+.portrait-box { white-space: pre-wrap; font-size: 0.9rem; line-height: 1.55; color: var(--text-primary); }
+.user-graph-root { min-height: 460px; border: 1px solid var(--border-card); border-radius: 10px; background: var(--bg-secondary); padding: 10px; }
+.muted-box { background: var(--bg-secondary); border: 1px solid var(--border-card); border-radius: 8px; padding: 8px; font-size: 0.86rem; }
+</style>
+{% endblock %}
+{% block body %}
+<!-- СЕЛЕКТОР ЧАТА — ПЕРВЫМ, ВСЕГДА ВИДЕН -->
+<div id="profileChatSelectorBar" style="background:var(--bg-secondary);padding:12px 1.5rem;margin-bottom:1.5rem;border-radius:12px;border:1px solid var(--border-card);">
+  <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;max-width:1400px;margin:0 auto;">
+    <span style="font-weight:600;font-size:0.95rem;color:var(--text-secondary);">Чат для просмотра:</span>
+    <select id="profileChatSel" onchange="window.location.href='{{ url_for('admin_user_profile', user_id=user_id) }}?chat='+encodeURIComponent(this.value)" style="min-width:220px;padding:8px 12px;font-size:0.95rem;font-weight:600;border:1px solid var(--border-input);border-radius:8px;background:var(--bg-tertiary);color:var(--text-primary);cursor:pointer;">
+      <option value="all" {% if chat_id == 'all' or not chat_id %}selected{% endif %}>Все чаты</option>
+      {% for c in chats %}
+      <option value="{{ c.chat_id }}" {% if chat_id|string == (c.chat_id|string) %}selected{% endif %}>{{ c.title or c.chat_id }}</option>
+      {% endfor %}
+    </select>
+    <span style="font-size:0.85rem;color:var(--text-tertiary);">Данные профиля зависят от выбранного чата</span>
+  </div>
+</div>
+
+<div class="hero">
+  <div class="header" style="margin-bottom: 6px;">
+    <h1>Профиль пользователя</h1>
+    <div class="actions">
+      <a class="btn btn-secondary" href="{{ url_for('admin_modern') }}{% if chat_id %}?chat={{ chat_id }}{% endif %}">← Dashboard</a>
+      <a class="btn btn-secondary" href="{{ url_for('user_detail', user_id=user_id, chat=chat_id) }}">Legacy detail</a>
+      <a class="btn btn-secondary" href="{{ url_for('logout') }}">Выйти</a>
+    </div>
+  </div>
+  <div class="row" style="align-items:center;gap:1rem;flex-wrap:wrap;">
+    <span class="meta-line">ID: {{ user_id }} · Ранг: {{ rank_labels.get(u.get('rank'), u.get('rank')) }} · Тон: {{ effective_tone }}</span>
+  </div>
+</div>
+
+<div class="cards">
+  <div class="card"><h3>Сообщений</h3><span class="val">{{ u.get('stats', {}).get('total_messages', 0) }}</span></div>
+  <div class="card"><h3>Полит.</h3><span class="val">{{ u.get('stats', {}).get('political_messages', 0) }}</span></div>
+  <div class="card"><h3>Замечаний</h3><span class="val">{{ u.get('stats', {}).get('warnings_received', 0) }}</span></div>
+  <div class="card"><h3>Sentiment +/-/0</h3><span class="val" style="font-size:1.2rem;">{{ u.get('stats', {}).get('positive_sentiment', 0) }} / {{ u.get('stats', {}).get('negative_sentiment', 0) }} / {{ u.get('stats', {}).get('neutral_sentiment', 0) }}</span></div>
+</div>
+
+<div class="user-grid-2">
+  <div class="card">
+    <div class="title">Основное</div>
+    <div class="main-card-layout">
+      <div class="main-card-image">
+        <div class="img-toggle">
+          <button type="button" id="imgToggleAvatar" class="active">Аватар</button>
+          <button type="button" id="imgToggleVision">Образ</button>
+        </div>
+        <img id="imgAvatar" src="{{ url_for('avatar', user_id=user_id) }}" alt="{{ u.get('display_name', user_id) }}" title="Аватар из Telegram" onerror="this.style.display='none';document.getElementById('imgPlaceholder').style.display='flex';">
+        <div class="img-placeholder" id="imgPlaceholder" style="display:none;">{{ ((u.get('display_name', user_id) or user_id)|string)[:2]|upper }}</div>
+        {% if portrait_exists %}
+        <img id="imgVision" src="{{ url_for('portrait_image', user_id=user_id) }}?v={{ portrait_image_mtime }}" alt="Визуальный образ" title="Визуальная метафора личности" style="display:none;">
+        {% else %}
+        <img id="imgVision" src="" alt="Визуальный образ" title="Нет сгенерированного образа" style="display:none;">
+        {% endif %}
+      </div>
+      <div class="main-card-actions">
+        <strong>{{ u.get('display_name', user_id) }}</strong>
+        <button class="btn btn-secondary btn-sm" id="buildPortraitBtn">Собрать портрет</button>
+        <a class="btn btn-secondary btn-sm" href="{{ me_url }}" target="_blank" rel="noopener">Ссылка /me</a>
+        <select id="portraitStyleSel" class="main-card-select" title="Стиль визуальной метафоры">
+          <option value="concept_art">Концепт-арт</option>
+          <option value="symbolic">Символика</option>
+          <option value="noir">Нуар</option>
+          <option value="fantasy">Фэнтези</option>
+          <option value="minimal">Минимализм</option>
+        </select>
+        <select id="portraitProviderSel" class="main-card-select" title="Провайдер генерации">
+          <option value="">Авто</option>
+          <option value="huggingface">HuggingFace</option>
+          <option value="gemini">Gemini</option>
+          <option value="replicate">Replicate</option>
+          <option value="openrouter">OpenRouter</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" id="generateImageBtn">{{ 'Обновить образ' if portrait_exists else 'Сгенерировать образ' }}</button>
+        {% if portrait_exists %}
+        <a class="btn btn-secondary btn-sm" href="{{ url_for('portrait_image', user_id=user_id) }}" target="_blank" rel="noopener">Открыть image-портрет</a>
+        {% endif %}
+        <div id="profileFeedback" class="meta-line">Готово к действиям.</div>
+        <div id="imageGenFeedback" class="meta-line"></div>
+        <div class="meta-line" style="font-style:italic;font-size:0.72rem;margin-top:2px;">Визуальная метафора личности на основе анализа поведения</div>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="title">Связи пользователя</div>
+    {% if my_connections %}
+    <ul class="user-compact-list">
+      {% for r in my_connections %}
+      <li>
+        <strong>{{ r.get('peer_name', '—') }}</strong>
+        <span class="meta-line">· 7d: {{ r.get('message_count_7d', 0) }} · 30d: {{ r.get('message_count_30d', 0) }} · tone: {{ r.get('tone', 'neutral') }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="meta-line">Нет данных по связям для выбранного фильтра.</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="title">Психологический портрет</div>
+  <div class="portrait-box" id="portraitBox"></div>
+</div>
+
+<div class="card" id="personalityCard">
+  <div class="title">Структурированный профиль личности (OCEAN)</div>
+  <div class="row" style="margin-bottom:8px;flex-wrap:wrap;gap:8px;align-items:center;">
+    <button class="btn btn-secondary" id="buildPersonalityBtn">Собрать структурированный портрет</button>
+    <span id="personalityStatus" class="meta-line"></span>
+  </div>
+  <div id="personalityContent">
+    <div id="personalityLoading" class="meta-line">Загрузка…</div>
+    <div id="personalityCharts" style="display:none;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem;">
+        <div><canvas id="oceanRadarChart" width="280" height="240"></canvas></div>
+        <div id="darkTriadBars"></div>
+      </div>
+      <div id="driftTimeline" class="muted-box" style="margin-top:0.5rem;"></div>
+      <div id="driftChartWrap" style="display:none;margin-top:0.5rem;"><canvas id="driftHistoryChart" height="180"></canvas></div>
+      <div style="margin-top:0.5rem;">
+        <span id="reliabilityBadge" class="meta-line"></span>
+        <a href="#" id="compareLink" class="btn btn-sm btn-secondary" style="margin-left:0.5rem;">Сравнить с другим</a>
+      </div>
+    </div>
+    <div id="personalityEmpty" style="display:none;" class="meta-line">Нет данных. Нажмите «Собрать структурированный портрет».</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="title">Личный граф (ego)</div>
+  <div class="row">
+    <label for="userGraphModeSel">Режим:</label>
+    <select id="userGraphModeSel">
+      <option value="force">Force</option>
+      <option value="radial">Radial</option>
+      <option value="community">Community</option>
+      <option value="matrix">Matrix</option>
+      <option value="webgl">WebGL</option>
+      <option value="ego">Ego</option>
+    </select>
+    <button class="btn btn-secondary" id="loadUserGraphBtn">Обновить граф</button>
+    <span id="userGraphStatus" class="meta-line">Загрузка…</span>
+  </div>
+  <div id="userGraphRoot" class="user-graph-root"></div>
+</div>
+
+<div class="user-grid-2">
+  <div class="card">
+    <div class="title">Метрики пользователя</div>
+    <div id="userMetricsBox" class="muted-box">Загрузка метрик…</div>
+  </div>
+  <div class="card">
+    <div class="title">Последние решения по пользователю</div>
+    <div id="userDecisionsBox" class="muted-box">Загрузка решений…</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/marked@15.0.0/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="{{ url_for('static', filename='js/graph_webgl_viz.js') }}"></script>
+<script src="{{ url_for('static', filename='js/graph_render_pipeline.js') }}"></script>
+<script type="module" src="{{ url_for('static', filename='js/graph_visualizations.jsx') }}"></script>
+<script>
+(function () {
+  const USER_ID = {{ user_id|tojson }};
+  const CHAT_ID = {{ chat_id|tojson }};
+  const PORTRAIT_EXISTS = {{ portrait_exists|tojson }};
+
+  (function initImageToggle() {
+    var btnAvatar = document.getElementById("imgToggleAvatar");
+    var btnVision = document.getElementById("imgToggleVision");
+    var imgAvatar = document.getElementById("imgAvatar");
+    var imgVision = document.getElementById("imgVision");
+    var placeholder = document.getElementById("imgPlaceholder");
+    if (!btnAvatar || !btnVision) return;
+
+    function showAvatar() {
+      btnAvatar.classList.add("active"); btnVision.classList.remove("active");
+      if (imgAvatar) imgAvatar.style.display = "";
+      if (imgVision) imgVision.style.display = "none";
+      if (placeholder && imgAvatar && imgAvatar.style.display === "none") placeholder.style.display = "flex";
+      else if (placeholder) placeholder.style.display = "none";
+    }
+    function showVision() {
+      btnVision.classList.add("active"); btnAvatar.classList.remove("active");
+      if (imgAvatar) imgAvatar.style.display = "none";
+      if (placeholder) placeholder.style.display = "none";
+      if (imgVision) {
+        if (!imgVision.src || imgVision.src === window.location.href) {
+          imgVision.style.display = "none";
+          if (placeholder) { placeholder.textContent = "Нет образа"; placeholder.style.display = "flex"; }
+        } else {
+          imgVision.style.display = "";
+        }
+      }
+    }
+    btnAvatar.addEventListener("click", showAvatar);
+    btnVision.addEventListener("click", showVision);
+    if (PORTRAIT_EXISTS) showVision();
+  })();
+
+  const _rawPortrait = {{ u.get('portrait', 'Портрет пока не сформирован.')|tojson }};
+  const portraitBox = document.getElementById('portraitBox');
+  if (portraitBox && typeof marked !== 'undefined') {
+    portraitBox.innerHTML = marked.parse(String(_rawPortrait));
+  } else if (portraitBox) {
+    portraitBox.textContent = _rawPortrait;
+  }
+  let graphData = {nodes: [], edges: [], meta: {}};
+
+  function esc(text) {
+    return String(text || "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  }
+
+  function setProfileFeedback(text, color) {
+    const el = document.getElementById("profileFeedback");
+    if (!el) return;
+    el.textContent = String(text || "");
+    el.style.color = color || "var(--text-secondary)";
+  }
+
+  function setGraphStatus(text, isError) {
+    const el = document.getElementById("userGraphStatus");
+    if (!el) return;
+    el.textContent = String(text || "");
+    el.style.color = isError ? "#ef4444" : "var(--text-secondary)";
+  }
+
+  function renderGraph() {
+    const root = document.getElementById("userGraphRoot");
+    const modeSel = document.getElementById("userGraphModeSel");
+    const mode = String((modeSel && modeSel.value) || "ego");
+    if (!root) return;
+    if (window.GraphRenderPipeline && typeof window.GraphRenderPipeline.render === "function") {
+      const ok = window.GraphRenderPipeline.render({
+        root: root,
+        mode: mode,
+        data: graphData,
+        defer: true,
+        largeGraphThresholds: { nodes: 260, edges: 1100 },
+      });
+      if (!ok) {
+        root.textContent = "Graph modules loading...";
+      }
+      return;
+    }
+    root.textContent = "Graph module unavailable.";
+  }
+
+  async function loadUserGraph() {
+    setGraphStatus("Загрузка графа…", false);
+    try {
+      const resp = await fetch("/api/v2/graph/" + encodeURIComponent(String(CHAT_ID)) + "?period=7d&ego_user=" + encodeURIComponent(String(USER_ID)) + "&limit=220", { cache: "no-store" });
+      const body = await resp.json();
+      if (!resp.ok || !body || !body.ok) {
+        throw new Error((body && body.error) || ("HTTP " + resp.status));
+      }
+      graphData = body.graph || {nodes: [], edges: [], meta: {}};
+      renderGraph();
+      setGraphStatus("Узлов: " + ((graphData.nodes || []).length) + " · Связей: " + ((graphData.edges || []).length), false);
+    } catch (e) {
+      setGraphStatus("Ошибка загрузки графа", true);
+    }
+  }
+
+  async function loadUserMetrics() {
+    const box = document.getElementById("userMetricsBox");
+    if (!box) return;
+    box.textContent = "Загрузка метрик…";
+    try {
+      const resp = await fetch("/api/v2/metrics/user/" + encodeURIComponent(String(USER_ID)) + "?chat_id=" + encodeURIComponent(String(CHAT_ID)) + "&days=30", { cache: "no-store" });
+      const body = await resp.json();
+      if (!resp.ok || !body || !body.ok) {
+        throw new Error((body && body.error) || ("HTTP " + resp.status));
+      }
+      const m = body.metrics || {};
+      box.innerHTML = [
+        "<div>engagement: <strong>" + Number(m.engagement_score || 0).toFixed(3) + "</strong></div>",
+        "<div>influence: <strong>" + Number(m.influence_score || 0).toFixed(3) + "</strong></div>",
+        "<div>retention: <strong>" + Number(m.retention_score || 0).toFixed(3) + "</strong></div>",
+        "<div>viral: <strong>" + Number(m.viral_coefficient || 0).toFixed(3) + "</strong></div>"
+      ].join("");
+    } catch (e) {
+      box.innerHTML = "<span style='color:#ef4444;'>" + esc(e.message || e) + "</span>";
+    }
+  }
+
+  async function loadUserDecisions() {
+    const box = document.getElementById("userDecisionsBox");
+    if (!box) return;
+    box.textContent = "Загрузка решений…";
+    try {
+      const resp = await fetch("/api/decisions/recent?chat_id=" + encodeURIComponent(String(CHAT_ID)) + "&user_id=" + encodeURIComponent(String(USER_ID)) + "&limit=12", { cache: "no-store" });
+      const body = await resp.json();
+      if (!resp.ok || !body || !body.ok) {
+        throw new Error((body && body.error) || ("HTTP " + resp.status));
+      }
+      const rows = Array.isArray(body.decisions) ? body.decisions : [];
+      if (!rows.length) {
+        box.textContent = "Решений пока нет.";
+        return;
+      }
+      box.innerHTML = "<ul class='user-compact-list'>" + rows.slice(0, 10).map(function (row) {
+        return "<li><strong>" + esc(row.strategy || "strategy") + "</strong> · outcome: " + esc(row.outcome || "n/a") + "</li>";
+      }).join("") + "</ul>";
+    } catch (e) {
+      box.innerHTML = "<span style='color:#ef4444;'>" + esc(e.message || e) + "</span>";
+    }
+  }
+
+  async function buildPortrait() {
+    const btn = document.getElementById("buildPortraitBtn");
+    if (btn) btn.disabled = true;
+    setProfileFeedback("Собираю портрет…", "#f59e0b");
+    try {
+      const resp = await fetch("/api/v2/portrait/portrait-from-storage", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ user_id: Number(USER_ID), chat_id: String(CHAT_ID) }),
+      });
+      const raw = await resp.text();
+      let body = null;
+      try { body = raw ? JSON.parse(raw) : null; } catch (_) { body = null; }
+      if (!resp.ok || !body || !body.ok) {
+        let msg = (body && body.error) || ("HTTP " + resp.status);
+        if (!body && /<html|<!doctype/i.test(raw)) {
+          msg = "Сервер вернул страницу ошибки (таймаут или API не запущен). Проверьте сервис telegram-bot-api (порт 8001).";
+        }
+        throw new Error(msg);
+      }
+      setProfileFeedback("Портрет обновлён. Перезагрузите страницу для актуального текста.", "#10b981");
+    } catch (e) {
+      setProfileFeedback("Ошибка портрета: " + (e.message || e), "#ef4444");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  document.getElementById("loadUserGraphBtn").addEventListener("click", function () {
+    loadUserGraph().catch(function () {});
+  });
+  document.getElementById("userGraphModeSel").addEventListener("change", function () {
+    renderGraph();
+  });
+  document.getElementById("buildPortraitBtn").addEventListener("click", function () {
+    buildPortrait().catch(function () {});
+  });
+
+  document.getElementById("generateImageBtn").addEventListener("click", function () {
+    var btn = this;
+    var out = document.getElementById("imageGenFeedback");
+    var providerSel = document.getElementById("portraitProviderSel");
+    var styleSel = document.getElementById("portraitStyleSel");
+    var provider = (providerSel && providerSel.value) || "";
+    var style = (styleSel && styleSel.value) || "concept_art";
+    var chatParam = CHAT_ID === "0" ? "all" : String(CHAT_ID);
+    btn.disabled = true;
+    if (out) out.textContent = "Генерирую визуальную метафору… (30–60 сек)";
+    var payload = { chat_id: chatParam, style_variant: style };
+    if (provider) payload.provider = provider;
+    apiFetch("/api/v2/personality/user/" + encodeURIComponent(String(USER_ID)) + "/portrait/generate", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }).then(function (data) {
+      var costLabel = data.cost === "free" ? " бесплатно" : " платно";
+      var info = data.model_used ? " (" + data.model_used + ", " + (data.generation_time_sec || 0) + "s," + costLabel + ")" : "";
+      if (out) out.innerHTML = "<span style='color:var(--accent-emerald);'>Готово!" + esc(info) + "</span>";
+      var imgVision = document.getElementById("imgVision");
+      if (imgVision) {
+        imgVision.src = "/portrait-image/" + encodeURIComponent(String(USER_ID)) + "?v=" + Date.now();
+        imgVision.style.display = "";
+      }
+      var btnVision = document.getElementById("imgToggleVision");
+      if (btnVision) btnVision.click();
+      btn.disabled = false;
+    }).catch(function (e) {
+      if (out) out.innerHTML = "<span style='color:#ef4444;'>" + esc(e.message || "Ошибка") + "</span>";
+      btn.disabled = false;
+    });
+  });
+
+  let oceanChart = null;
+
+  function apiFetch(url, opts) {
+    opts = opts || {};
+    opts.headers = opts.headers || {};
+    opts.headers["Content-Type"] = opts.headers["Content-Type"] || "application/json";
+    opts.credentials = opts.credentials || "same-origin";
+    return fetch(url, opts).then(function (r) {
+      if (!r.ok) {
+        var err = new Error("HTTP " + r.status);
+        err.status = r.status;
+        throw err;
+      }
+      return r.json();
+    });
+  }
+
+  async function loadPersonality() {
+    const loading = document.getElementById("personalityLoading");
+    const charts = document.getElementById("personalityCharts");
+    const empty = document.getElementById("personalityEmpty");
+    if (loading) loading.style.display = "block";
+    if (charts) charts.style.display = "none";
+    if (empty) empty.style.display = "none";
+    var chatParam = (String(CHAT_ID).toLowerCase() === "all") ? "0" : String(CHAT_ID);
+    try {
+      const body = await apiFetch("/api/v2/personality/user/" + encodeURIComponent(String(USER_ID)) + "?chat_id=" + encodeURIComponent(chatParam));
+      if (!body.ok || !body.profile) {
+        if (loading) loading.style.display = "none";
+        if (empty) { empty.style.display = "block"; empty.textContent = "Нет данных. Нажмите «Собрать структурированный портрет»."; }
+        return;
+      }
+      const profile = body.profile;
+      if (loading) loading.style.display = "none";
+      if (charts) charts.style.display = "block";
+
+      const ocean = profile.ocean || {};
+      const labels = ["Открытость", "Добросовестность", "Экстраверсия", "Доброжелательность", "Нейротизм"];
+      const keys = ["openness", "conscientiousness", "extraversion", "agreeableness", "neuroticism"];
+      const values = keys.map(function (k) { return Number(ocean[k] || 0.5) * 100; });
+
+      const ctx = document.getElementById("oceanRadarChart");
+      if (ctx && window.Chart) {
+        if (oceanChart) oceanChart.destroy();
+        oceanChart = new Chart(ctx.getContext("2d"), {
+          type: "radar",
+          data: {
+            labels: labels,
+            datasets: [{ label: "OCEAN", data: values, fill: true, backgroundColor: "rgba(59,130,246,0.2)", borderColor: "rgb(59,130,246)", pointBackgroundColor: "rgb(59,130,246)" }]
+          },
+          options: { scales: { r: { min: 0, max: 100 } } }
+        });
+      }
+
+      const dt = profile.dark_triad || {};
+      const dtHtml = ["narcissism", "machiavellianism", "psychopathy"].map(function (k) {
+        const t = dt[k] || {};
+        const score = Number(t.score || 0) * 100;
+        const label = k === "narcissism" ? "Нарциссизм" : k === "machiavellianism" ? "Макиавеллизм" : "Психопатия";
+        return "<div style='margin-bottom:6px;'><div class='meta-line' style='margin-bottom:2px;'>" + esc(label) + " (" + (t.label || "low") + ")</div><div style='height:8px;background:var(--bg-input);border-radius:4px;overflow:hidden;'><div style='height:100%;width:" + Math.min(100, score) + "%;background:#8b5cf6;'></div></div></div>";
+      }).join("");
+      const dtEl = document.getElementById("darkTriadBars");
+      if (dtEl) dtEl.innerHTML = "<div class='meta-line' style='margin-bottom:6px;'>Dark Triad</div>" + dtHtml;
+
+      const compareLink = document.getElementById("compareLink");
+      if (compareLink) compareLink.href = "/admin/personality/compare?user_id_a=" + encodeURIComponent(String(USER_ID)) + "&chat_id=" + encodeURIComponent(String(CHAT_ID));
+
+      loadDrift();
+      loadVerify(profile);
+    } catch (e) {
+      if (loading) loading.style.display = "none";
+      if (empty) {
+        empty.style.display = "block";
+        var msg = e.message || String(e);
+        if (e.status === 404) {
+          msg = "Портрет не найден. Нажмите «Собрать структурированный портрет».";
+        }
+        empty.innerHTML = "<span style='color:" + (e.status === 404 ? "var(--text-secondary)" : "#ef4444") + "'>" + esc(msg) + "</span>";
+      }
+    }
+  }
+
+  async function loadVerify(profile) {
+    const el = document.getElementById("reliabilityBadge");
+    if (!el) return;
+    try {
+      var chatParam = (String(CHAT_ID).toLowerCase() === "all") ? "0" : String(CHAT_ID);
+      const body = await apiFetch("/api/v2/personality/user/" + encodeURIComponent(String(USER_ID)) + "/verify?chat_id=" + encodeURIComponent(chatParam));
+      if (!body.ok || !body.verification) return;
+      const v = body.verification;
+      const badge = v.reliability_badge === "high" ? "🟢" : v.reliability_badge === "medium" ? "🟡" : "⚪";
+      el.textContent = badge + " Надёжность: " + v.reliability_badge + " (correlation " + Number(v.correlation_score || 0).toFixed(2) + ")";
+    } catch (e) {
+      el.textContent = "";
+    }
+  }
+
+  let driftChart = null;
+
+  async function loadDrift() {
+    const el = document.getElementById("driftTimeline");
+    if (!el) return;
+    try {
+      var chatParam = (String(CHAT_ID).toLowerCase() === "all") ? "0" : String(CHAT_ID);
+      const body = await apiFetch("/api/v2/personality/user/" + encodeURIComponent(String(USER_ID)) + "/drift?chat_id=" + encodeURIComponent(chatParam));
+      if (!body.ok || !body.drift) {
+        el.textContent = "Дрейф: недостаточно истории (нужно ≥2 профиля)";
+        return;
+      }
+      const d = body.drift;
+      el.innerHTML = "<strong>Дрейф</strong> " + (d.period || "") + " · score: " + Number(d.drift_score || 0).toFixed(2) + (d.alert ? " <span style='color:#f59e0b;'>⚠</span>" : "") + "<br><span class='meta-line'>" + esc(d.alert_reason || "—") + "</span>";
+    } catch (e) {
+      el.textContent = "Дрейф: " + (e.message || e);
+    }
+    loadDriftHistory();
+  }
+
+  async function loadDriftHistory() {
+    var chatParam = (String(CHAT_ID).toLowerCase() === "all") ? "0" : String(CHAT_ID);
+    var wrap = document.getElementById("driftChartWrap");
+    try {
+      var body = await apiFetch("/api/v2/personality/user/" + encodeURIComponent(String(USER_ID)) + "/drift-history?chat_id=" + encodeURIComponent(chatParam));
+      if (!body.ok || !Array.isArray(body.points) || body.points.length < 3) return;
+      var pts = body.points;
+      var labels = pts.map(function (p) { return p.date || ""; });
+      var scores = pts.map(function (p) { return Number(p.drift_score || 0); });
+      var alertIdxs = [];
+      pts.forEach(function (p, i) { if (p.alert) alertIdxs.push(i); });
+
+      if (wrap) wrap.style.display = "block";
+      var ctx = document.getElementById("driftHistoryChart");
+      if (!ctx || !window.Chart) return;
+      if (driftChart) driftChart.destroy();
+
+      var pointColors = scores.map(function (s, i) {
+        return alertIdxs.indexOf(i) >= 0 ? "#ef4444" : "rgb(59,130,246)";
+      });
+
+      driftChart = new Chart(ctx.getContext("2d"), {
+        type: "line",
+        data: {
+          labels: labels,
+          datasets: [{
+            label: "Drift score",
+            data: scores,
+            fill: true,
+            backgroundColor: "rgba(59,130,246,0.1)",
+            borderColor: "rgb(59,130,246)",
+            pointBackgroundColor: pointColors,
+            pointRadius: 5,
+            tension: 0.3
+          }]
+        },
+        options: {
+          scales: {
+            y: { min: 0, max: Math.max(0.5, Math.ceil(Math.max.apply(null, scores) * 10) / 10 + 0.1), title: { display: true, text: "Score" } },
+            x: { title: { display: true, text: "Дата" } }
+          },
+          plugins: {
+            annotation: undefined,
+            tooltip: {
+              callbacks: {
+                afterLabel: function (ctx) {
+                  var p = pts[ctx.dataIndex];
+                  if (p && p.alert_reason) return p.alert_reason;
+                  return "";
+                }
+              }
+            }
+          }
+        }
+      });
+    } catch (e) {
+      if (wrap) wrap.style.display = "none";
+    }
+  }
+
+  async function buildPersonality() {
+    var chatParam = (String(CHAT_ID).toLowerCase() === "all") ? "0" : String(CHAT_ID);
+    const btn = document.getElementById("buildPersonalityBtn");
+    const status = document.getElementById("personalityStatus");
+    if (btn) btn.disabled = true;
+    if (status) status.textContent = "Сборка…";
+    try {
+      const body = await apiFetch("/api/v2/personality/build", {
+        method: "POST",
+        body: JSON.stringify({ user_id: Number(USER_ID), chat_id: chatParam === "0" ? "all" : String(CHAT_ID) })
+      });
+      if (!body.ok) throw new Error(body.error || "Ошибка");
+      if (status) status.textContent = "Готово. Обновляю…";
+      await loadPersonality();
+      if (status) status.textContent = "";
+    } catch (e) {
+      if (status) status.textContent = "Ошибка: " + (e.message || e);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  document.getElementById("buildPersonalityBtn").addEventListener("click", function () { buildPersonality().catch(function () {}); });
+  loadPersonality().catch(function () {});
+
+  loadUserGraph().catch(function () {});
+  loadUserMetrics().catch(function () {});
+  loadUserDecisions().catch(function () {});
+})();
+</script>
+{% endblock %}

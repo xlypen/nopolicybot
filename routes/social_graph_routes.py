@@ -4,12 +4,13 @@ from datetime import date
 import bot_settings
 import social_graph as social_graph_store
 import user_stats
-from utils.labels import TONE_RU, TOPIC_RU, ROLE_RU, ALERT_RU, ALERT_PRIORITY
+from utils.labels import TONE_RU, TOPIC_RU, ROLE_RU, ALERT_RU, ALERT_PRIORITY, PAIR_CONTEXT_RU, TONE_TREND_RU
 from utils.text import summary_preview as _summary_preview_fn
 
 
 def register_social_graph_routes(app, login_required):
     tone_ru = TONE_RU
+    tone_trend_ru = TONE_TREND_RU
     topic_ru = TOPIC_RU
     role_ru = ROLE_RU
     alert_ru = ALERT_RU
@@ -77,14 +78,39 @@ def register_social_graph_routes(app, login_required):
                 return "средняя"
             return "низкая"
 
+        all_user_ids = set()
+        for c in connections:
+            ua, ub = c.get("user_a"), c.get("user_b")
+            if ua:
+                all_user_ids.add(int(ua))
+            if ub:
+                all_user_ids.add(int(ub))
+        rank_by_user: dict[int, str] = {}
+        for uid in all_user_ids:
+            u_data = user_stats.get_user(uid, names.get(str(uid), str(uid)))
+            rank_by_user[uid] = str(u_data.get("rank", "unknown") or "unknown")
+
         filtered = []
         for conn in connections:
             conn["name_a"] = names.get(str(conn.get("user_a", "")), str(conn.get("user_a", "")))
             conn["name_b"] = names.get(str(conn.get("user_b", "")), str(conn.get("user_b", "")))
-            preview, has_more = _summary_preview(conn.get("summary", ""))
+            ra = rank_by_user.get(int(conn.get("user_a", 0) or 0), "unknown")
+            rb = rank_by_user.get(int(conn.get("user_b", 0) or 0), "unknown")
+            pair_key = "-".join(sorted([ra, rb]))
+            conn["pair_context"] = pair_key
+            conn["pair_context_label"] = PAIR_CONTEXT_RU.get(pair_key, pair_key)
+            raw_summary = (conn.get("summary", "") or "").strip()
+            # Превью и флаг «есть ещё» — для компактного списка
+            preview, has_more = _summary_preview(raw_summary)
             conn["summary_preview"] = preview
             conn["summary_has_more"] = has_more
+            # Последний полный блок саммари (последняя ненулевая строка без обрезки),
+            # чтобы в раскрытии показывать текст целиком, а не обрезанный.
+            lines = [ln.strip() for ln in raw_summary.splitlines() if ln.strip()]
+            conn["summary_latest_full"] = lines[-1] if lines else ""
             conn["tone_label"] = tone_ru.get(str(conn.get("tone", "neutral")), str(conn.get("tone", "neutral")))
+            conn["tone_trend_label"] = tone_trend_ru.get(str(conn.get("tone_trend", "stable")), "")
+            conn["connection_cooling"] = bool(conn.get("connection_cooling"))
             conn["topics_label"] = [topic_ru.get(str(t), str(t)) for t in (conn.get("topics") or [])]
             conn["weight_in_period"] = _period_weight(conn)
             conn["history_preview"] = list(reversed((conn.get("summary_by_date") or [])[-8:]))
@@ -103,6 +129,7 @@ def register_social_graph_routes(app, login_required):
             conn["search_blob"] = (
                 f"{conn['name_a']} {conn['name_b']} {conn.get('user_a', '')} {conn.get('user_b', '')}"
             ).lower()
+            conn["sort_alpha"] = f"{conn['name_a']} {conn['name_b']}".lower()
             conn["sort_activity"] = int(conn.get("weight_in_period", 0) or 0)
             conn["sort_trend"] = float(conn.get("trend_delta", 0.0) or 0.0)
             conn["sort_confidence"] = conf
@@ -149,10 +176,30 @@ def register_social_graph_routes(app, login_required):
                 continue
             node_ids.add(ua)
             node_ids.add(ub)
+            a_to_b = int(conn.get("message_count_a_to_b", 0) or 0)
+            b_to_a = int(conn.get("message_count_b_to_a", 0) or 0)
+            total_dir = a_to_b + b_to_a
+            arrow_to = None  # "target" = arrow at ub, "source" = arrow at ua
+            if total_dir >= 2:
+                if a_to_b >= 0.6 * total_dir:
+                    arrow_to = "target"  # A→B, arrow at B
+                elif b_to_a >= 0.6 * total_dir:
+                    arrow_to = "source"  # B→A, arrow at A
+            ra = rank_by_user.get(ua, "unknown")
+            rb = rank_by_user.get(ub, "unknown")
+            pair_key = "-".join(sorted([ra, rb]))
             edges.append({
                 "source": ua,
                 "target": ub,
                 "weight": int(conn.get("message_count", 0) or 0),
+                "weight_period": int(conn.get("weight_in_period", 0) or conn.get("message_count_7d", 0) or 0),
+                "tone": str(conn.get("tone", "neutral") or "neutral"),
+                "arrow_to": arrow_to,
+                "pair_context": pair_key,
+                "pair_context_label": PAIR_CONTEXT_RU.get(pair_key, pair_key),
+                "tone_trend": str(conn.get("tone_trend", "stable") or "stable"),
+                "tone_trend_label": tone_trend_ru.get(str(conn.get("tone_trend", "stable")), ""),
+                "connection_cooling": bool(conn.get("connection_cooling")),
                 "last_updated": conn.get("last_updated", ""),
             })
 
@@ -163,11 +210,14 @@ def register_social_graph_routes(app, login_required):
             degree_by_user[e["target"]] = degree_by_user.get(e["target"], 0) + 1
         for uid in sorted(node_ids):
             uid_str = str(uid)
+            u_data = user_stats.get_user(uid, names.get(uid_str, uid_str))
+            rank = str(u_data.get("rank", "unknown") or "unknown")
             nodes.append({
                 "id": uid,
                 "label": names.get(uid_str, uid_str),
                 "avatar": url_for("avatar", user_id=uid_str),
                 "degree": int(degree_by_user.get(uid, 0)),
+                "rank": rank,
             })
         top_connectors = sorted(
             [{"id": n["id"], "label": n["label"], "degree": n["degree"]} for n in nodes],
@@ -303,7 +353,18 @@ def register_social_graph_routes(app, login_required):
                 "last_seen_label": conn.get("last_seen_label", "—"),
                 "days_since_last": conn.get("days_since_last"),
                 "summary_preview": conn.get("summary_preview", ""),
+                "summary_full": conn.get("summary_latest_full", conn.get("summary", "")) or "",
             })
+        realtime_chat_ids: list[int] = []
+        if chat_id and str(chat_id).lstrip("-").isdigit():
+            realtime_chat_ids = [int(chat_id)]
+        else:
+            for c in chats:
+                raw = c.get("chat_id")
+                if str(raw).lstrip("-").isdigit():
+                    realtime_chat_ids.append(int(raw))
+            # Limit websocket fanout in "all chats" mode.
+            realtime_chat_ids = sorted(set(realtime_chat_ids))[:12]
 
         return render_template(
             "social_graph.html",
@@ -341,7 +402,14 @@ def register_social_graph_routes(app, login_required):
             empty_state_kind=empty_state_kind,
             total_connections_before_filter=total_connections_before_filter,
             graph_focus_rows=graph_focus_rows,
+            realtime_chat_ids=realtime_chat_ids,
         )
+
+    @app.route("/api/social-graph-version")
+    @login_required
+    def api_social_graph_version():
+        """Версия данных графа для polling — обновление без перезагрузки."""
+        return jsonify({"version": social_graph_store.get_graph_version()})
 
     @app.route("/api/process-social-graph", methods=["POST"])
     @login_required

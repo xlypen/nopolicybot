@@ -1,0 +1,335 @@
+{% extends "base.html" %}
+{% block title %}Мой профиль — Участник{% endblock %}
+{% block head_extra %}
+<style>
+.participant-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 1rem;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%);
+  border: 1px solid var(--border-card);
+}
+.participant-portrait {
+  max-width: 160px;
+  max-height: 200px;
+  border-radius: 8px;
+  border: 1px solid var(--border-card);
+  box-shadow: var(--shadow-sm);
+}
+.participant-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 0.5rem;
+}
+.participant-stat {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  padding: 0.5rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+.connections-list { list-style: none; padding: 0; margin: 0; }
+.connections-list li {
+  padding: 0.75rem;
+  margin-bottom: 0.6rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+}
+.connections-list .peer-name { font-weight: 700; color: var(--text-primary); }
+.connections-list .meta { font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem; }
+.me-bookmark {
+  margin-top: 1rem;
+  padding: 0.85rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  word-break: break-all;
+}
+.me-graph-wrap {
+  margin-top: 1.2rem;
+  padding: 0.9rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+}
+.me-graph-head {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+}
+.me-graph-controls { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.me-graph-root {
+  min-height: 420px;
+  border: 1px solid var(--border-card);
+  background: var(--bg-tertiary);
+  border-radius: 10px;
+  overflow: auto;
+}
+</style>
+{% endblock %}
+{% block body %}
+<div class="card">
+{% if error %}
+  <p class="text-danger">{{ error }}</p>
+  <p>Запросите новую ссылку у бота в чате: отправьте команду <strong>/me</strong>.</p>
+{% else %}
+  <h1>Мой профиль</h1>
+  <div class="participant-header">
+    {% if portrait_exists %}
+    <img src="{{ url_for('participant_me_portrait') }}?token={{ request.args.get('token', '') }}" alt="Портрет" class="participant-portrait">
+    {% endif %}
+    <div>
+      <p><strong>{{ u.get('display_name', user_id) }}</strong></p>
+      <p>Ранг: {{ rank_labels.get(u.get('rank'), u.get('rank')) }}</p>
+      <p>Настроение: {{ effective_tone }}</p>
+      <div class="participant-stats">
+        <div class="participant-stat">Сообщений: {{ u.get('stats', {}).get('total_messages', 0) }}</div>
+        <div class="participant-stat">Полит.: {{ u.get('stats', {}).get('political_messages', 0) }}</div>
+      </div>
+    </div>
+  </div>
+  {% if u.get('portrait') %}
+  <div style="margin-top: 1rem;">
+    <h2 style="font-size: 1rem;">Психологический портрет</h2>
+    <div style="white-space: pre-wrap; line-height: 1.5; font-size: 0.9rem;">{{ u.get('portrait', '') }}</div>
+  </div>
+  {% endif %}
+
+  <h2 style="font-size: 1rem; margin-top: 1.5rem;">Мои связи в чатах</h2>
+  <p class="text-muted" style="font-size: 0.9rem;">С кем вы чаще всего общаетесь, темы и тон диалогов.</p>
+  {% if my_connections %}
+  <ul class="connections-list">
+  {% for r in my_connections %}
+    <li>
+      <span class="peer-name">{{ r.get('peer_name', '—') }}</span>
+      <div class="meta">
+        Тон: {{ tone_ru.get(r.get('tone'), r.get('tone')) }} ·
+        Темы: {{ (r.get('topics') or [])|join(', ') or '—' }} ·
+        Сообщений (7 дн.): {{ r.get('message_count_7d', 0) }}
+      </div>
+      {% if r.get('summary') %}
+      <div style="font-size: 0.85rem; margin-top: 0.35rem; color: var(--text-muted);">{{ r.get('summary')[:200] }}{% if r.get('summary')|length > 200 %}…{% endif %}</div>
+      {% endif %}
+    </li>
+  {% endfor %}
+  </ul>
+  {% else %}
+  <p class="text-muted">Пока нет данных о связях. Они обновляются по мере общения в чате.</p>
+  {% endif %}
+  <div class="me-graph-wrap">
+    <div class="me-graph-head">
+      <h2 style="font-size: 1rem; margin: 0;">Мой граф связей (live)</h2>
+      <div class="me-graph-controls">
+        <label for="me-graph-mode" class="text-muted" style="font-size: 0.85rem;">Режим</label>
+        <select id="me-graph-mode">
+          <option value="force">force</option>
+          <option value="radial">radial</option>
+          <option value="community">community</option>
+          <option value="matrix">matrix</option>
+          <option value="webgl">webgl</option>
+        </select>
+        <span id="me-graph-status" class="text-muted" style="font-size: 0.82rem;">Загрузка…</span>
+      </div>
+    </div>
+    <div id="me-graph-root" class="me-graph-root"></div>
+  </div>
+
+  <div class="me-bookmark">
+    <strong>Сохраните ссылку</strong> — по ней вы всегда сможете открыть этот профиль и граф связей:<br>
+    <a href="{{ me_url }}">{{ me_url }}</a>
+  </div>
+{% endif %}
+</div>
+{% endblock %}
+{% block scripts %}
+{% if not error %}
+<script src="{{ url_for('static', filename='js/graph_render_pipeline.js') }}"></script>
+<script type="module" src="{{ url_for('static', filename='js/graph_visualizations.jsx') }}"></script>
+<script src="{{ url_for('static', filename='js/graph_webgl_viz.js') }}"></script>
+<script src="{{ url_for('static', filename='js/realtime_graph_client.js') }}"></script>
+<script>
+(function(){
+  var userId = {{ user_id|int }};
+  var meToken = {{ me_token|tojson }};
+  var chatIds = {{ me_chat_ids|tojson }};
+  var modeSel = document.getElementById('me-graph-mode');
+  var statusEl = document.getElementById('me-graph-status');
+  var root = document.getElementById('me-graph-root');
+  var graphData = {nodes:[], edges:[], meta:{}};
+  var graphVersion = '';
+  var wsClient = null;
+  var refreshTimer = null;
+
+  function setStatus(text, isError){
+    if(!statusEl){return;}
+    statusEl.textContent = String(text || '');
+    statusEl.style.color = isError ? '#e94560' : 'var(--text-muted)';
+  }
+
+  function renderGraph(){
+    if(!root){return;}
+    if(window.GraphRenderPipeline && typeof window.GraphRenderPipeline.render === 'function'){
+      const ok = window.GraphRenderPipeline.render({
+        root: root,
+        mode: (modeSel && modeSel.value) || 'force',
+        data: graphData,
+        largeGraphThresholds: { nodes: 240, edges: 1000 },
+        defer: true,
+        onUnavailable: function(){
+          root.innerHTML = '<div style="padding:0.8rem;color:var(--text-muted);">Граф-модуль не загружен</div>';
+        }
+      });
+      if(!ok){
+        root.innerHTML = '<div style="padding:0.8rem;color:var(--text-muted);">Загружаю модуль графа...</div>';
+      }
+      return;
+    }
+    var nodes = (graphData && graphData.nodes) || [];
+    var edges = (graphData && graphData.edges) || [];
+    root.innerHTML = '<div style="padding:0.8rem;color:var(--text-muted);">Участников: ' + nodes.length + ' · Связей: ' + edges.length + '</div>';
+  }
+
+  function scheduleRefresh(){
+    if(refreshTimer){return;}
+    refreshTimer = setTimeout(function(){
+      refreshTimer = null;
+      fetchAndApplyDelta();
+    }, 900);
+  }
+
+  function edgeId(edge){
+    var a = Number((edge && edge.source) || 0);
+    var b = Number((edge && edge.target) || 0);
+    if(!Number.isFinite(a) || !Number.isFinite(b)){ return '0|0'; }
+    var lo = Math.min(Math.trunc(a), Math.trunc(b));
+    var hi = Math.max(Math.trunc(a), Math.trunc(b));
+    return lo + '|' + hi;
+  }
+
+  function applyDelta(delta, version){
+    var d = delta || {};
+    var full = !!d.full_replace;
+    var upsertNodes = Array.isArray(d.upsert_nodes) ? d.upsert_nodes : [];
+    var removeNodeIds = new Set((Array.isArray(d.remove_node_ids) ? d.remove_node_ids : []).map(function(x){ return Number(x); }));
+    var upsertEdges = Array.isArray(d.upsert_edges) ? d.upsert_edges : [];
+    var removeEdgeIds = new Set(Array.isArray(d.remove_edge_ids) ? d.remove_edge_ids : []);
+
+    if(full){
+      graphData = {
+        nodes: upsertNodes.slice(),
+        edges: upsertEdges.slice(),
+        meta: d.meta || {}
+      };
+      graphVersion = String(version || graphVersion || '');
+      return;
+    }
+
+    var nodeMap = new Map();
+    (graphData.nodes || []).forEach(function(n){
+      var id = Number((n && n.id) || 0);
+      if(!Number.isFinite(id) || id === 0){ return; }
+      nodeMap.set(id, n);
+    });
+    removeNodeIds.forEach(function(id){ nodeMap.delete(id); });
+    upsertNodes.forEach(function(n){
+      var id = Number((n && n.id) || 0);
+      if(!Number.isFinite(id) || id === 0){ return; }
+      nodeMap.set(id, n);
+    });
+
+    var edgeMap = new Map();
+    (graphData.edges || []).forEach(function(e){ edgeMap.set(edgeId(e), e); });
+    removeEdgeIds.forEach(function(eid){ edgeMap.delete(String(eid)); });
+    upsertEdges.forEach(function(e){ edgeMap.set(edgeId(e), e); });
+
+    graphData = {
+      nodes: Array.from(nodeMap.values()),
+      edges: Array.from(edgeMap.values()),
+      meta: d.meta || (graphData.meta || {})
+    };
+    graphVersion = String(version || graphVersion || '');
+  }
+
+  async function fetchAndApplyDelta(){
+    try{
+      var q = new URLSearchParams();
+      q.set('token', String(meToken || ''));
+      if(graphVersion){ q.set('since', String(graphVersion)); }
+      var resp = await fetch('/api/me/graph-delta?' + q.toString(), { cache: 'no-store' });
+      var body = await resp.json();
+      if(!body || !body.ok){
+        await loadGraph('live');
+        return;
+      }
+      if(!body.changed){
+        graphVersion = String(body.graph_version || graphVersion || '');
+        return;
+      }
+      applyDelta(body.delta || {}, body.graph_version || '');
+      renderGraph();
+      setStatus('Live patch: узлов ' + ((graphData.nodes||[]).length) + ' · связей ' + ((graphData.edges||[]).length));
+    }catch(_e){
+      await loadGraph('live');
+    }
+  }
+
+  async function loadGraph(reason){
+    setStatus(reason === 'live' ? 'Live обновление…' : 'Загрузка графа…');
+    try{
+      var resp = await fetch(
+        '/api/me/graph?user_id=' + encodeURIComponent(String(userId)) + '&token=' + encodeURIComponent(String(meToken || '')),
+        { cache: 'no-store' }
+      );
+      var body = await resp.json();
+      graphData = (body && body.graph) || {nodes:[], edges:[], meta:{}};
+      graphVersion = String((body && body.graph_version) || graphVersion || '');
+      renderGraph();
+      setStatus('Участников: ' + ((graphData.nodes||[]).length) + ' · Связей: ' + ((graphData.edges||[]).length));
+    }catch(_e){
+      setStatus('Ошибка загрузки графа', true);
+    }
+  }
+
+  function startRealtime(){
+    if(!window.createGraphRealtimeClient){
+      setStatus('Live недоступен', true);
+      return;
+    }
+    wsClient = window.createGraphRealtimeClient({
+      chatIds: chatIds,
+      pollUrl: '/api/me/graph-version?token=' + encodeURIComponent(String(meToken || '')),
+      pollIntervalMs: 5000,
+      throttleMs: 900,
+      onStatus: function(s){
+        var isErr = String(s || '').indexOf('error') >= 0;
+        setStatus('WS: ' + s, isErr);
+      },
+      onDelta: function(evt){
+        var src = String((evt || {}).source || 'ws');
+        setStatus('Live delta (' + src + ')');
+        scheduleRefresh();
+      }
+    });
+    wsClient.start();
+  }
+
+  if(modeSel){
+    modeSel.addEventListener('change', renderGraph);
+  }
+  loadGraph('init');
+  startRealtime();
+  window.addEventListener('beforeunload', function(){
+    if(wsClient && wsClient.stop){ wsClient.stop(); }
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

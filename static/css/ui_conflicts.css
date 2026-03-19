@@ -1,0 +1,8 @@
+/* Compact conflicts UI styles */
+.conflicts-panel{border:1px solid #ddd; padding:8px; border-radius:8px; background:#fff;}
+.conflicts-summary{display:flex; align-items:center; justify-content:space-between; gap:12px;}
+.conflicts-summary .badge{background:#e74c3c; color:white; padding:4px 8px; border-radius:999px;}
+#recalc-conflicts{padding:6px 12px; border-radius:6px; border:1px solid #ccc; background:#f5f5f5; cursor:pointer;}
+.conflict-cards{ display:flex; gap:8px; overflow-x:auto; padding-top:8px; }
+.card{ min-width:240px; border:1px solid #ddd; border-radius:6px; padding:12px; background:#fff; }
+.card .level{ font-weight:bold; color:#e74c3c; }

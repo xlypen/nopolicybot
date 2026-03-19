@@ -1,0 +1,24 @@
+{# Recovery artifact: copy to templates/admin/dashboard.html #}
+{% extends "admin/base.html" %}
+{% block title %}Modern Dashboard — Nopolicybot{% endblock %}
+{% block body %}
+<div class="hero">
+  <div class="header" style="margin-bottom:6px;">
+    <h1>Modern Dashboard</h1>
+    <div class="actions">
+      <a class="btn btn-secondary" href="{{ url_for('admin') }}">Legacy Admin</a>
+      <a class="btn btn-secondary" href="{{ url_for('settings') }}">Настройки</a>
+      <a class="btn btn-secondary" href="{{ url_for('social_graph') }}">Дерево связей</a>
+      <a class="btn btn-secondary" href="{{ url_for('logout') }}">Выйти</a>
+    </div>
+  </div>
+  <div style="color:var(--text-secondary)">Восстановленный UI по recovery-плану: метрики + интерактивные граф-режимы.</div>
+</div>
+
+<div class="cards">
+  <div class="card"><h3>Пользователей</h3><span class="val">{{ metrics.users }}</span></div>
+  <div class="card"><h3>Сообщений</h3><span class="val">{{ metrics.messages }}</span></div>
+  <div class="card"><h3>Политических</h3><span class="val">{{ metrics.political }}</span></div>
+  <div class="card"><h3>Замечаний</h3><span class="val">{{ metrics.warnings }}</span></div>
+</div>
+{% endblock %}

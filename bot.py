@@ -4,13 +4,18 @@ Telegram-бот: следит за диалогом и делает замеча
 """
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
 import os
 import sys
 import logging
 import random
+import socket
+import threading
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from html import escape
 from io import BytesIO
 from pathlib import Path
@@ -22,10 +27,12 @@ from aiogram.types import Message, InputProfilePhotoStatic, ReactionTypeEmoji
 from aiogram.types import FSInputFile
 from dotenv import load_dotenv
 
+from config.validate_secrets import validate_secrets
 from ai_analyzer import (
     _ALLOWED_REACTION_EMOJI,
     analyze_messages,
     analyze_image,
+    analyze_close_attention,
     analyze_message_for_reply,
     should_pause_dialog,
     should_resume_dialog,
@@ -43,15 +50,59 @@ from ai_analyzer import (
 from openai import APIStatusError
 import user_stats
 import bot_settings
+import bot_state
 import qod_tracking
 import social_graph
 import bot_explainability
 from handlers.chat_moderation import append_social_dialogue
+import voice_transcribe
 from handlers.direct_reply import build_reply_context_with_images
 from services.reactions import pick_allowed_emoji, set_photo_reaction
 from services.schedulers import restart_checker, social_graph_daily_task
-from services.schedulers import social_graph_realtime_task
+from services.schedulers import (
+    social_graph_realtime_task,
+    portrait_image_daily_task,
+    marketing_metrics_rollup_task,
+    churn_detection_task,
+    storage_parity_monitor_task,
+    data_retention_task,
+)
+from services.marketing_metrics import record_message_event, record_signal_event
+from services.decision_engine import DecisionEngine, append_decision_event
+from services.personality.auto_build import check_and_trigger_build
+from db.engine import init_db
+from services.db_ingest import ingest_message_event
+from services.sqlite_storage import init_storage
+from services.topic_policies import get_topic_label, resolve_topic_trigger
 from utils.text_formatting import capitalize_sentences, reply_text_to_html, strip_leading_name
+
+
+async def _last_resort_gemini_reply(
+    context: str, display_text: str, first_name: str, user_id: int
+) -> str:
+    """При ошибке ИИ — последняя попытка через Gemini, иначе fallback."""
+    from ai.client import gemini_chat_complete
+    fallback = bot_settings.get("reply_fallback_on_error") or "сейчас не в настроении, напиши потом."
+    ctx = (context or "").strip()[-800:]
+    user_msg = f"{first_name}: {display_text}" if first_name else display_text
+    prompt = (
+        "Ты бот в чате. Пользователь написал тебе. Ответь коротко (1–2 предложения), по-человечески. "
+        "Без морализаторства. На русском.\n\n"
+    )
+    if ctx:
+        prompt += f"Контекст:\n{ctx}\n\n"
+    prompt += f"Сообщение: {user_msg}"
+    msgs = [{"role": "user", "content": prompt}]
+    try:
+        loop = asyncio.get_event_loop()
+        raw = await loop.run_in_executor(
+            None, lambda: gemini_chat_complete(msgs, max_tokens=200, temperature=0.7)
+        )
+        if raw and (raw := raw.strip()):
+            return raw[:500]
+    except Exception as e:
+        logger.debug("Gemini last-resort failed: %s", e)
+    return fallback
 
 
 def _load_env():
@@ -76,6 +127,26 @@ logging.basicConfig(
     force=True,
 )
 logger = logging.getLogger(__name__)
+
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_task(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+    def _log_exception(t: asyncio.Task) -> None:
+        try:
+            exc = t.exception()
+            if exc is not None:
+                logger.warning("background task failed: %s", exc, exc_info=True)
+        except asyncio.CancelledError:
+            pass
+
+    task.add_done_callback(_log_exception)
+    return task
+
 
 CHAT_HISTORY: dict[int, deque[tuple[str, str]]] = {}
 HISTORY_SIZE = 50
@@ -115,6 +186,70 @@ _chat_style_updated_at: dict[int, float] = {}
 _chat_first_remark_done: dict[int, bool] = {}
 _chat_last_praise_date: dict[int, str] = {}
 _dm_silence_until: dict[int, float] = {}  # user_id -> monotonic ts
+_chat_last_factcheck: dict[int, float] = {}
+DECISION_ENGINE = DecisionEngine()
+
+
+async def _maybe_run_factcheck(
+    bot: Bot,
+    chat_id: int,
+    reply_to_message_id: int,
+    text: str,
+    author_name: str,
+    user_id: int | None,
+    image_description: str | None = None,
+) -> None:
+    """Запускает факт-чек в фоне, если включён и прошёл throttle."""
+    to_check = (text or "").strip() or (image_description or "").strip()
+    if len(to_check) < 20:
+        logger.debug("[факт-чек] Пропуск: текст слишком короткий (%s симв)", len(to_check))
+        return
+    max_len = bot_settings.get_int("factcheck_max_text_len", chat_id=None, lo=100, hi=1000)
+    if len(to_check) > max_len:
+        logger.debug("[факт-чек] Пропуск: текст длиннее %s симв", max_len)
+        return
+    fc_global = bot_settings.get("factcheck_enabled")
+    fc_user = user_stats.get_factcheck_enabled(user_id) if user_id else False
+    if not fc_global and not fc_user:
+        logger.info("[факт-чек] Пропуск: выключен (глобально=%s, пользователь=%s)", fc_global, fc_user)
+        return
+    interval = bot_settings.get_int("factcheck_min_interval_sec", chat_id=None, lo=60, hi=3600)
+    now = time.monotonic()
+    if now - _chat_last_factcheck.get(chat_id, 0) < interval:
+        logger.debug("[факт-чек] Пропуск: throttle (интервал %s сек)", interval)
+        return
+    _chat_last_factcheck[chat_id] = now
+
+    logger.info("[чат %s] Факт-чек запущен для «%s» (%s симв)", chat_id, author_name, len(to_check))
+
+    async def _do_factcheck() -> None:
+        try:
+            from services.factcheck import run_factcheck
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, lambda: run_factcheck(to_check, author_name))
+            if result:
+                from utils.text_formatting import capitalize_sentences
+                msg = capitalize_sentences(result)
+                await bot.send_message(chat_id=chat_id, text=msg, reply_to_message_id=reply_to_message_id)
+                logger.info("[чат %s] Факт-чек отправлен для «%s»", chat_id, author_name)
+            else:
+                logger.debug("[чат %s] Факт-чек: нет проверяемых фактов для «%s»", chat_id, author_name)
+        except Exception as e:
+            logger.warning("Факт-чек: %s: %s", type(e).__name__, e)
+
+    _spawn_task(_do_factcheck())
+
+
+def _persist_state() -> None:
+    """Сохраняет текущее состояние бота на диск (с дебаунсом)."""
+    bot_state.save_state(
+        _chat_political_count,
+        _chat_warning_count,
+        _chat_messages_since_political,
+        _chat_first_remark_done,
+        _chat_last_praise_date,
+        _dm_silence_until,
+    )
 
 
 def _apply_reset_political_count(chat_id: int) -> bool:
@@ -139,6 +274,7 @@ def _apply_reset_political_count(chat_id: int) -> bool:
             RESET_POLITICAL_COUNT_PATH.write_text(json.dumps({"chat_ids": chat_ids}, ensure_ascii=False), encoding="utf-8")
         else:
             RESET_POLITICAL_COUNT_PATH.unlink(missing_ok=True)
+        _persist_state()
         logger.info("[чат %s] Счётчик полит. сообщений сброшен по запросу из админки", chat_id)
         _debug_log("RESET_COUNTER", chat_id=chat_id, detail="по запросу админки")
         return True
@@ -148,17 +284,43 @@ def _apply_reset_political_count(chat_id: int) -> bool:
 
 
 POLITICAL_KEYWORDS = [
-    "политик", "путин", "зеленский", "война", "войн", "фронт", "потери", "выборы", "партия", "партии",
-    "власти", "правительство", "депутат", "президент", "министр", "санкции", "нато", "вторжение",
-    "оккупац", "мобилизац", "призыв", "сводк", "боев", "солдат", "спецоперац", "кандидат", "голосова",
-    "оппозиц", "режим", "диктатор", "революц",
-    "ирак", "iraq", "афганистан", "afghanistan", "германи", "germany",
-    "макрон", "macron", "трамп", "trump", "байден", "biden", "меркель", "merkel",
-    "шольц", "scholz", "мелон", "meloni", "ле пен", "le pen", "нетаниягу", "netanyahu",
-    "си цзиньпин", "сицзиньпин", "цзиньпин", "лукашенко", "лукашенк", "эрдоган", "erdogan",
-    "моди", "modi", "ким чен", "kim jong", "санду", "орбан", "orban", "зеленски", "zelensky",
-    "буш", "буша", "джордж", "george", "обама", "obama", "трюдо", "trudeau", "харрис", "harris",
+    # Политика и власть
+    "политик", "выборы", "партия", "власти", "правительство", "депутат", "президент", "министр",
+    "оппозиц", "режим", "диктатор", "революц", "кандидат", "голосова", "референдум", "закон",
+    # Война и конфликты
+    "война", "войн", "фронт", "потери", "санкции", "нато", "вторжение", "оккупац", "мобилизац",
+    "призыв", "сводк", "боев", "солдат", "спецоперац", "конфликт", "переговор",
+    # Экономика и сравнения
+    "экономик", "ввп", "госзаказ", "лоббизм", "инфляц", "бюджет", "налог", "курс валют",
+    "экспорт", "импорт", "бирж", "нефть", "газ", "слабее", "сильнее", "богаче", "беднее",
+    "развит", "размер экономики", "gdp", "номинал",
+    # Страны и регионы
+    "росси", "рф", "сша", "америк", "украин", "белорус", "молдов", "казахстан", "грузи",
+    "армени", "азербайджан", "узбекистан", "таджикистан", "киргизи", "туркменистан",
+    "латвия", "литва", "эстония", "польша", "чехия", "румыния", "болгария", "венгрия",
+    "словакия", "словения", "хорватия", "сербия", "черногория", "македония", "албания",
+    "германи", "germany", "франци", "france", "итали", "италия", "испани", "spain",
+    "великобритани", "нидерланд", "бельги", "австри", "швейцари", "финлянди",
+    "швеци", "норвеги", "дат", "кита", "china", "япони", "japan", "инди", "india",
+    "коре", "korea", "бразили", "brazil", "мексик", "mexico", "аргентин", "чили",
+    "иран", "ирак", "iraq", "сири", "syria", "израил", "israel", "палестин",
+    "саудов", "оаэ", "египет", "турци", "turkey", "канад", "canada", "австрали",
+    "индонези", "таиланд", "вьетнам", "филиппин", "пакистан", "бангладеш", "сингапур",
+    "гонконг", "тайвань", "афганистан", "afghanistan",
+    # Лидеры
+    "путин", "зеленский", "зеленски", "zelensky", "макрон", "macron", "трамп", "trump",
+    "байден", "biden", "меркель", "merkel", "шольц", "scholz", "мелон", "meloni",
+    "ле пен", "le pen", "нетаниягу", "netanyahu", "си цзиньпин", "сицзиньпин", "цзиньпин",
+    "лукашенко", "лукашенк", "эрдоган", "erdogan", "моди", "modi", "ким чен", "kim jong",
+    "санду", "орбан", "orban", "буш", "обама", "obama", "трюдо", "trudeau", "харрис",
     "пелоси", "pelosi", "джонсон", "johnson", "сандерс", "sanders",
+    # Технологии и компании (проверяемые факты)
+    "apple", "google", "microsoft", "amazon", "meta", "facebook", "tesla", "nvidia",
+    "intel", "amd", "samsung", "huawei", "роснефть", "газпром", "лукойл", "яндекс",
+    "сбербанк", "втб", "faang", "gmc", "lockheed", "пентагон", "pentagon",
+    # Наука и статистика
+    "исследовани", "статистик", "данные", "рейтинг", "индекс", "процент", "миллион",
+    "миллиард", "триллион", "доллар", "евро", "рубль",
 ]
 
 # --- Поощрения (позитив к президенту РФ) — одна строка ---
@@ -248,15 +410,30 @@ INSULTS_LEVEL_3_PLUS = [
 ]
 
 
+# Кэш bot.get_me() на 2 мин, чтобы не дергать Telegram API на каждое сообщение
+_ME_CACHE: tuple[object, float] | None = None
+_ME_CACHE_TTL_SEC = 120
+
+
 class IsDirectedAtBotFilter(BaseFilter):
-    """Сообщение обращено к боту: ответ на бота, упоминание @username бота, или фото в ответ боту."""
+    """Сообщение обращено к боту: личка, ответ на бота, упоминание @username бота, фото или голос в ответ боту."""
 
     async def __call__(self, message: Message, bot: Bot) -> bool:
+        global _ME_CACHE
         has_text = bool((message.text or message.caption or "").strip())
         has_photo = bool(message.photo)
-        if not has_text and not has_photo:
+        has_voice = bool(message.voice)
+        if not has_text and not has_photo and not has_voice:
             return False
-        me = await bot.get_me()
+        # В личке любое сообщение — к боту
+        if getattr(message.chat, "type", None) == "private":
+            return True
+        now = time.monotonic()
+        if _ME_CACHE is not None and now < _ME_CACHE[1]:
+            me = _ME_CACHE[0]
+        else:
+            me = await bot.get_me()
+            _ME_CACHE = (me, now + _ME_CACHE_TTL_SEC)
         if message.reply_to_message and message.reply_to_message.from_user and message.reply_to_message.from_user.is_bot:
             return True
         if has_text:
@@ -316,6 +493,7 @@ def add_to_history(
     CHAT_HISTORY[chat_id].append((user_name, text))
     if user_id is not None and text.strip():
         user_stats.record_chat_message(user_id, text, display_name or user_name, chat_id=chat_id, chat_title=chat_title)
+        check_and_trigger_build(user_id, chat_id)
 
 
 FRIENDLY_KEYWORDS = [
@@ -344,6 +522,37 @@ def is_likely_friendly(text: str) -> bool:
 def _safe_name(name: str) -> str:
     """Убирает фигурные скобки и спецсимволы из имени, чтобы .format() не ломался."""
     return name.replace("{", "").replace("}", "").replace("<", "").replace(">", "").strip() or "Участник"
+
+
+def _extract_mentioned_user_ids(message: Message) -> list[int]:
+    """Извлекает id пользователей из text_mention entities."""
+    result: set[int] = set()
+    entities = list(message.entities or []) + list(message.caption_entities or [])
+    for entity in entities:
+        try:
+            if str(getattr(entity, "type", "")) == "text_mention":
+                user = getattr(entity, "user", None)
+                if user and getattr(user, "id", None):
+                    result.add(int(user.id))
+        except Exception:
+            continue
+    return sorted(result)
+
+
+def _decision_suffix(strategy: str) -> str:
+    strategy = (strategy or "").strip().lower()
+    if strategy in {"motivating", "gentle", "careful"}:
+        return "Давайте аккуратнее: важно сохранить диалог и людей в чате."
+    if strategy == "strict":
+        return "Следующее нарушение будет рассмотрено строже."
+    return ""
+
+
+def _topic_notice_line(topic: str | None) -> str:
+    key = str(topic or "politics").strip().lower()
+    if key == "politics":
+        return POLITICS_LINE
+    return f"Обнаружена тема: {get_topic_label(key)}."
 
 
 async def _update_portrait_background(user_id: int, display_name: str) -> None:
@@ -407,6 +616,7 @@ async def _run_batch_analysis(
     initiator_message_text: str = "",
     initiator_image_result: tuple[bool, str, str] | None = None,
     event_political_count: int | None = None,
+    event_topic: str | None = None,
 ) -> None:
     _chat_scheduled.pop(chat_id, None)
 
@@ -417,23 +627,34 @@ async def _run_batch_analysis(
     political_count = event_political_count if event_political_count is not None else _chat_political_count.get(chat_id, 0)
     msgs_before = bot_settings.get_int("msgs_before_react", chat_id, 1, 20)
     reactions_only_phase = political_count < msgs_before and bot_settings.get("reactions_political_1_5")
+    force_style = (bot_settings.get("moderation_force_style", chat_id) or "").strip().lower()
+    if not force_style and msgs_before == 1 and (bot_settings.get("style_beast_frequency", chat_id) or "") == "every":
+        force_style = "beast"
+    is_beast_like = msgs_before <= 2 and (bot_settings.get("style_beast_frequency", chat_id) or "") == "every"
+    is_force_mode = force_style in ("beast", "active")
     min_ctx = (
         max(1, bot_settings.get_int("min_context_lines_1_5", chat_id, 3, 15))
         if reactions_only_phase
         else bot_settings.get_int("min_context_lines", chat_id, 3, 30)
     )
+    lines = _get_history_lines(chat_id)
     context = get_recent_context(chat_id)
-    # Для реакций достаточно 1 строки контекста (текущее сообщение)
-    min_ctx_actual = 1 if reactions_only_phase else min_ctx
-    if len(context) < min_ctx_actual:
-        logger.info("[чат %s] Пропуск: мало контекста (нужно %s, есть %s)", chat_id, min_ctx_actual, len(context))
+    min_ctx_actual = 1 if (reactions_only_phase or is_beast_like or is_force_mode) else min_ctx
+    # Существенное сообщение (>30 симв) — достаточно 1 сообщения в истории
+    if initiator_message_text and len(initiator_message_text.strip()) > 30:
+        min_ctx_actual = min(min_ctx_actual, 1)
+    num_lines = len(lines)
+    if num_lines < min_ctx_actual:
+        logger.info(
+            "[чат %s] Пропуск: мало контекста (нужно %s сообщ. в истории чата, есть %s)",
+            chat_id, min_ctx_actual, num_lines,
+        )
         return
     if political_count < msgs_before:
         if not bot_settings.get("reactions_political_1_5"):
             logger.info("[чат %s] Пропуск: полит.счёт=%s < %s, реакции на политику выключены", chat_id, political_count, msgs_before)
             return
 
-    lines = _get_history_lines(chat_id)
     now = time.monotonic()
     style = _chat_style.get(chat_id, "active")
     cache_sec = bot_settings.get_int("batch_style_cache_sec", chat_id, 60, 600)
@@ -446,19 +667,22 @@ async def _run_batch_analysis(
             _chat_style[chat_id] = style
             _chat_style_updated_at[chat_id] = now
             logger.info("Чат %s: стиль по пачке = %s", chat_id, style)
-            moderate_react = bot_settings.get("style_moderate_react", chat_id) or "praise"
-            if style == "moderate" and not batch_political and moderate_react == "praise":
-                today = date.today().isoformat()
-                if _chat_last_praise_date.get(chat_id) != today:
-                    _chat_last_praise_date[chat_id] = today
-                    try:
-                        msg = capitalize_sentences(random.choice(NO_POLITICS_PRAISE))
-                        await bot.send_message(chat_id=chat_id, text=msg)
-                        logger.info("Чат %s: похвала «без политики» (1 раз в день)", chat_id)
-                    except Exception as e:
-                        logger.exception("Похвала: %s", e)
-                return
-            if style == "moderate":
+            # При принудительном стиле (active/beast) не выходим по moderate — реагируем
+            if not is_force_mode:
+                moderate_react = bot_settings.get("style_moderate_react", chat_id) or "praise"
+                if style == "moderate" and not batch_political and moderate_react == "praise":
+                    today = date.today().isoformat()
+                    if _chat_last_praise_date.get(chat_id) != today:
+                        _chat_last_praise_date[chat_id] = today
+                        _persist_state()
+                        try:
+                            msg = capitalize_sentences(random.choice(NO_POLITICS_PRAISE))
+                            await bot.send_message(chat_id=chat_id, text=msg)
+                            logger.info("Чат %s: похвала «без политики» (1 раз в день)", chat_id)
+                        except Exception as e:
+                            logger.exception("Похвала: %s", e)
+                    return
+            if style == "moderate" and not is_force_mode:
                 # Не выходим, если ещё фаза «только реакции» (первые 5 полит. сообщений)
                 if not (political_count < msgs_before and bot_settings.get("reactions_political_1_5")):
                     logger.info("[чат %s] Пропуск: стиль moderate, не фаза реакций", chat_id)
@@ -471,6 +695,10 @@ async def _run_batch_analysis(
         except Exception as e:
             logger.exception("Ошибка batch_style: %s", e)
         style = _chat_style.get(chat_id, "active")
+
+    if force_style in ("beast", "active"):
+        style = force_style
+        logger.info("[чат %s] Принудительный стиль: %s", chat_id, style)
 
     if style == "moderate":
         # Не выходим, если фаза «только реакции» — ставим эмодзи на первые 5 сообщений
@@ -492,8 +720,12 @@ async def _run_batch_analysis(
     _chat_last_analysis[chat_id] = time.monotonic()
     logger.info("[чат %s] Анализ ИИ: контекст %s символов", chat_id, len(context))
     # Уточняем по контексту: политика ли и тональность (или используем результат анализа изображения)
+    moderation_topic = str(event_topic or "politics").strip().lower() or "politics"
     if initiator_image_result is not None:
         is_political, _, sentiment = initiator_image_result
+    elif moderation_topic != "politics":
+        # For non-political topics we use keyword policy trigger and keep neutral sentiment baseline.
+        is_political, sentiment = True, "neutral"
     else:
         try:
             loop = asyncio.get_event_loop()
@@ -525,16 +757,98 @@ async def _run_batch_analysis(
             _chat_messages_since_political[chat_id] = 0
             _chat_political_count[chat_id] = 0
             _chat_first_remark_done[chat_id] = False
+            _persist_state()
         return
 
     if initiator_user_id is not None:
+        try:
+            record_signal_event(
+                chat_id=chat_id,
+                user_id=int(initiator_user_id),
+                sentiment=sentiment,
+                is_political=bool(is_political and moderation_topic == "politics"),
+            )
+        except Exception as e:
+            logger.debug("marketing_metrics record_signal_event failed: %s", e)
         user_stats.record_message(
             initiator_user_id,
             initiator_message_text[:500],
             sentiment,
-            is_political,
+            bool(is_political and moderation_topic == "politics"),
             initiator_name,
         )
+
+    decision_result = None
+    personality_context = None
+    if initiator_user_id is not None:
+        try:
+            from db.engine import AsyncSessionLocal
+            from services.personality.storage import get_latest_profile
+            async with AsyncSessionLocal() as session:
+                profile = await get_latest_profile(session, int(initiator_user_id), chat_id)
+                if profile:
+                    personality_context = profile.model_dump(mode="json")
+        except Exception as e:
+            logger.debug("personality fetch for decision: %s", e)
+        try:
+            decision_result = DECISION_ENGINE.decide(
+                chat_id=chat_id,
+                user_id=int(initiator_user_id),
+                sentiment=str(sentiment),
+                is_political=bool(is_political),
+                style=str(style),
+                political_count=int(political_count),
+                personality_context=personality_context,
+            )
+            _explain(
+                "decision",
+                decision_result.strategy,
+                chat_id=chat_id,
+                user_id=int(initiator_user_id),
+                detail=f"hint={decision_result.action_hint}; reasons={','.join(decision_result.reasons)}",
+            )
+            logger.info(
+                "[чат %s] DecisionEngine: strategy=%s hint=%s delta=%s reasons=%s",
+                chat_id,
+                decision_result.strategy,
+                decision_result.action_hint,
+                decision_result.level_delta,
+                ",".join(decision_result.reasons),
+            )
+        except Exception as e:
+            logger.warning("[чат %s] DecisionEngine error: %s", chat_id, e)
+            decision_result = None
+
+    ca_result = None
+    if initiator_user_id and user_stats.get_close_attention_enabled(initiator_user_id):
+        try:
+            loop = asyncio.get_event_loop()
+            ctx = await loop.run_in_executor(
+                None,
+                lambda: user_stats.format_close_attention_context(initiator_user_id),
+            )
+            ca_result = await loop.run_in_executor(
+                None,
+                lambda: analyze_close_attention(initiator_message_text, ctx),
+            )
+            user_stats.append_close_attention_view(
+                initiator_user_id,
+                initiator_message_text[:300],
+                ca_result.get("views", ""),
+                ca_result.get("needs_evidence", False),
+                ca_result.get("evidence_found", False),
+                initiator_name,
+            )
+            logger.info(
+                "[чат %s] Пристальное внимание: views=%s, needs_ev=%s, ev_found=%s",
+                chat_id,
+                bool(ca_result.get("views")),
+                ca_result.get("needs_evidence"),
+                ca_result.get("evidence_found"),
+            )
+        except Exception as e:
+            logger.warning("Ошибка анализа пристального внимания: %s", e)
+            ca_result = None
 
     mode = bot_settings.get("reactions_1_5_mode", chat_id) or "random"
     # Лайки — с 1-го по (msgs_before-1)-е сообщение; текст — с msgs_before-го
@@ -558,9 +872,35 @@ async def _run_batch_analysis(
             )
             logger.info("[чат %s] Реакция на полит. сообщение №%s", chat_id, political_count)
             _debug_log("REACTION", chat_id=chat_id, user=initiator_name, detail=f"emoji={emoji} №{political_count}")
+            if decision_result and initiator_user_id is not None:
+                append_decision_event(
+                    chat_id=chat_id,
+                    user_id=int(initiator_user_id),
+                    sentiment=str(sentiment),
+                    is_political=bool(is_political),
+                    style=str(style),
+                    political_count=int(political_count),
+                    result=decision_result,
+                    outcome="reaction_sent",
+                    detail=f"emoji={emoji}",
+                    personality_context=personality_context,
+                )
         except Exception as e:
             logger.warning("Реакция не поставлена: %s", e)
             _debug_log("REACTION_FAIL", chat_id=chat_id, user=initiator_name, detail=str(e))
+            if decision_result and initiator_user_id is not None:
+                append_decision_event(
+                    chat_id=chat_id,
+                    user_id=int(initiator_user_id),
+                    sentiment=str(sentiment),
+                    is_political=bool(is_political),
+                    style=str(style),
+                    political_count=int(political_count),
+                    result=decision_result,
+                    outcome="reaction_failed",
+                    detail=str(e),
+                    personality_context=personality_context,
+                )
         return
 
     if sentiment == "positive" and bot_settings.get("encouragement_enabled", chat_id):
@@ -588,14 +928,49 @@ async def _run_batch_analysis(
                 await bot.send_message(chat_id=chat_id, text=msg, reply_to_message_id=reply_to_message_id)
                 logger.info("Чат %s: поощрение (позитив к президенту РФ)", chat_id)
                 _debug_log("ENCOURAGEMENT", chat_id=chat_id, user=initiator_name, detail="позитив к президенту")
+                if decision_result and initiator_user_id is not None:
+                    append_decision_event(
+                        chat_id=chat_id,
+                        user_id=int(initiator_user_id),
+                        sentiment=str(sentiment),
+                        is_political=bool(is_political),
+                        style=str(style),
+                        political_count=int(political_count),
+                        result=decision_result,
+                        outcome="encouragement_sent",
+                        detail=msg[:180],
+                        personality_context=personality_context,
+                    )
         except Exception as e:
             logger.exception("Поощрение: %s", e)
+            if decision_result and initiator_user_id is not None:
+                append_decision_event(
+                    chat_id=chat_id,
+                    user_id=int(initiator_user_id),
+                    sentiment=str(sentiment),
+                    is_political=bool(is_political),
+                    style=str(style),
+                    political_count=int(political_count),
+                    result=decision_result,
+                    outcome="encouragement_failed",
+                    detail=str(e),
+                    personality_context=personality_context,
+                )
         return
 
     _chat_messages_since_political[chat_id] = 0
-    level = _chat_warning_count.get(chat_id, 0)
-    _chat_warning_count[chat_id] = level + 1
-    logger.info("[чат %s] Отправка замечания (уровень %s, стиль %s)", chat_id, level, style)
+    base_level = _chat_warning_count.get(chat_id, 0)
+    _chat_warning_count[chat_id] = base_level + 1
+    level_delta = int(decision_result.level_delta) if decision_result else 0
+    effective_level = max(0, base_level + level_delta)
+    _persist_state()
+    logger.info(
+        "[чат %s] Отправка замечания (base=%s, effective=%s, стиль=%s)",
+        chat_id,
+        base_level,
+        effective_level,
+        style,
+    )
 
     use_personalized = bot_settings.get("use_personalized_remarks", chat_id)
     portrait = ""
@@ -609,29 +984,62 @@ async def _run_batch_analysis(
         insult = await loop.run_in_executor(
             None,
             lambda: generate_personalized_remark(
-                initiator_name, initiator_message_text, portrait, level
+                initiator_name, initiator_message_text, portrait, effective_level
             ),
         )
     if not insult:
-        insult = _insult_by_level(level, initiator_name)
+        insult = _insult_by_level(effective_level, initiator_name)
     article = _random_article_line(initiator_name) if bot_settings.get("article_line_enabled", chat_id) else ""
-    body = f"{POLITICS_LINE}\n{insult}"
+    body = f"{_topic_notice_line(moderation_topic)}\n{insult}"
     if article:
         body += f"\n{article}"
+    if ca_result and ca_result.get("needs_evidence") and not ca_result.get("evidence_found") and ca_result.get("demand_phrase"):
+        body += f"\n{ca_result['demand_phrase']}"
+    if decision_result:
+        suffix = _decision_suffix(decision_result.strategy)
+        if suffix:
+            body += f"\n{suffix}"
     if bot_settings.get("patience_phrase_enabled", chat_id) and not _chat_first_remark_done.get(chat_id, False):
         body = f"{PATIENCE_PHRASE}\n{body}"
         _chat_first_remark_done[chat_id] = True
+        _persist_state()
 
     body = capitalize_sentences(body)
     try:
         await bot.send_message(chat_id=chat_id, text=body, reply_to_message_id=reply_to_message_id)
         if initiator_user_id is not None:
             user_stats.record_warning(initiator_user_id)
-        logger.info("Замечание в чат %s (уровень %s, стиль %s)", chat_id, level, style)
-        _debug_log("REMARK", chat_id=chat_id, user=initiator_name, detail=f"уровень {level} стиль {style}")
+        logger.info("Замечание в чат %s (уровень %s, стиль %s)", chat_id, effective_level, style)
+        _debug_log("REMARK", chat_id=chat_id, user=initiator_name, detail=f"уровень {effective_level} стиль {style}")
+        if decision_result and initiator_user_id is not None:
+            append_decision_event(
+                chat_id=chat_id,
+                user_id=int(initiator_user_id),
+                sentiment=str(sentiment),
+                is_political=bool(is_political),
+                style=str(style),
+                political_count=int(political_count),
+                result=decision_result,
+                outcome="warning_sent",
+                detail=f"base={base_level},effective={effective_level}",
+                personality_context=personality_context,
+            )
     except Exception as e:
         logger.exception("Не удалось отправить замечание: %s", e)
         _debug_log("REMARK_FAIL", chat_id=chat_id, user=initiator_name, detail=str(e))
+        if decision_result and initiator_user_id is not None:
+            append_decision_event(
+                chat_id=chat_id,
+                user_id=int(initiator_user_id),
+                sentiment=str(sentiment),
+                is_political=bool(is_political),
+                style=str(style),
+                political_count=int(political_count),
+                result=decision_result,
+                outcome="warning_failed",
+                detail=str(e),
+                personality_context=personality_context,
+            )
 
 
 async def check_and_reply(message: Message) -> None:
@@ -639,13 +1047,96 @@ async def check_and_reply(message: Message) -> None:
         return
     text = (message.text or message.caption or "").strip()
     has_photo = bool(message.photo)
-    if not text and not has_photo:
-        return
-
+    has_voice = bool(message.voice)
+    if has_voice and bot_settings.get("analyze_voice"):
+        try:
+            file = await message.bot.get_file(message.voice.file_id)
+            bio = BytesIO()
+            await message.bot.download_file(file.file_path, destination=bio)
+            bio.seek(0)
+            audio_bytes = bio.getvalue()
+            if audio_bytes:
+                mime = getattr(message.voice, "mime_type", None) or "audio/ogg"
+                loop = asyncio.get_event_loop()
+                transcribed = await loop.run_in_executor(
+                    None, lambda: voice_transcribe.transcribe_voice(audio_bytes, mime),
+                )
+                if transcribed:
+                    text = transcribed
+                    logger.info("[чат %s] Голосовое: «%s»", message.chat.id, transcribed[:60] + ("…" if len(transcribed) > 60 else ""))
+        except Exception as e:
+            logger.warning(
+                "Ошибка транскрипции голоса: %s: %s",
+                type(e).__name__,
+                e or "(без сообщения)",
+                exc_info=True,
+            )
+    display_text = text or ("[фото]" if has_photo else ("[голос]" if has_voice else ""))
     user_name = message.from_user.username or message.from_user.first_name or "Участник"
     first_name = _safe_name((message.from_user.first_name or message.from_user.username or "Участник"))
     chat_id = message.chat.id
-    display_text = text or ("[фото]" if has_photo else "")
+    reply_to = message.reply_to_message
+    reply_to_user_id = (
+        int(reply_to.from_user.id)
+        if reply_to and reply_to.from_user and not reply_to.from_user.is_bot
+        else None
+    )
+
+    # Возраст сообщения: если старше 3 минут (накопленная очередь после простоя),
+    # пишем в БД, но не даём реакций ни в общих чатах, ни в личке.
+    try:
+        msg_dt = message.date
+        if msg_dt.tzinfo is None:
+            msg_dt = msg_dt.replace(tzinfo=timezone.utc)
+        age_sec = (datetime.now(tz=timezone.utc) - msg_dt).total_seconds()
+    except Exception:
+        age_sec = 0
+    if age_sec > 180:
+        try:
+            media_type = "photo" if has_photo else ("voice" if has_voice else "text")
+            _spawn_task(
+                ingest_message_event(
+                    chat_id=int(chat_id),
+                    user_id=int(message.from_user.id),
+                    message_id=int(message.message_id),
+                    text=display_text,
+                    username=(message.from_user.username or "") if message.from_user else "",
+                    first_name=(message.from_user.first_name or "") if message.from_user else "",
+                    last_name=(message.from_user.last_name or "") if message.from_user else "",
+                    media_type=media_type,
+                    replied_to_user_id=reply_to_user_id,
+                    sentiment=None,
+                    is_political=False,
+                )
+            )
+        except Exception as e:
+            logger.warning("db ingest (old msg) failed: %s", e)
+        logger.info("[чат %s] Пропуск реакции: старое сообщение (%s сек)", chat_id, int(age_sec))
+        return
+
+    if not text and not has_photo:
+        try:
+            media_type = "photo" if has_photo else ("voice" if has_voice else "text")
+            _spawn_task(
+                ingest_message_event(
+                    chat_id=int(chat_id),
+                    user_id=int(message.from_user.id),
+                    message_id=int(message.message_id),
+                    text=display_text,
+                    username=(message.from_user.username or "") if message.from_user else "",
+                    first_name=(message.from_user.first_name or "") if message.from_user else "",
+                    last_name=(message.from_user.last_name or "") if message.from_user else "",
+                    media_type=media_type,
+                    replied_to_user_id=reply_to_user_id,
+                    sentiment=None,
+                    is_political=False,
+                )
+            )
+        except Exception as e:
+            logger.debug("db ingest (voice-only) failed: %s", e)
+        return
+
+    user_name = message.from_user.username or message.from_user.first_name or "Участник"
     _apply_reset_political_count(chat_id)
     add_to_history(
         chat_id, user_name, display_text,
@@ -663,12 +1154,22 @@ async def check_and_reply(message: Message) -> None:
         and not message.from_user.is_bot
         and random.random() < spont_chance
     ):
-        asyncio.create_task(_maybe_spontaneous_reaction(message.bot, chat_id, message.message_id))
+        _spawn_task(_maybe_spontaneous_reaction(message.bot, chat_id, message.message_id))
 
     reply_to = message.reply_to_message
     reply_text = (reply_to.text or reply_to.caption or "") if reply_to else ""
-    msg_has_keyword = contains_political_keyword(text)
-    reply_has_keyword = contains_political_keyword(reply_text) if reply_text else False
+    msg_topic_detect = resolve_topic_trigger(
+        text,
+        special_matchers={"politics": contains_political_keyword},
+    )
+    msg_topic = msg_topic_detect.get("trigger_topic")
+    msg_has_keyword = bool(msg_topic)
+    reply_topic_detect = resolve_topic_trigger(
+        reply_text,
+        special_matchers={"politics": contains_political_keyword},
+    ) if reply_text else {"trigger_topic": None}
+    reply_topic = reply_topic_detect.get("trigger_topic")
+    reply_has_keyword = bool(reply_topic)
 
     # Анализ изображения по содержанию (категория, описание, политика)
     image_result: tuple[bool, str, str, str, str, str] | None = None
@@ -698,7 +1199,7 @@ async def check_and_reply(message: Message) -> None:
                     )
                 if image_result and len(image_result) >= 7 and bot_settings.get("reactions_on_photos") and not is_analysis_screenshot:
                     emoji = image_result[6]
-                    asyncio.create_task(
+                    _spawn_task(
                         set_photo_reaction(
                             message.bot,
                             chat_id,
@@ -710,20 +1211,89 @@ async def check_and_reply(message: Message) -> None:
                         )
                     )
                     logger.info("[чат %s] Запланирована реакция на фото: %s", chat_id, emoji)
+        except APIStatusError as e:
+            if e.status_code == 402:
+                logger.warning("Анализ изображения: ИИ недоступен (402 — недостаточно кредитов OpenRouter)")
+            else:
+                logger.warning("Ошибка анализа изображения: %s", e)
         except Exception as e:
             logger.warning("Ошибка анализа изображения: %s", e)
 
     img_is_political = image_result is not None and image_result[0]
     # Считаем «политическое событие»: текст с полит. темой, или изображение с полит. контентом, или ответ в полит. тред
+    active_topic = str(msg_topic or reply_topic or ("politics" if img_is_political else "politics")).strip().lower()
     is_political_event = msg_has_keyword or img_is_political or (reply_to and reply_has_keyword and not (reply_to.from_user and reply_to.from_user.is_bot))
+    reply_to_user_id = (
+        int(reply_to.from_user.id)
+        if reply_to and reply_to.from_user and not reply_to.from_user.is_bot
+        else None
+    )
+    try:
+        record_message_event(
+            chat_id=chat_id,
+            user_id=int(message.from_user.id),
+            display_name=first_name,
+            reply_to_user_id=reply_to_user_id,
+            mentioned_user_ids=_extract_mentioned_user_ids(message),
+            is_political=bool(is_political_event and active_topic == "politics"),
+        )
+    except Exception as e:
+        logger.debug("marketing_metrics record_message_event failed: %s", e)
+
+    try:
+        media_type = "photo" if has_photo else ("voice" if has_voice else "text")
+        _spawn_task(
+            ingest_message_event(
+                chat_id=int(chat_id),
+                user_id=int(message.from_user.id),
+                message_id=int(message.message_id),
+                text=display_text,
+                username=(message.from_user.username or "") if message.from_user else "",
+                first_name=(message.from_user.first_name or "") if message.from_user else "",
+                last_name=(message.from_user.last_name or "") if message.from_user else "",
+                media_type=media_type,
+                replied_to_user_id=reply_to_user_id,
+                sentiment=None,
+                is_political=bool(is_political_event and active_topic == "politics"),
+            )
+        )
+    except Exception as e:
+        logger.warning("db ingest scheduling failed: %s", e)
+
     if is_political_event:
         _chat_political_count[chat_id] = _chat_political_count.get(chat_id, 0) + 1
-        logger.info("[чат %s] Полит.событие №%s: %s «%s»", chat_id, _chat_political_count[chat_id], first_name, display_text[:50])
-        _debug_log("POLITICAL_EVENT", chat_id=chat_id, user=first_name, detail=f"№{_chat_political_count[chat_id]} «{text[:40]}»")
+        _persist_state()
+        logger.info(
+            "[чат %s] Topic event #%s [%s]: %s «%s»",
+            chat_id,
+            _chat_political_count[chat_id],
+            active_topic,
+            first_name,
+            display_text[:50],
+        )
+        _debug_log(
+            "POLITICAL_EVENT",
+            chat_id=chat_id,
+            user=first_name,
+            detail=f"topic={active_topic} №{_chat_political_count[chat_id]} «{text[:40]}»",
+        )
         # Сразу заводим запись в базе участников, чтобы user_stats.json не оставался пустым
         if message.from_user:
             user_stats.get_user(message.from_user.id, first_name)
+        # Факт-чек: в фоне, при наличии текста и включённой настройке
+        img_desc = (image_result[5] if has_photo and image_result and len(image_result) >= 6 else None) or None
+        await _maybe_run_factcheck(
+            message.bot, chat_id, message.message_id, text, first_name,
+            message.from_user.id if message.from_user else None,
+            image_description=img_desc,
+        )
     else:
+        # Факт-чек расшифровки голоса даже при отсутствии полит. ключевых слов (технологии, экономика и т.д.)
+        if has_voice and text:
+            await _maybe_run_factcheck(
+                message.bot, chat_id, message.message_id, text, first_name,
+                message.from_user.id if message.from_user else None,
+            )
         return
 
     if not bot_settings.get("moderation_enabled", chat_id):
@@ -769,11 +1339,12 @@ async def check_and_reply(message: Message) -> None:
                 initiator_message_text=display_text,
                 initiator_image_result=image_result[:3] if has_photo and image_result else None,
                 event_political_count=political_count,
+                event_topic=active_topic,
             )
         except Exception as e:
             logger.exception("Ошибка в отложенной проверке: %s", e)
 
-    task = asyncio.create_task(scheduled())
+    task = _spawn_task(scheduled())
     if not reactions_phase:
         _chat_scheduled[chat_id] = task
 
@@ -797,23 +1368,103 @@ async def on_bot_added_to_chat(message: Message) -> None:
 async def on_message_to_bot(message: Message) -> None:
     """Ответ на обращение к боту: язвительный/грубый ответ через нейросеть."""
     if not bot_settings.get("reply_to_bot_enabled"):
+        logger.info("[личка] Пропуск: reply_to_bot_enabled выключен")
         return
     if message.from_user and message.from_user.is_bot:
         return
+    chat_type = getattr(message.chat, "type", None)
+    if chat_type == "private":
+        logger.info("[личка] Сообщение от %s (id=%s)", message.from_user.first_name or message.from_user.username, message.from_user.id)
     text = (message.text or message.caption or "").strip()
     has_photo = bool(message.photo)
+    has_voice = bool(message.voice)
+    if has_voice and bot_settings.get("analyze_voice"):
+        try:
+            file = await message.bot.get_file(message.voice.file_id)
+            bio = BytesIO()
+            await message.bot.download_file(file.file_path, destination=bio)
+            bio.seek(0)
+            audio_bytes = bio.getvalue()
+            if audio_bytes:
+                mime = getattr(message.voice, "mime_type", None) or "audio/ogg"
+                loop = asyncio.get_event_loop()
+                transcribed = await loop.run_in_executor(
+                    None, lambda: voice_transcribe.transcribe_voice(audio_bytes, mime),
+                )
+                if transcribed:
+                    text = transcribed
+        except Exception as e:
+            logger.warning(
+                "Ошибка транскрипции голоса (личка): %s: %s",
+                type(e).__name__,
+                e or "(без сообщения)",
+                exc_info=True,
+            )
     if not text and not has_photo:
         return
-    display_text = text or ("[фото]" if has_photo else "")
+    display_text = text or ("[фото]" if has_photo else ("[голос]" if has_voice else ""))
     user_name = message.from_user.username or message.from_user.first_name or "Участник"
     first_name = _safe_name((message.from_user.first_name or message.from_user.username or "Участник"))
     chat_id = message.chat.id
+    # Факт-чек голосовых в личку
+    if has_voice and text:
+        await _maybe_run_factcheck(
+            message.bot, chat_id, message.message_id, text, first_name,
+            message.from_user.id if message.from_user else None,
+        )
     add_to_history(
         chat_id, user_name, display_text,
         user_id=message.from_user.id,
         display_name=first_name,
         chat_title=(message.chat.title or "") if message.chat else "",
     )
+
+    reply_to = message.reply_to_message
+    reply_to_user_id = (
+        int(reply_to.from_user.id)
+        if reply_to and reply_to.from_user and not reply_to.from_user.is_bot
+        else None
+    )
+
+    # Всегда логируем личные сообщения к боту в БД
+    try:
+        media_type = "photo" if has_photo else ("voice" if has_voice else "text")
+        _spawn_task(
+            ingest_message_event(
+                chat_id=int(chat_id),
+                user_id=int(message.from_user.id),
+                message_id=int(message.message_id),
+                text=display_text,
+                username=(message.from_user.username or "") if message.from_user else "",
+                first_name=(message.from_user.first_name or "") if message.from_user else "",
+                last_name=(message.from_user.last_name or "") if message.from_user else "",
+                media_type=media_type,
+                replied_to_user_id=reply_to_user_id,
+                sentiment=None,
+                is_political=False,
+            )
+        )
+    except Exception as e:
+        logger.warning("db ingest scheduling failed (on_message_to_bot): %s", e)
+
+    # В личке отвечаем на сообщения до 10 минут (после перезапуска/OOM накопленная очередь всё ещё получает ответ).
+    # В группах порог 3 мин — см. check_and_reply.
+    try:
+        msg_dt = message.date
+        if msg_dt.tzinfo is None:
+            msg_dt = msg_dt.replace(tzinfo=timezone.utc)
+        age_sec = (datetime.now(tz=timezone.utc) - msg_dt).total_seconds()
+    except Exception:
+        age_sec = 0
+    if age_sec > 600:
+        logger.info("[личка %s] Пропуск ответа: старое сообщение (%s сек)", chat_id, int(age_sec))
+        return
+
+    # В личке сразу показываем «печатает», пока ждём очередь executor и ответ ИИ
+    try:
+        await message.bot.send_chat_action(chat_id=chat_id, action="typing")
+    except Exception:
+        pass
 
     user_id = message.from_user.id
     now_mono = time.monotonic()
@@ -825,12 +1476,16 @@ async def on_message_to_bot(message: Message) -> None:
             wants_resume = await loop.run_in_executor(None, lambda: should_resume_dialog(pause_context))
         if wants_resume:
             _dm_silence_until.pop(user_id, None)
+            _persist_state()
             resume_text = (bot_settings.get("reply_resume_text") or "ладно, амнистия. но не путай это со слабостью.").strip()
             await message.reply(resume_text)
             logger.info("Чат %s: пауза диалога снята для %s после примирения", chat_id, first_name)
             _debug_log("DM_UNPAUSE", chat_id=chat_id, user=first_name, detail="forgive-detected")
             _explain("dm", "unpause", chat_id=chat_id, user_id=user_id, detail=display_text[:120])
             return
+        remaining = int(_dm_silence_until.get(user_id, 0) - now_mono)
+        pause_msg = f"в паузе ещё {max(0, remaining) // 60} мин. напиши «извини» чтобы снять."
+        await message.reply(pause_msg)
         logger.info("Чат %s: пользователь %s в паузе диалога (ignore)", chat_id, first_name)
         _explain("dm", "ignore_in_pause", chat_id=chat_id, user_id=user_id, detail=display_text[:120])
         return
@@ -867,11 +1522,12 @@ async def on_message_to_bot(message: Message) -> None:
                 await message.reply(body_html or "понял.", parse_mode="HTML")
                 logger.info("Чат %s: участливый ответ на вопрос дня пользователю %s", chat_id, first_name)
                 _debug_log("QOD_ENGAGING", chat_id=chat_id, user=first_name, detail="ответ на вопрос дня")
-                asyncio.create_task(_update_portrait_background(user_id, first_name))
+                _spawn_task(_update_portrait_background(user_id, first_name))
                 return
-            # Иначе — «и так сойдёт»: не отвечаем
+            # Иначе — короткий ответ, чтобы пользователь не оставался без ответа
             logger.info("Чат %s: ответ на вопрос дня от %s — без участливости (короткий/не по теме/грубый)", chat_id, first_name)
             _debug_log("QOD_SKIP", chat_id=chat_id, user=first_name, detail="и так сойдёт")
+            await message.reply("ок.", parse_mode="HTML")
             return
 
         # Если пользователь явно не хочет общаться — жёстко отвечаем и ставим паузу 3 минуты.
@@ -882,6 +1538,7 @@ async def on_message_to_bot(message: Message) -> None:
             pause_sec = bot_settings.get_int("reply_pause_sec", lo=30, hi=1800)
             await message.reply(pause_text)
             _dm_silence_until[user_id] = time.monotonic() + pause_sec
+            _persist_state()
             logger.info("Чат %s: включена пауза диалога %s сек для %s", chat_id, pause_sec, first_name)
             _debug_log("DM_PAUSE", chat_id=chat_id, user=first_name, detail=f"{pause_sec}s")
             _explain("dm", "pause", chat_id=chat_id, user_id=user_id, detail=display_text[:120])
@@ -914,6 +1571,12 @@ async def on_message_to_bot(message: Message) -> None:
                         )
                 else:
                     is_political, sentiment, message_type, is_substantive = False, "neutral", "other", False
+            except APIStatusError as e:
+                if e.status_code == 402:
+                    logger.warning("Анализ фото в личку: ИИ недоступен (402 — недостаточно кредитов)")
+                else:
+                    logger.warning("Ошибка анализа фото в личку: %s", e)
+                is_political, sentiment, message_type, is_substantive = False, "neutral", "other", False
             except Exception as e:
                 logger.warning("Ошибка анализа фото в личку: %s", e)
                 is_political, sentiment, message_type, is_substantive = False, "neutral", "other", False
@@ -974,18 +1637,29 @@ async def on_message_to_bot(message: Message) -> None:
         reply_type = "kind" if is_positive else ("technical" if message_type == "technical_question" else ("substantive" if is_substantive else "rude"))
         _debug_log("DM_REPLY", chat_id=chat_id, user=first_name, detail=reply_type)
         # Обновление портрета и тона в фоне (не блокирует ответ)
-        asyncio.create_task(_update_portrait_background(user_id, first_name))
+        _spawn_task(_update_portrait_background(user_id, first_name))
     except APIStatusError as e:
         if e.status_code == 402:
             logger.warning("ИИ недоступен: 402")
         else:
             logger.exception("Ошибка API ИИ при ответе: %s", e)
-        fallback = bot_settings.get("reply_fallback_on_error") or "сейчас не в настроении, напиши потом."
-        await message.reply(fallback, parse_mode="HTML")
+        _reply = await _last_resort_gemini_reply(context, display_text, first_name, message.from_user.id)
+        await message.reply(_reply, parse_mode="HTML")
     except Exception as e:
         logger.exception("Ошибка при генерации ответа: %s", e)
-        fallback = bot_settings.get("reply_fallback_on_error") or "сейчас не в настроении, напиши потом."
-        await message.reply(fallback, parse_mode="HTML")
+        _reply = await _last_resort_gemini_reply(context, display_text, first_name, message.from_user.id)
+        await message.reply(_reply, parse_mode="HTML")
+
+
+async def on_private_other(message: Message) -> None:
+    """Личка: сообщения без текста/фото/голоса (стикер, документ и т.д.) — короткий ответ."""
+    if getattr(message.chat, "type", None) != "private":
+        return
+    logger.info("[личка] Сообщение без текста/фото/голоса от id=%s", message.from_user.id if message.from_user else None)
+    try:
+        await message.reply("Напиши текстом или отправь фото — тогда отвечу.")
+    except Exception as e:
+        logger.warning("Ответ в личку (other): %s", e)
 
 
 async def cmd_start(message: Message) -> None:
@@ -1017,6 +1691,50 @@ async def cmd_stats(message: Message) -> None:
         "Файл не обнуляется при перезапуске. Он заполняется, когда кто-то пишет боту или в чате появляются полит. сообщения (после этого добавляются записи и счётчики).",
         parse_mode="HTML",
     )
+
+
+def _participant_me_link(user_id: int) -> str:
+    """Ссылка на страницу «Мой профиль» для участника (подписанный токен)."""
+    secret_raw = (os.getenv("PARTICIPANT_SECRET") or os.getenv("ADMIN_SECRET_KEY") or "").strip()
+    secret = secret_raw.encode("utf-8")
+    ttl_sec = 7 * 24 * 3600
+    exp = int(time.time()) + ttl_sec
+    payload = f"{user_id}:{exp}".encode("utf-8")
+    sig = hmac.new(secret, payload, hashlib.sha256).digest()
+    payload_b64 = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    sig_b64 = base64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
+    token = f"{payload_b64}.{sig_b64}"
+    base = (os.getenv("PARTICIPANT_BASE_URL") or os.getenv("ADMIN_BASE_URL") or "").strip().rstrip("/")
+    if not base:
+        base = "http://127.0.0.1:5000"
+    return f"{base}/me?token={token}"
+
+
+async def cmd_me(message: Message) -> None:
+    """Команда /me — даёт участнику ссылку на свой профиль и граф связей."""
+    user_id = message.from_user.id if message.from_user else 0
+    if not user_id:
+        await message.reply("Не удалось определить пользователя.")
+        return
+    link = _participant_me_link(user_id)
+    if message.chat.type == "private":
+        await message.reply(
+            "Ваша ссылка на профиль и граф связей (действует 7 дней):\n\n"
+            f"{link}\n\nСохраните в закладки.",
+        )
+    else:
+        try:
+            await message.bot.send_message(
+                chat_id=user_id,
+                text="Ваша ссылка на профиль и граф связей (действует 7 дней):\n\n"
+                f"{link}\n\nСохраните в закладки.",
+            )
+            await message.reply("Ссылку на ваш профиль отправил в личные сообщения.")
+        except Exception as e:
+            logger.warning("Не удалось отправить /me в личку пользователю %s: %s", user_id, e)
+            await message.reply(
+                "Откройте бота в личке (@bot) и отправьте там команду /me — тогда получите ссылку.",
+            )
 
 
 _question_of_day_last_sent_at: float = 0
@@ -1149,6 +1867,48 @@ async def _question_of_day_scheduler(bot: Bot) -> None:
             await asyncio.sleep(jitter)
 
 
+def _sd_notify(msg: str) -> None:
+    """Send a message to systemd via NOTIFY_SOCKET (zero dependencies)."""
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        try:
+            if addr[0] == "@":
+                addr = "\0" + addr[1:]
+            sock.sendto(msg.encode(), addr)
+        finally:
+            sock.close()
+    except OSError:
+        pass
+
+
+def _watchdog_thread_fn() -> None:
+    """Send WATCHDOG=1 to systemd every 60s from a separate thread (survives event loop blocking)."""
+    while True:
+        _sd_notify("WATCHDOG=1")
+        time.sleep(60)
+
+
+def _start_watchdog_thread() -> None:
+    """Start background thread that pings systemd watchdog; send READY=1 once."""
+    _sd_notify("READY=1")
+    t = threading.Thread(target=_watchdog_thread_fn, daemon=True, name="watchdog")
+    t.start()
+
+
+async def _state_persistence_loop() -> None:
+    """Периодически сохраняет состояние бота на диск (каждые 60 сек)."""
+    await asyncio.sleep(60)
+    while True:
+        try:
+            _persist_state()
+        except Exception as e:
+            logger.warning("Ошибка сохранения состояния: %s", e)
+        await asyncio.sleep(60)
+
+
 async def _content_digest_scheduler(bot: Bot) -> None:
     """Периодический контент-дайджест (настраиваемый, отключаемый)."""
     global _content_digest_last_sent_at
@@ -1181,6 +1941,18 @@ async def _content_digest_scheduler(bot: Bot) -> None:
 
 
 async def main() -> None:
+    validate_secrets("bot")
+    logger.info("Python: %s", sys.executable)
+    if bot_settings.get("analyze_voice"):
+        try:
+            from faster_whisper import WhisperModel
+            logger.info("faster-whisper: OK (локальная транскрипция доступна)")
+        except ImportError:
+            logger.warning(
+                "faster-whisper не найден в %s. Голосовые будут через OpenRouter. "
+                "Локально: python -m pip install faster-whisper",
+                sys.executable,
+            )
     token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
     if not token or "вставьте" in token.lower() or "your_" in token.lower():
         raise ValueError("В .env укажите TELEGRAM_BOT_TOKEN (от @BotFather).")
@@ -1192,9 +1964,11 @@ async def main() -> None:
     dp.message.register(cmd_start, Command("start"))
     dp.message.register(cmd_ranks, Command("ranks"))
     dp.message.register(cmd_stats, Command("stats"))
+    dp.message.register(cmd_me, Command("me"))
     dp.message.register(on_bot_added_to_chat, F.new_chat_members)
-    dp.message.register(on_message_to_bot, F.text | F.caption | F.photo, IsDirectedAtBotFilter())
-    dp.message.register(check_and_reply, F.text | F.caption | F.photo)
+    dp.message.register(on_message_to_bot, F.text | F.caption | F.photo | F.voice, IsDirectedAtBotFilter())
+    dp.message.register(check_and_reply, F.text | F.caption | F.photo | F.voice)
+    dp.message.register(on_private_other, F.chat.type == "private")
 
     # Устанавливаем аватарку бота (Путин), если файл есть
     if AVATAR_PATH.is_file():
@@ -1213,14 +1987,39 @@ async def main() -> None:
     except OSError:
         pass
 
+    await init_db()
+    init_storage()
+    bot_state.apply_state(
+        _chat_political_count,
+        _chat_warning_count,
+        _chat_messages_since_political,
+        _chat_first_remark_done,
+        _chat_last_praise_date,
+        _dm_silence_until,
+    )
     logger.info("Бот запущен. ИИ: %s", os.getenv("OPENAI_BASE_URL", "(не задан)"))
     _debug_log("SESSION_START", detail=f"ИИ={os.getenv('OPENAI_BASE_URL', '—')}")
-    asyncio.create_task(restart_checker(RESTART_FLAG_PATH, logger))
-    asyncio.create_task(_question_of_day_scheduler(bot))
-    asyncio.create_task(_content_digest_scheduler(bot))
-    asyncio.create_task(social_graph_daily_task(social_graph.process_pending_days, logger))
-    asyncio.create_task(social_graph_realtime_task(social_graph.process_realtime_updates, logger))
-    await dp.start_polling(bot)
+    _start_watchdog_thread()
+    _spawn_task(restart_checker(RESTART_FLAG_PATH, logger))
+    _spawn_task(_state_persistence_loop())
+    _spawn_task(_question_of_day_scheduler(bot))
+    _spawn_task(_content_digest_scheduler(bot))
+    _spawn_task(social_graph_daily_task(social_graph.process_pending_days, logger))
+    _spawn_task(social_graph_realtime_task(social_graph.process_realtime_updates, logger))
+    _spawn_task(portrait_image_daily_task(logger))
+    _spawn_task(marketing_metrics_rollup_task(logger))
+    _spawn_task(churn_detection_task(bot, logger))
+    _spawn_task(storage_parity_monitor_task(logger))
+    _spawn_task(data_retention_task(logger))
+    try:
+        await dp.start_polling(bot)
+    finally:
+        pending = [task for task in list(_background_tasks) if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        await bot.session.close()
 
 
 if __name__ == "__main__":

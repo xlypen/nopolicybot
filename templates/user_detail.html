@@ -11,7 +11,7 @@
 </style>
 {% endblock %}
 {% block body %}
-<div class="mb-2"><a href="{{ url_for('index', chat=chat_id or 'all') }}">← Назад к списку</a> · <a href="{{ url_for('settings') }}">Настройки</a></div>
+<div class="mb-2"><a href="{{ url_for('admin', chat=chat_id or 'all') }}">← Назад к списку</a> · <a href="{{ url_for('settings') }}">Настройки</a></div>
 <div class="card">
 <div class="user-header">
 <div class="avatar-wrap" style="width:64px;height:64px;">
@@ -33,6 +33,8 @@
 <button type="button" class="section-tab" data-section="sec-portrait">Портрет</button>
 <button type="button" class="section-tab" data-section="sec-mood">Настроение</button>
 <button type="button" class="section-tab" data-section="sec-qod">Вопрос дня</button>
+<button type="button" class="section-tab" data-section="sec-close-attention">Пристальное внимание</button>
+<button type="button" class="section-tab" data-section="sec-factcheck">Факт-чек</button>
 <button type="button" class="section-tab" data-section="sec-explain">Объяснимость</button>
 </div>
 
@@ -102,6 +104,26 @@
 <p class="text-sm mb-1">В архиве: {{ archive_count }} сообщений</p>
 <button type="button" class="btn" id="btn-portrait" onclick="buildPortrait()" {% if is_portrait_building %}disabled{% endif %}>Составить портрет</button>
 <div id="portrait-result" class="text-sm mt-1">{% if is_portrait_building %}Анализирую… (1–2 мин){% endif %}</div>
+</div>
+<div style="margin-top:1rem;padding:1rem;background:var(--bg-input);border-radius:8px;">
+<h3 style="margin:0 0 0.5rem;font-size:0.95rem;">Картинка портрета</h3>
+<p class="text-sm text-muted mb-1">Нейросеть рисует портрет по психологическому описанию. Обновляется раз в 7 дней или по кнопке.</p>
+{% if portrait_image_exists %}
+<div class="mb-1"><img src="{{ url_for('portrait_image', user_id=user_id) }}?v={{ portrait_image_mtime }}" alt="Портрет" style="max-width:100%;max-height:320px;border-radius:8px;border:1px solid var(--border-card);"></div>
+<p class="text-sm text-muted">Обновлено: {{ u.get('portrait_image_updated_date', '—') or '—' }}</p>
+{% endif %}
+<div class="flex gap-sm align-center flex-wrap mb-1">
+<label class="text-sm">Провайдер:</label>
+<select id="portrait-provider" style="min-width:140px;">
+<option value="">Авто (по порядку)</option>
+<option value="huggingface">HuggingFace</option>
+<option value="gemini">Gemini</option>
+<option value="replicate">Replicate</option>
+<option value="openrouter">OpenRouter</option>
+</select>
+<button type="button" class="btn btn-secondary" id="btn-portrait-image" onclick="generatePortraitImage()" {% if is_portrait_image_generating %}disabled{% endif %}>{% if portrait_image_exists %}Обновить картинку{% else %}Сгенерировать картинку{% endif %}</button>
+</div>
+<div id="portrait-image-result" class="text-sm mt-1">{% if is_portrait_image_generating %}Генерирую… (30–60 сек){% endif %}</div>
 </div>
 </div>
 </div>
@@ -175,6 +197,43 @@
 </div>
 </div>
 
+<div id="sec-close-attention" class="section-panel">
+<div class="card">
+<h2>Пристальное внимание</h2>
+<p class="text-sm text-muted mb-1">Тестовый режим. Бот особо тщательно анализирует сообщения участника, накапливает его взгляды, остро реагирует на политические высказывания и требует доказательства при их отсутствии.</p>
+<label class="flex align-center gap-sm mb-1" style="cursor:pointer;">
+<input type="checkbox" id="close-attention-checkbox" {% if u.get('close_attention_enabled') %}checked{% endif %} onchange="toggleCloseAttention(this)">
+<span>Включить режим «пристальное внимание»</span>
+</label>
+{% if close_attention_views %}
+<h3 style="margin-top:1rem;font-size:0.95rem;">Накопленные взгляды ({{ close_attention_views|length }})</h3>
+<div style="max-height:280px;overflow-y:auto;font-size:0.84rem;">
+{% for v in close_attention_views[-30:]|reverse %}
+<div style="padding:0.5rem;margin-bottom:0.4rem;background:var(--bg-input);border-radius:6px;border-left:3px solid {% if v.get('needs_evidence') and not v.get('evidence_found') %}#e94560{% else %}#2a568a{% endif %};">
+<span class="text-muted">{{ v.get('date', '') }}</span>
+<div style="margin-top:0.25rem;color:#cfe0f8;">{{ v.get('views', '—') or '—' }}</div>
+{% if v.get('source') %}<div style="font-size:0.78rem;color:#8ea5c4;margin-top:0.2rem;">Источник: {{ v.get('source', '')[:150] }}{% if v.get('source', '')|length > 150 %}…{% endif %}</div>{% endif %}
+{% if v.get('needs_evidence') %}<span class="badge {% if v.get('evidence_found') %}good{% else %}alert{% endif %}" style="margin-top:0.25rem;">{% if v.get('evidence_found') %}доказательства есть{% else %}требовались доказательства{% endif %}</span>{% endif %}
+</div>
+{% endfor %}
+</div>
+{% else %}
+<p class="text-muted mt-1">Пока нет накопленных записей. Включите режим и дождитесь полит. сообщений участника.</p>
+{% endif %}
+</div>
+</div>
+
+<div id="sec-factcheck" class="section-panel">
+<div class="card">
+<h2>Факт-чек</h2>
+<p class="text-sm text-muted mb-1">Проверять высказывания этого участника по открытым источникам при политических сообщениях. Работает вместе с глобальной настройкой в Настройках.</p>
+<label class="flex align-center gap-sm mb-1" style="cursor:pointer;">
+<input type="checkbox" id="factcheck-checkbox" {% if u.get('factcheck_enabled') %}checked{% endif %} onchange="toggleFactcheck(this)">
+<span>Включить факт-чек для этого участника</span>
+</label>
+</div>
+</div>
+
 <div id="sec-explain" class="section-panel">
 <div class="card">
 <h2>Объяснимость действий бота</h2>
@@ -219,6 +278,18 @@ out.innerHTML=html;
 function toggleQuestionOfDay(cb){
 cb.disabled=true;
 apiFetch('{{ url_for("api_question_of_day_toggle", user_id=user_id) }}',{method:'POST',body:{enabled:cb.checked}})
+.then(function(){cb.disabled=false})
+.catch(function(e){alert(e.message||'Ошибка');cb.checked=!cb.checked;cb.disabled=false});
+}
+function toggleCloseAttention(cb){
+cb.disabled=true;
+apiFetch('{{ url_for("api_close_attention_toggle", user_id=user_id) }}',{method:'POST',body:{enabled:cb.checked}})
+.then(function(){cb.disabled=false})
+.catch(function(e){alert(e.message||'Ошибка');cb.checked=!cb.checked;cb.disabled=false});
+}
+function toggleFactcheck(cb){
+cb.disabled=true;
+apiFetch('{{ url_for("api_factcheck_toggle", user_id=user_id) }}',{method:'POST',body:{enabled:cb.checked}})
 .then(function(){cb.disabled=false})
 .catch(function(e){alert(e.message||'Ошибка');cb.checked=!cb.checked;cb.disabled=false});
 }
@@ -288,18 +359,38 @@ var btn=document.getElementById('btn-portrait');
 var out=document.getElementById('portrait-result');
 btn.disabled=true;
 out.innerHTML='Анализирую… (1–2 мин)';
-apiFetch('{{ url_for("api_portrait_from_storage") }}',{method:'POST',body:{user_id:'{{ user_id }}',chat_id:'{{ chat_id or "all" }}'}})
+apiFetch('/api/v2/portrait/portrait-from-storage',{method:'POST',body:{user_id:'{{ user_id }}',chat_id:'{{ chat_id or "all" }}'}})
 .then(function(d){out.innerHTML='<span class="text-success">Готово! <a href="">Обновить страницу</a></span>';setTimeout(function(){location.reload()},2000)})
 .catch(function(e){out.innerHTML='<span class="text-danger">'+(e.message||'Ошибка')+'</span>';btn.disabled=false});
 }
-{% if is_portrait_building %}
-(function poll(){
-fetch('{{ url_for("api_portrait_building_status") }}?user_id={{ user_id }}').then(function(r){return r.json()}).then(function(d){
-if(!d.building){location.reload();}
-else setTimeout(poll,2000);
-});
+function generatePortraitImage(){
+var btn=document.getElementById('btn-portrait-image');
+var out=document.getElementById('portrait-image-result');
+var sel=document.getElementById('portrait-provider');
+var provider=(sel&&sel.value)||'';
+btn.disabled=true;
+out.innerHTML='Генерирую… (30–60 сек)';
+apiFetch('/api/v2/portrait/user/{{ user_id }}/portrait-image',{method:'POST',body:provider?{provider:provider}:{}})
+.then(function(d){out.innerHTML='<span class="text-success">Готово! <a href="">Обновить страницу</a></span>';setTimeout(function(){location.reload()},2000)})
+.catch(function(e){out.innerHTML='<span class="text-danger">'+(e.message||'Ошибка')+'</span>';btn.disabled=false});
+}
+function clearPortraitCache(){
+var btn=document.getElementById('btn-portrait-clear-cache');
+if(!btn)return;
+btn.disabled=true;
+apiFetch('/api/v2/portrait/portrait-clear-cache',{method:'POST',body:{}})
+.then(function(d){btn.disabled=false;if(d&&d.cleared)alert('Кеш модели портретов очищен');})
+.catch(function(e){btn.disabled=false;alert(e.message||'Ошибка');});
+}
+(function pollPortraitStatus(){
+fetch('/api/v2/portrait/portrait-building-status?user_id={{ user_id }}').then(function(r){return r.json()}).then(function(d){
+if(d.building){setTimeout(pollPortraitStatus,2000);return;}
+fetch('/api/v2/portrait/user/{{ user_id }}/portrait-image-status').then(function(r2){return r2.json()}).then(function(d2){
+if(d2.generating){setTimeout(pollPortraitStatus,3000);return;}
+location.reload();
+}).catch(function(){setTimeout(pollPortraitStatus,3000);});
+}).catch(function(){});
 })();
-{% endif %}
 function clearArchive(chatId, btn){
 if(!confirm(chatId==='all'?'Очистить весь архив?':'Очистить архив этого чата?'))return;
 btn.disabled=true;

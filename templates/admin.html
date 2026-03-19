@@ -1,0 +1,381 @@
+{% extends "base.html" %}
+{% block title %}Админ-панель{% endblock %}
+{% block body %}
+<div class="page">
+  <div class="header">
+    <h1>Админ-панель</h1>
+    <div class="actions">
+      <a class="btn btn-secondary" href="/social-graph?chat={{ current_chat }}">Граф</a>
+      <a class="btn btn-secondary" href="/settings">Настройки</a>
+      <a class="btn btn-secondary" href="/logout">Выйти</a>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-bottom:8px;">
+    <div class="row">
+      <button class="btn btn-secondary tab-btn is-active" data-tab="overviewTab">Обзор</button>
+      <button class="btn btn-secondary tab-btn" data-tab="settingsTab">Настройки</button>
+      <button class="btn btn-secondary tab-btn" data-tab="promptsTab">Промпты бота</button>
+    </div>
+  </div>
+
+  <section id="overviewTab" class="tab-section is-active">
+    <div class="panel">
+      <div class="row">
+        <strong>Текущий чат:</strong> {{ current_chat }}
+        <span style="color:var(--muted)">| Сообщений: {{ metrics.messages_total }}</span>
+        <span style="color:var(--muted)">| Связей: {{ metrics.connections_count }}</span>
+        <span style="color:var(--muted)">| Участников: {{ metrics.users_count }}</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="title">Чаты</div>
+      <div class="actions">
+        <a class="btn {% if current_chat == 'all' %}btn-secondary{% endif %}" href="/admin?chat=all">Все</a>
+        {% for c in chats %}
+        <a class="btn btn-secondary" href="/admin?chat={{ c.chat_id }}">{{ c.title }}</a>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="title">Граф и связи</div>
+        <p>Просмотр структуры общения и метрик графа.</p>
+        <a class="btn" href="/social-graph">Открыть /social-graph</a>
+      </div>
+      <div class="card">
+        <div class="title">Страница участника</div>
+        <p>Проверка персонального графа и payload `/api/me/graph`.</p>
+        <a class="btn" href="/me">Открыть /me</a>
+      </div>
+      <div class="card">
+        <div class="title">Аналитика</div>
+        <p>Сводка и аналитические блоки.</p>
+        <a class="btn" href="/chat/{{ current_chat }}/analysis">Открыть анализ</a>
+      </div>
+      <div class="card">
+        <div class="title">Проверка API</div>
+        <p>Быстрые endpoint'ы для диагностики.</p>
+        <ul>
+          <li><a href="/health">/health</a></li>
+          <li><a href="/api/chat/{{ current_chat }}/graph?period=7d">/api/chat/{{ current_chat }}/graph</a></li>
+          <li><a href="/api/chat/{{ current_chat }}/community-health">/api/chat/{{ current_chat }}/community-health</a></li>
+          <li><a href="/api/chat/{{ current_chat }}/moderation-risk">/api/chat/{{ current_chat }}/moderation-risk</a></li>
+          <li><a href="/api/v2/admin/log-tail">/api/v2/admin/log-tail</a></li>
+          <li><a href="/api/recommendations?chat_id={{ current_chat }}&days=30&limit=10">/api/recommendations</a></li>
+          <li><a href="/api/retention-dashboard?chat_id={{ current_chat }}&days=30">/api/retention-dashboard</a></li>
+          <li><a href="/api/decisions/recent?chat_id={{ current_chat }}&limit=30">/api/decisions/recent</a></li>
+          <li><a href="/api/v2/admin/topic-policies">/api/v2/admin/topic-policies</a></li>
+          <li><a href="/api/storage/status">/api/storage/status</a></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="settingsTab" class="tab-section">
+    <div class="card">
+      <div class="title">Логи (отдельная панель)</div>
+      <div class="row">
+        <label>Источник:</label>
+        <select id="logSource">
+          <option value="telegram-bot.service" selected>telegram-bot.service</option>
+          <option value="telegram-bot-admin.service">telegram-bot-admin.service</option>
+          <option value="telegram-bot-api.service">telegram-bot-api.service</option>
+          <option value="bot_debug.log">bot_debug.log</option>
+        </select>
+        <label>Строк:</label>
+        <input id="logLines" type="number" min="20" max="500" value="120" style="width:100px;" />
+        <button class="btn" id="loadLogsBtn">Обновить</button>
+        <label><input id="autoLogsChk" type="checkbox" checked /> автообновление</label>
+      </div>
+      <pre id="logsOut">Загрузка логов...</pre>
+    </div>
+    <div class="card">
+      <div class="title">Гибкие тематические политики (beta)</div>
+      <p style="color:var(--muted);margin-top:4px;">Здесь можно включать/отключать любые темы модерации. Политика — только дефолтный профиль.</p>
+      <div class="row" style="margin-bottom:8px;">
+        <label>Primary topic:</label>
+        <select id="primaryTopicSel" style="min-width:180px;"></select>
+        <button class="btn btn-secondary" id="savePrimaryTopicBtn">Сохранить primary</button>
+        <button class="btn btn-secondary" id="reloadTopicPoliciesBtn">Обновить</button>
+      </div>
+      <div class="row" style="margin-bottom:8px;">
+        <input id="newTopicName" type="text" placeholder="Новая тема (например: profanity)" style="min-width:260px;" />
+        <button class="btn" id="addTopicBtn">Добавить тему</button>
+      </div>
+      <div id="topicPoliciesList"></div>
+      <div id="topicPoliciesStatus" style="color:var(--muted);margin-top:8px;"></div>
+    </div>
+  </section>
+
+  <section id="promptsTab" class="tab-section">
+    <div class="card">
+      <div class="title">Восстановление и редактирование промптов</div>
+      <div class="row">
+        <select id="promptName" style="min-width:320px;"></select>
+        <button class="btn" id="reloadPromptBtn">Загрузить</button>
+        <button class="btn" id="savePromptBtn">Сохранить</button>
+        <button class="btn btn-secondary" id="resetPromptBtn">Сбросить выбранный</button>
+        <button class="btn btn-secondary" id="resetAllPromptsBtn">Сбросить все</button>
+      </div>
+      <textarea id="promptBody" class="prompt-editor" spellcheck="false"></textarea>
+      <div id="promptStatus" style="color:var(--muted);margin-top:8px;"></div>
+    </div>
+  </section>
+</div>
+
+<script>
+const tabs = document.querySelectorAll('.tab-btn');
+const sections = document.querySelectorAll('.tab-section');
+for (const btn of tabs) {
+  btn.addEventListener('click', () => {
+    for (const b of tabs) b.classList.remove('is-active');
+    for (const s of sections) s.classList.remove('is-active');
+    btn.classList.add('is-active');
+    document.getElementById(btn.dataset.tab).classList.add('is-active');
+  });
+}
+
+let logsTimer = null;
+async function loadLogs() {
+  const source = document.getElementById('logSource').value;
+  const lines = document.getElementById('logLines').value || '120';
+  const resp = await fetch(`/api/v2/admin/log-tail?source=${encodeURIComponent(source)}&lines=${encodeURIComponent(lines)}`);
+  const body = await resp.json();
+  const out = document.getElementById('logsOut');
+  out.textContent = (body.lines || []).join('\n');
+  out.scrollTop = out.scrollHeight;
+}
+function ensureLogsTimer() {
+  if (logsTimer) clearInterval(logsTimer);
+  if (document.getElementById('autoLogsChk').checked) {
+    logsTimer = setInterval(() => loadLogs().catch(() => {}), 5000);
+  }
+}
+document.getElementById('loadLogsBtn').addEventListener('click', () => loadLogs().catch(() => {}));
+document.getElementById('autoLogsChk').addEventListener('change', ensureLogsTimer);
+document.getElementById('logSource').addEventListener('change', () => loadLogs().catch(() => {}));
+loadLogs().catch(() => {
+  document.getElementById('logsOut').textContent = 'Не удалось загрузить логи.';
+});
+ensureLogsTimer();
+
+let promptsMap = {};
+async function loadPrompts() {
+  const resp = await fetch('/api/prompts');
+  const body = await resp.json();
+  promptsMap = body.prompts || {};
+  const sel = document.getElementById('promptName');
+  sel.innerHTML = '';
+  Object.keys(promptsMap).sort().forEach((name) => {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    sel.appendChild(opt);
+  });
+  if (sel.options.length) {
+    sel.value = sel.options[0].value;
+    document.getElementById('promptBody').value = promptsMap[sel.value] || '';
+  }
+}
+function setPromptStatus(msg) {
+  document.getElementById('promptStatus').textContent = msg;
+}
+document.getElementById('reloadPromptBtn').addEventListener('click', async () => {
+  await loadPrompts();
+  setPromptStatus('Промпты загружены.');
+});
+document.getElementById('promptName').addEventListener('change', (e) => {
+  document.getElementById('promptBody').value = promptsMap[e.target.value] || '';
+});
+document.getElementById('savePromptBtn').addEventListener('click', async () => {
+  const name = document.getElementById('promptName').value;
+  const value = document.getElementById('promptBody').value;
+  const r = await fetch('/api/v2/admin/prompts', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, value}),
+  });
+  if (r.ok) {
+    await loadPrompts();
+    setPromptStatus(`Сохранено: ${name}`);
+  } else {
+    setPromptStatus('Ошибка сохранения.');
+  }
+});
+document.getElementById('resetPromptBtn').addEventListener('click', async () => {
+  const name = document.getElementById('promptName').value;
+  await fetch('/api/v2/admin/prompts', {
+    method: 'DELETE',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({names: [name]}),
+  });
+  await loadPrompts();
+  setPromptStatus(`Сброшено к дефолту: ${name}`);
+});
+document.getElementById('resetAllPromptsBtn').addEventListener('click', async () => {
+  await fetch('/api/v2/admin/prompts', { method: 'DELETE' });
+  await loadPrompts();
+  setPromptStatus('Все промпты восстановлены по умолчанию.');
+});
+loadPrompts().catch(() => setPromptStatus('Не удалось загрузить промпты.'));
+
+let topicPoliciesMap = {};
+let topicPrimary = 'politics';
+
+function setTopicPoliciesStatus(msg, bad = false) {
+  const el = document.getElementById('topicPoliciesStatus');
+  el.textContent = msg || '';
+  el.style.color = bad ? '#ff7a7a' : 'var(--muted)';
+}
+
+function createActionOptions(value) {
+  return `
+    <option value="moderate" ${value === 'moderate' ? 'selected' : ''}>moderate</option>
+    <option value="observe" ${value === 'observe' ? 'selected' : ''}>observe</option>
+  `;
+}
+
+function policyRowHtml(name, p) {
+  const safeName = String(name).replace(/"/g, '&quot;');
+  const keywords = (p.keywords || []).join(', ');
+  return `
+    <div class="panel" style="margin-bottom:8px;padding:10px;" data-topic="${safeName}">
+      <div class="row" style="align-items:center;gap:10px;">
+        <strong style="min-width:140px;">${safeName}</strong>
+        <label><input type="checkbox" class="tp-enabled" ${p.enabled ? 'checked' : ''}/> enabled</label>
+        <label>action:
+          <select class="tp-action">${createActionOptions(p.action || 'observe')}</select>
+        </label>
+        <label>priority:
+          <input class="tp-priority" type="number" min="0" max="999" value="${Number(p.priority || 50)}" style="width:90px;">
+        </label>
+      </div>
+      <div class="row" style="margin-top:6px;">
+        <label>label:</label>
+        <input class="tp-label" type="text" value="${(p.label || '').replace(/"/g, '&quot;')}" style="min-width:240px;">
+        <label>keywords:</label>
+        <input class="tp-keywords" type="text" value="${keywords.replace(/"/g, '&quot;')}" style="min-width:360px;">
+      </div>
+      <div class="row" style="margin-top:6px;">
+        <button class="btn tp-save">Сохранить</button>
+        <button class="btn btn-secondary tp-reset">Сбросить</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderTopicPolicies() {
+  const wrap = document.getElementById('topicPoliciesList');
+  const names = Object.keys(topicPoliciesMap).sort();
+  wrap.innerHTML = names.map((name) => policyRowHtml(name, topicPoliciesMap[name])).join('');
+
+  const primarySel = document.getElementById('primaryTopicSel');
+  primarySel.innerHTML = names.map((name) => `<option value="${name}" ${name === topicPrimary ? 'selected' : ''}>${name}</option>`).join('');
+
+  wrap.querySelectorAll('.panel[data-topic]').forEach((panel) => {
+    const topic = panel.getAttribute('data-topic');
+    panel.querySelector('.tp-save').addEventListener('click', async () => {
+      const patch = {
+        enabled: panel.querySelector('.tp-enabled').checked,
+        action: panel.querySelector('.tp-action').value,
+        priority: Number(panel.querySelector('.tp-priority').value || 50),
+        label: panel.querySelector('.tp-label').value || topic,
+        keywords: (panel.querySelector('.tp-keywords').value || '')
+          .split(',')
+          .map((x) => x.trim())
+          .filter(Boolean),
+      };
+      const resp = await fetch('/api/v2/admin/topic-policies', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: topic, patch}),
+      });
+      if (!resp.ok) {
+        setTopicPoliciesStatus(`Ошибка сохранения темы ${topic}`, true);
+        return;
+      }
+      await loadTopicPolicies();
+      setTopicPoliciesStatus(`Сохранено: ${topic}`);
+    });
+
+    panel.querySelector('.tp-reset').addEventListener('click', async () => {
+      const resp = await fetch('/api/v2/admin/topic-policies', {
+        method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({names: [topic]}),
+      });
+      if (!resp.ok) {
+        setTopicPoliciesStatus(`Ошибка сброса темы ${topic}`, true);
+        return;
+      }
+      await loadTopicPolicies();
+      setTopicPoliciesStatus(`Сброшено: ${topic}`);
+    });
+  });
+}
+
+async function loadTopicPolicies() {
+  const resp = await fetch('/api/v2/admin/topic-policies');
+  const body = await resp.json();
+  topicPoliciesMap = body.policies || {};
+  topicPrimary = body.primary_topic || 'politics';
+  renderTopicPolicies();
+}
+
+document.getElementById('reloadTopicPoliciesBtn').addEventListener('click', () => {
+  loadTopicPolicies()
+    .then(() => setTopicPoliciesStatus('Тематические политики обновлены.'))
+    .catch(() => setTopicPoliciesStatus('Не удалось загрузить topic policies', true));
+});
+
+document.getElementById('savePrimaryTopicBtn').addEventListener('click', async () => {
+  const primary = document.getElementById('primaryTopicSel').value;
+  const resp = await fetch('/api/v2/admin/topic-policies', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({primary_topic: primary}),
+  });
+  if (!resp.ok) {
+    setTopicPoliciesStatus('Ошибка сохранения primary topic', true);
+    return;
+  }
+  await loadTopicPolicies();
+  setTopicPoliciesStatus(`Primary topic: ${primary}`);
+});
+
+document.getElementById('addTopicBtn').addEventListener('click', async () => {
+  const el = document.getElementById('newTopicName');
+  const name = (el.value || '').trim().toLowerCase();
+  if (!name) {
+    setTopicPoliciesStatus('Введите имя новой темы', true);
+    return;
+  }
+  const resp = await fetch('/api/v2/admin/topic-policies', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      name,
+      patch: {
+        enabled: false,
+        action: 'observe',
+        priority: 50,
+        label: name,
+        keywords: [],
+      },
+    }),
+  });
+  if (!resp.ok) {
+    setTopicPoliciesStatus(`Не удалось добавить тему ${name}`, true);
+    return;
+  }
+  el.value = '';
+  await loadTopicPolicies();
+  setTopicPoliciesStatus(`Добавлена тема: ${name}`);
+});
+
+loadTopicPolicies().catch(() => setTopicPoliciesStatus('Не удалось загрузить topic policies', true));
+</script>
+{% endblock %}

@@ -72,6 +72,7 @@ from services.decision_engine import DecisionEngine, append_decision_event
 from services.personality.auto_build import check_and_trigger_build
 from db.engine import init_db
 from services.db_ingest import ingest_message_event
+from services.sqlite_storage import init_storage
 from services.topic_policies import get_topic_label, resolve_topic_trigger
 from utils.text_formatting import capitalize_sentences, reply_text_to_html, strip_leading_name
 
@@ -1459,6 +1460,12 @@ async def on_message_to_bot(message: Message) -> None:
         logger.info("[личка %s] Пропуск ответа: старое сообщение (%s сек)", chat_id, int(age_sec))
         return
 
+    # В личке сразу показываем «печатает», пока ждём очередь executor и ответ ИИ
+    try:
+        await message.bot.send_chat_action(chat_id=chat_id, action="typing")
+    except Exception:
+        pass
+
     user_id = message.from_user.id
     now_mono = time.monotonic()
     if _dm_silence_until.get(user_id, 0) > now_mono:
@@ -1981,6 +1988,7 @@ async def main() -> None:
         pass
 
     await init_db()
+    init_storage()
     bot_state.apply_state(
         _chat_political_count,
         _chat_warning_count,

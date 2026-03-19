@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from config.validate_secrets import validate_secrets
 from api.dependencies import require_auth
-from api.routers.admin import router as admin_router
+from api.routers.admin import router as admin_router, start_admin_cache_warmer, stop_admin_cache_warmer
 from api.routers.graph import router as graph_router
 from api.routers.health import router as health_router
 from api.routers.metrics import router as metrics_router
@@ -23,6 +23,7 @@ from api.routers.settings import router as settings_router
 from api.routers.storage import router as storage_router
 from api.routers.realtime import get_realtime_stats_snapshot, start_realtime_worker, stop_realtime_worker
 from db.engine import init_db
+from services.sqlite_storage import init_storage
 from services.audit_log import read_recent, write_event
 from services.monitoring import build_alerts, record_request, snapshot, to_prometheus_text
 from services.rate_limiter import RateLimiter
@@ -92,10 +93,13 @@ def _origin_allowed(origin: str, request: Request) -> bool:
 async def lifespan(_app: FastAPI):
     validate_secrets("api")
     await init_db()
+    init_storage()
     await start_realtime_worker()
+    start_admin_cache_warmer()
     try:
         yield
     finally:
+        await stop_admin_cache_warmer()
         await stop_realtime_worker()
 
 

@@ -108,33 +108,56 @@ DEFAULTS = {
 
 
 def _load() -> dict:
-    if not SETTINGS_PATH.exists():
-        return dict(DEFAULTS)
-    try:
-        data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return dict(DEFAULTS)
-        merged = dict(DEFAULTS)
-        for k, v in data.items():
-            if k in DEFAULTS:
-                merged[k] = v
-        if "chat_settings" in data and isinstance(data["chat_settings"], dict):
-            merged["chat_settings"] = data["chat_settings"]
-        return merged
-    except Exception:
-        return dict(DEFAULTS)
+    from services.storage_cutover import storage_db_reads_enabled, storage_json_fallback_enabled
+    from services.sqlite_storage import get_storage
+
+    merged = dict(DEFAULTS)
+
+    if storage_db_reads_enabled():
+        st = get_storage()
+        if st:
+            data = st.get_global_settings()
+            if data:
+                for k, v in data.items():
+                    if k in DEFAULTS and k != "chat_settings":
+                        merged[k] = v
+                return merged
+
+    if storage_json_fallback_enabled() and SETTINGS_PATH.exists():
+        try:
+            data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    if k in DEFAULTS:
+                        merged[k] = v
+                if "chat_settings" in data and isinstance(data["chat_settings"], dict):
+                    merged["chat_settings"] = data["chat_settings"]
+        except Exception:
+            pass
+    return merged
 
 
 def _save(data: dict) -> None:
-    try:
-        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(data, ensure_ascii=False, indent=2)
-        with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", dir=SETTINGS_PATH.parent) as tmp:
-            tmp.write(payload)
-            tmp_path = Path(tmp.name)
-        tmp_path.replace(SETTINGS_PATH)
-    except Exception:
-        pass
+    from services.storage_cutover import storage_db_writes_enabled, storage_json_writes_enabled
+    from services.sqlite_storage import get_storage
+
+    to_save = {k: v for k, v in data.items() if k in DEFAULTS and k != "chat_settings"}
+
+    if storage_db_writes_enabled():
+        st = get_storage()
+        if st:
+            st.set_global_settings(to_save)
+
+    if storage_json_writes_enabled():
+        try:
+            SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(data, ensure_ascii=False, indent=2)
+            with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", dir=SETTINGS_PATH.parent) as tmp:
+                tmp.write(payload)
+                tmp_path = Path(tmp.name)
+            tmp_path.replace(SETTINGS_PATH)
+        except Exception:
+            pass
 
 
 def _get_chat_overrides_from_db(chat_id: int) -> dict:

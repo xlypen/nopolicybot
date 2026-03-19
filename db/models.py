@@ -100,6 +100,50 @@ class PersonalityProfileRow(Base):
     __table_args__ = (Index('idx_personality_profiles_user_chat', 'user_id', 'chat_id', 'generated_at'),)
 
 
+class UserProfile(Base):
+    """User profile from user_stats (portrait, rank, stats, etc.). Replaces JSON users."""
+    __tablename__ = "user_profiles"
+    user_id = Column(BigInteger, primary_key=True)
+    profile_json = Column(JSON, nullable=False, default=dict)
+
+
+class StorageChat(Base):
+    """Chat metadata from user_stats. Replaces JSON chats."""
+    __tablename__ = "storage_chats"
+    chat_id = Column(BigInteger, primary_key=True)
+    title = Column(Text, default="")
+    last_seen = Column(Text, default="")
+
+
+class UserMessageArchive(Base):
+    """User message archive (messages_by_chat). Replaces JSON messages_by_chat."""
+    __tablename__ = "user_message_archive"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, nullable=False)
+    chat_id = Column(BigInteger, nullable=False)
+    text = Column(Text, nullable=False)
+    date = Column(String(10), nullable=False)
+    __table_args__ = (
+        Index("idx_uma_user_chat", "user_id", "chat_id"),
+        Index("idx_uma_user_chat_date", "user_id", "chat_id", "date"),
+    )
+
+
+class DialogueLog(Base):
+    """Raw dialogue log for social_graph. Replaces JSON dialogue_log."""
+    __tablename__ = "dialogue_log"
+    chat_id = Column(BigInteger, primary_key=True)
+    date = Column(String(10), primary_key=True)
+    data_json = Column(JSON, nullable=False, default=list)
+
+
+class StorageSettings(Base):
+    """Global bot settings. Replaces bot_settings.json. Single row id=1."""
+    __tablename__ = "storage_settings"
+    id = Column(Integer, primary_key=True)
+    data_json = Column(JSON, nullable=False, default=dict)
+
+
 class PersonalityPortraitRow(Base):
     """Generated visual portrait based on personality profile (IMG-3)."""
     __tablename__ = 'personality_portraits'

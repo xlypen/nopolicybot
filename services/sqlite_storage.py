@@ -1,0 +1,421 @@
+"""
+SqliteStorage: IStorage implementation using data/bot.db (sync sqlite3).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+
+from services.storage_cutover import storage_db_writes_enabled
+
+logger = logging.getLogger(__name__)
+
+_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "bot.db"
+_GRAPH_META_ID = 2  # storage_settings.id=2 for graph metadata
+
+
+def _get_conn():
+    import sqlite3
+    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    return sqlite3.connect(str(_DB_PATH))
+
+
+def _ensure_tables(conn) -> None:
+    """Create storage tables if missing (user_profiles, storage_chats, etc.)."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS user_profiles (
+            user_id INTEGER PRIMARY KEY,
+            profile_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE IF NOT EXISTS storage_chats (
+            chat_id INTEGER PRIMARY KEY,
+            title TEXT DEFAULT '',
+            last_seen TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS user_message_archive (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            chat_id INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            date TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_uma_user_chat ON user_message_archive(user_id, chat_id);
+        CREATE INDEX IF NOT EXISTS idx_uma_user_chat_date ON user_message_archive(user_id, chat_id, date);
+        CREATE TABLE IF NOT EXISTS dialogue_log (
+            chat_id INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            data_json TEXT NOT NULL DEFAULT '[]',
+            PRIMARY KEY (chat_id, date)
+        );
+        CREATE TABLE IF NOT EXISTS storage_settings (
+            id INTEGER PRIMARY KEY,
+            data_json TEXT NOT NULL DEFAULT '{}'
+        );
+    """)
+
+
+class SqliteStorage:
+    """IStorage implementation using data/bot.db."""
+
+    def __init__(self, db_path: Path | None = None):
+        self._path = db_path or _DB_PATH
+
+    def _conn(self):
+        import sqlite3
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(self._path))
+        _ensure_tables(conn)
+        return conn
+
+    def get_user_profile(self, user_id: int) -> dict | None:
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                "SELECT profile_json FROM user_profiles WHERE user_id = ?",
+                (int(user_id),),
+            ).fetchone()
+            if not row:
+                return None
+            raw = row[0]
+            return json.loads(raw) if isinstance(raw, str) else (raw or {})
+        finally:
+            conn.close()
+
+    def set_user_profile(self, user_id: int, profile: dict) -> None:
+        if not storage_db_writes_enabled():
+            return
+        conn = self._conn()
+        try:
+            payload = json.dumps(profile, ensure_ascii=False)
+            conn.execute(
+                "INSERT INTO user_profiles (user_id, profile_json) VALUES (?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET profile_json = excluded.profile_json",
+                (int(user_id), payload),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_user_messages(
+        self, user_id: int, chat_id: int | None = None, limit: int = 1000
+    ) -> list[dict]:
+        conn = self._conn()
+        try:
+            if chat_id is not None:
+                rows = conn.execute(
+                    "SELECT text, date FROM user_message_archive "
+                    "WHERE user_id = ? AND chat_id = ? ORDER BY date, id LIMIT ?",
+                    (int(user_id), int(chat_id), limit),
+                ).fetchall()
+                return [{"text": r[0], "date": r[1]} for r in rows]
+            rows = conn.execute(
+                "SELECT text, date, chat_id FROM user_message_archive "
+                "WHERE user_id = ? ORDER BY date, id LIMIT ?",
+                (int(user_id), limit),
+            ).fetchall()
+            return [{"text": r[0], "date": r[1], "chat_id": r[2]} for r in rows]
+        finally:
+            conn.close()
+
+    def append_message(
+        self, user_id: int, chat_id: int, text: str, date: str, *, dedupe: bool = True
+    ) -> bool:
+        if not storage_db_writes_enabled():
+            return False
+        conn = self._conn()
+        try:
+            if dedupe:
+                exists = conn.execute(
+                    "SELECT 1 FROM user_message_archive "
+                    "WHERE user_id = ? AND chat_id = ? AND text = ? AND date = ?",
+                    (int(user_id), int(chat_id), text[:500], date),
+                ).fetchone()
+                if exists:
+                    return False
+            conn.execute(
+                "INSERT INTO user_message_archive (user_id, chat_id, text, date) VALUES (?, ?, ?, ?)",
+                (int(user_id), int(chat_id), text[:500], date),
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def get_chat(self, chat_id: int) -> dict | None:
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                "SELECT chat_id, title, last_seen FROM storage_chats WHERE chat_id = ?",
+                (int(chat_id),),
+            ).fetchone()
+            if not row:
+                return None
+            return {"chat_id": row[0], "title": row[1] or "", "last_seen": row[2] or ""}
+        finally:
+            conn.close()
+
+    def upsert_chat(self, chat_id: int, title: str) -> None:
+        if not storage_db_writes_enabled():
+            return
+        conn = self._conn()
+        try:
+            today = __import__("datetime").date.today().isoformat()
+            conn.execute(
+                "INSERT INTO storage_chats (chat_id, title, last_seen) VALUES (?, ?, ?) "
+                "ON CONFLICT(chat_id) DO UPDATE SET title = excluded.title, last_seen = excluded.last_seen",
+                (int(chat_id), title or "", today),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_dialogue_log(self, chat_id: int) -> dict:
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT date, data_json FROM dialogue_log WHERE chat_id = ?",
+                (int(chat_id),),
+            ).fetchall()
+            out = {}
+            for date_str, raw in rows:
+                data = json.loads(raw) if isinstance(raw, str) else (raw or [])
+                out[date_str] = data
+            return out
+        finally:
+            conn.close()
+
+    def set_dialogue_log(self, chat_id: int, log: dict) -> None:
+        if not storage_db_writes_enabled():
+            return
+        conn = self._conn()
+        try:
+            conn.execute("DELETE FROM dialogue_log WHERE chat_id = ?", (int(chat_id),))
+            for date_str, msgs in (log or {}).items():
+                payload = json.dumps(msgs, ensure_ascii=False)
+                conn.execute(
+                    "INSERT INTO dialogue_log (chat_id, date, data_json) VALUES (?, ?, ?)",
+                    (int(chat_id), date_str, payload),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _pair_to_users(self, pair_key: str) -> tuple[int, int]:
+        parts = pair_key.split("|")
+        if len(parts) != 2:
+            return 0, 0
+        a, b = int(parts[0]), int(parts[1])
+        return min(a, b), max(a, b)
+
+    def get_connection(self, chat_id: int, pair_key: str) -> dict | None:
+        ua, ub = self._pair_to_users(pair_key)
+        if not ua and not ub:
+            return None
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                "SELECT summary, summary_by_date FROM edges "
+                "WHERE chat_id = ? AND from_user = ? AND to_user = ?",
+                (int(chat_id), ua, ub),
+            ).fetchone()
+            if not row:
+                return None
+            summary_by_date = json.loads(row[1]) if isinstance(row[1], str) else (row[1] or [])
+            return {
+                "summary": row[0] or "",
+                "summary_by_date": summary_by_date,
+                "user_a": ua,
+                "user_b": ub,
+            }
+        finally:
+            conn.close()
+
+    def upsert_connection(self, chat_id: int, pair_key: str, data: dict) -> None:
+        if not storage_db_writes_enabled():
+            return
+        ua, ub = self._pair_to_users(pair_key)
+        if not ua and not ub:
+            return
+        summary = (data.get("summary") or "")[:6000]
+        summary_by_date = data.get("summary_by_date") or []
+        payload = json.dumps(summary_by_date, ensure_ascii=False)
+        conn = self._conn()
+        try:
+            conn.execute(
+                "INSERT INTO edges (chat_id, from_user, to_user, weight, summary, summary_by_date) "
+                "VALUES (?, ?, ?, 1, ?, ?) "
+                "ON CONFLICT(chat_id, from_user, to_user) DO UPDATE SET "
+                "summary = excluded.summary, summary_by_date = excluded.summary_by_date",
+                (int(chat_id), ua, ub, summary, payload),
+            )
+            conn.commit()
+        except Exception as e:
+            # edges may have different schema (unique constraint name)
+            try:
+                conn.execute(
+                    "UPDATE edges SET summary = ?, summary_by_date = ? "
+                    "WHERE chat_id = ? AND from_user = ? AND to_user = ?",
+                    (summary, payload, int(chat_id), ua, ub),
+                )
+                if conn.total_changes == 0:
+                    conn.execute(
+                        "INSERT INTO edges (chat_id, from_user, to_user, weight, summary, summary_by_date) "
+                        "VALUES (?, ?, ?, 1, ?, ?)",
+                        (int(chat_id), ua, ub, summary, payload),
+                    )
+                conn.commit()
+            except Exception as e2:
+                logger.warning("upsert_connection: %s", e2)
+        finally:
+            conn.close()
+
+    def get_all_connections(self, chat_id: int | None) -> list[dict]:
+        conn = self._conn()
+        try:
+            if chat_id is not None:
+                rows = conn.execute(
+                    "SELECT chat_id, from_user, to_user, summary, summary_by_date FROM edges WHERE chat_id = ?",
+                    (int(chat_id),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT chat_id, from_user, to_user, summary, summary_by_date FROM edges"
+                ).fetchall()
+            out = []
+            for r in rows:
+                sbd = json.loads(r[4]) if isinstance(r[4], str) else (r[4] or [])
+                out.append({
+                    "chat_id": r[0],
+                    "pair_key": f"{min(r[1], r[2])}|{max(r[1], r[2])}",
+                    "summary": r[3] or "",
+                    "summary_by_date": sbd,
+                })
+            return out
+        finally:
+            conn.close()
+
+    def get_last_processed_date(self) -> str | None:
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                "SELECT data_json FROM storage_settings WHERE id = ?",
+                (_GRAPH_META_ID,),
+            ).fetchone()
+            if not row:
+                return None
+            data = json.loads(row[0]) if isinstance(row[0], str) else (row[0] or {})
+            return data.get("last_processed_date") or None
+        finally:
+            conn.close()
+
+    def set_last_processed_date(self, date: str) -> None:
+        if not storage_db_writes_enabled():
+            return
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                "SELECT data_json FROM storage_settings WHERE id = ?",
+                (_GRAPH_META_ID,),
+            ).fetchone()
+            data = {}
+            if row and row[0]:
+                raw = row[0]
+                data = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            data["last_processed_date"] = date
+            payload = json.dumps(data, ensure_ascii=False)
+            conn.execute(
+                "INSERT INTO storage_settings (id, data_json) VALUES (?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET data_json = excluded.data_json",
+                (_GRAPH_META_ID, payload),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_processed_dates_for_chat(self, chat_id: int) -> set[str]:
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT processed_date FROM processed_dates WHERE chat_id = ?",
+                (int(chat_id),),
+            ).fetchall()
+            return {r[0] for r in rows}
+        except Exception:
+            return set()
+        finally:
+            conn.close()
+
+    def set_processed_date(self, chat_id: int, date: str) -> None:
+        if not storage_db_writes_enabled():
+            return
+        conn = self._conn()
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO processed_dates (chat_id, processed_date) VALUES (?, ?)",
+                (int(chat_id), date),
+            )
+            conn.commit()
+        except Exception as e:
+            logger.debug("set_processed_date: %s", e)
+        finally:
+            conn.close()
+
+    def get_global_settings(self) -> dict:
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                "SELECT data_json FROM storage_settings WHERE id = 1"
+            ).fetchone()
+            if not row:
+                return {}
+            raw = row[0]
+            return json.loads(raw) if isinstance(raw, str) else (raw or {})
+        finally:
+            conn.close()
+
+    def set_global_settings(self, data: dict) -> None:
+        if not storage_db_writes_enabled():
+            return
+        conn = self._conn()
+        try:
+            payload = json.dumps(data, ensure_ascii=False)
+            conn.execute(
+                "INSERT INTO storage_settings (id, data_json) VALUES (1, ?) "
+                "ON CONFLICT(id) DO UPDATE SET data_json = excluded.data_json",
+                (payload,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def get_storage() -> SqliteStorage | None:
+    """Return SqliteStorage instance when DB storage is enabled, else None."""
+    from services.storage_cutover import storage_db_reads_enabled
+    if not storage_db_reads_enabled():
+        return None
+    global _storage_instance
+    if _storage_instance is None:
+        _storage_instance = SqliteStorage()
+    return _storage_instance
+
+
+_storage_instance: SqliteStorage | None = None
+
+
+def init_storage() -> SqliteStorage | None:
+    """Initialize storage and ensure tables exist. Call at bot startup."""
+    global _storage_instance
+    from services.storage_cutover import storage_db_reads_enabled
+    if not storage_db_reads_enabled():
+        return None
+    _storage_instance = SqliteStorage()
+    conn = _storage_instance._conn()
+    try:
+        _ensure_tables(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    return _storage_instance

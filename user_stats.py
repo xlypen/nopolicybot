@@ -175,6 +175,16 @@ def _default_user(user_id: int, display_name: str = "") -> dict:
     }
 
 
+def _sync_user_to_storage(user_id: int, profile: dict) -> None:
+    """Синхронизирует профиль пользователя в storage при storage_db_writes_enabled."""
+    from services.storage_cutover import storage_db_writes_enabled
+    from services.sqlite_storage import get_storage
+    if storage_db_writes_enabled():
+        st = get_storage()
+        if st:
+            st.set_user_profile(user_id, profile)
+
+
 def _get_user_from_db(user_id: int) -> dict | None:
     """Данные пользователя из БД: display_name (users), total_messages (messages)."""
     if not DB_PATH.exists():
@@ -204,23 +214,40 @@ def _get_user_from_db(user_id: int) -> dict | None:
 
 
 def get_user(user_id: int, display_name: str = "") -> dict:
-    """Возвращает данные пользователя. БД (имя, счётчик сообщений) + JSON (ранг, полит, предупреждения)."""
+    """Возвращает данные пользователя. Storage/БД (имя, счётчик сообщений) + JSON fallback (ранг, полит, предупреждения)."""
+    from services.storage_cutover import storage_db_reads_enabled, storage_json_fallback_enabled
+    from services.sqlite_storage import get_storage
+
     key = str(user_id)
     from_db = _get_user_from_db(user_id)
-    data = _load()
-    if key not in data["users"]:
-        data["users"][key] = _default_user(user_id, display_name)
-        _save(data)
-    else:
-        if display_name and not data["users"][key].get("display_name"):
-            data["users"][key]["display_name"] = display_name
+    out = None
+
+    if storage_db_reads_enabled():
+        st = get_storage()
+        if st:
+            out = st.get_user_profile(user_id)
+
+    if out is None and storage_json_fallback_enabled():
+        data = _load()
+        if key not in data["users"]:
+            data["users"][key] = _default_user(user_id, display_name)
             _save(data)
-    out = data["users"][key].copy()
+        else:
+            if display_name and not data["users"][key].get("display_name"):
+                data["users"][key]["display_name"] = display_name
+                _save(data)
+        out = data["users"][key].copy()
+
+    if out is None:
+        out = _default_user(user_id, display_name)
+
     if from_db:
         if from_db.get("display_name"):
             out["display_name"] = from_db["display_name"]
         if from_db.get("stats", {}).get("total_messages") is not None:
             out.setdefault("stats", {})["total_messages"] = from_db["stats"]["total_messages"]
+    if display_name and not out.get("display_name"):
+        out["display_name"] = display_name
     return out
 
 
@@ -257,37 +284,55 @@ def record_chat_message(
     """Сохраняет сообщение пользователя в архив (по чатам) и обновляет total_messages."""
     if not text or not (text := text.strip()):
         return
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
-        data["users"][key] = _default_user(user_id, display_name)
-    u = data["users"][key]
-    if _ensure_messages_by_chat(u):
-        _save(data)
-    if display_name:
-        u["display_name"] = display_name
-    by_chat = u["messages_by_chat"]
-    # Нормализуем ключ чата: всегда строка для консистентности (int -5192849857 -> "-5192849857")
-    ckey = str(int(chat_id)) if chat_id is not None else "unknown"
-    if ckey not in by_chat:
-        by_chat[ckey] = []
+    from services.storage_cutover import storage_db_writes_enabled, storage_json_writes_enabled
+    from services.sqlite_storage import get_storage
+
     today_str = date.today().isoformat()
-    msg = {"text": text[:500], "date": today_str}
-    last = by_chat[ckey][-1] if by_chat[ckey] else None
-    if last and last.get("text") == msg["text"] and last.get("date") == today_str:
-        return
-    u["stats"]["total_messages"] = u["stats"].get("total_messages", 0) + 1
-    by_chat[ckey].append(msg)
-    by_chat[ckey] = by_chat[ckey][-MESSAGES_ARCHIVE_LIMIT:]
-    if chat_id is not None:
-        ckey = str(int(chat_id))
-        if ckey not in data["chats"]:
-            data["chats"][ckey] = {"title": chat_title or ckey, "last_seen": date.today().isoformat()}
+
+    if storage_db_writes_enabled():
+        st = get_storage()
+        if st and chat_id is not None:
+            inserted = st.append_message(user_id, chat_id, text, today_str)
+            if chat_id is not None:
+                st.upsert_chat(chat_id, chat_title or str(chat_id))
+            if inserted:
+                u = get_user(user_id, display_name)
+                u.setdefault("stats", {})["total_messages"] = u["stats"].get("total_messages", 0) + 1
+                if display_name:
+                    u["display_name"] = display_name
+                st.set_user_profile(user_id, u)
+
+    if storage_json_writes_enabled():
+        data = _load()
+        key = str(user_id)
+        if key not in data["users"]:
+            data["users"][key] = _default_user(user_id, display_name)
+        u = data["users"][key]
+        if _ensure_messages_by_chat(u):
+            _save(data)
+        if display_name:
+            u["display_name"] = display_name
+        by_chat = u["messages_by_chat"]
+        ckey = str(int(chat_id)) if chat_id is not None else "unknown"
+        if ckey not in by_chat:
+            by_chat[ckey] = []
+        msg = {"text": text[:500], "date": today_str}
+        last = by_chat[ckey][-1] if by_chat[ckey] else None
+        if last and last.get("text") == msg["text"] and last.get("date") == today_str:
+            pass
         else:
-            if chat_title:
-                data["chats"][ckey]["title"] = chat_title
-            data["chats"][ckey]["last_seen"] = date.today().isoformat()
-    _save(data)
+            u["stats"]["total_messages"] = u["stats"].get("total_messages", 0) + 1
+            by_chat[ckey].append(msg)
+            by_chat[ckey] = by_chat[ckey][-MESSAGES_ARCHIVE_LIMIT:]
+        if chat_id is not None:
+            ckey = str(int(chat_id))
+            if ckey not in data["chats"]:
+                data["chats"][ckey] = {"title": chat_title or ckey, "last_seen": today_str}
+            else:
+                if chat_title:
+                    data["chats"][ckey]["title"] = chat_title
+                data["chats"][ckey]["last_seen"] = today_str
+        _save(data)
 
 
 def record_image_analysis(
@@ -319,6 +364,7 @@ def record_image_analysis(
     })
     u["images_archive"] = archive[-IMAGES_ARCHIVE_LIMIT:]
     _save(data)
+    _sync_user_to_storage(user_id, u)
 
 
 def get_user_images_archive(user_id: int) -> list[dict]:
@@ -483,28 +529,42 @@ def _get_user_messages_from_db(user_id: int, chat_id: int | None = None) -> list
 
 
 def get_user_messages_archive(user_id: int, chat_id: int | None = None) -> list[dict]:
-    """Возвращает архив сообщений. Сначала БД (messages), при отсутствии данных — JSON. Формат: [{text, date}] или [{text, date, chat_id}] при объединении."""
-    from_db = _get_user_messages_from_db(user_id, chat_id)
-    if from_db:
-        return from_db
-    data = _load()
-    u = data.get("users", {}).get(str(user_id))
-    if not u:
-        return []
-    if _ensure_messages_by_chat(u):
-        _save(data)
-    by_chat = u.get("messages_by_chat") or {}
-    if chat_id is not None:
-        cid_str = str(chat_id)
-        return list(by_chat.get(cid_str, []))
+    """Возвращает архив сообщений. Storage -> БД (messages) -> JSON. Формат: [{text, date}] или [{text, date, chat_id}] при объединении."""
+    from services.storage_cutover import storage_db_reads_enabled, storage_json_fallback_enabled
+    from services.sqlite_storage import get_storage
+
     result = []
-    for cid, msgs in by_chat.items():
-        for m in msgs:
-            msg = dict(m)
-            if cid != "unknown":
-                msg["chat_id"] = int(cid) if cid.isdigit() or (cid.startswith("-") and cid[1:].isdigit()) else cid
-            result.append(msg)
-    result.sort(key=lambda x: x.get("date", ""))
+
+    if storage_db_reads_enabled():
+        st = get_storage()
+        if st:
+            cid = int(chat_id) if chat_id is not None else None
+            result = st.get_user_messages(user_id, cid, MESSAGES_ARCHIVE_LIMIT)
+
+    if not result:
+        from_db = _get_user_messages_from_db(user_id, chat_id)
+        if from_db:
+            return from_db
+
+    if not result and storage_json_fallback_enabled():
+        data = _load()
+        u = data.get("users", {}).get(str(user_id))
+        if u:
+            if _ensure_messages_by_chat(u):
+                _save(data)
+            by_chat = u.get("messages_by_chat") or {}
+            if chat_id is not None:
+                cid_str = str(chat_id)
+                result = list(by_chat.get(cid_str, []))
+            else:
+                for cid, msgs in by_chat.items():
+                    for m in msgs:
+                        msg = dict(m)
+                        if cid != "unknown":
+                            msg["chat_id"] = int(cid) if cid.isdigit() or (cid.startswith("-") and cid[1:].isdigit()) else cid
+                        result.append(msg)
+                result.sort(key=lambda x: x.get("date", ""))
+
     return result
 
 
@@ -686,6 +746,7 @@ def record_message(user_id: int, text_snippet: str, sentiment: str, is_political
         "date": date.today().isoformat(),
     })
     _save(data)
+    _sync_user_to_storage(user_id, u)
 
 
 def _increment_user_warnings_in_db(user_id: int) -> None:
@@ -887,6 +948,7 @@ def set_deep_portrait(user_id: int, portrait: str, rank: str = "neutral") -> boo
     u["rank"] = rank if rank in RANKS else "neutral"
     u["portrait_updated_date"] = date.today().isoformat()
     _save(data)
+    _sync_user_to_storage(user_id, u)
     return True
 
 

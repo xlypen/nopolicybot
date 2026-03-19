@@ -9,10 +9,13 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
+
+_FAST_CACHE_LOCK = threading.Lock()
 
 from openai import OpenAI, RateLimitError, APIError, APIStatusError
 from ai.client import (
@@ -43,6 +46,48 @@ _FAST_CACHE_MAX_ITEMS_DEFAULT = int(os.getenv("AI_FAST_CACHE_MAX_ITEMS", "512"))
 _FAST_CACHE: dict[str, tuple[float, object]] = {}
 
 load_project_env()
+
+_MAX_DISPLAY_NAME_LEN = 100
+_IMAGE_MAX_BYTES = 1_500_000
+_IMAGE_MAX_DIM = 4096
+
+
+def _sanitize_display_name(name: str) -> str:
+    """Очищает display_name для промптов: strip, limit length, remove control chars."""
+    if not name or not isinstance(name, str):
+        return ""
+    s = "".join(c for c in name.strip() if ord(c) >= 32 and ord(c) != 127)
+    return s[:_MAX_DISPLAY_NAME_LEN]
+
+
+def _resize_image_if_needed(image_bytes: bytes) -> bytes:
+    """Уменьшает изображение, если оно слишком большое (bytes или размеры)."""
+    if not image_bytes or len(image_bytes) < 100:
+        return image_bytes
+    try:
+        from io import BytesIO
+        from PIL import Image
+        img = Image.open(BytesIO(image_bytes)).convert("RGB")
+        w, h = img.size
+        need_resize = w > _IMAGE_MAX_DIM or h > _IMAGE_MAX_DIM or len(image_bytes) > _IMAGE_MAX_BYTES
+        if not need_resize:
+            return image_bytes
+        ratio = min(_IMAGE_MAX_DIM / w, _IMAGE_MAX_DIM / h, 1.0)
+        nw, nh = max(1, int(w * ratio)), max(1, int(h * ratio))
+        img = img.resize((nw, nh), Image.Resampling.LANCZOS)
+        out = BytesIO()
+        quality = 85
+        while quality > 20:
+            out.seek(0)
+            out.truncate()
+            img.save(out, format="JPEG", quality=quality, optimize=True)
+            if out.tell() <= _IMAGE_MAX_BYTES:
+                return out.getvalue()
+            quality -= 15
+        return out.getvalue()
+    except Exception as e:
+        logger.debug("_resize_image_if_needed: %s", e)
+        return image_bytes
 
 
 SYSTEM_PROMPT = """Ты модератор чата. Анализируй переписку и определи ДВЕ вещи:
@@ -381,14 +426,15 @@ def _cache_get(key: str):
     ttl = _fast_cache_ttl_sec()
     if ttl <= 0:
         return None
-    item = _FAST_CACHE.get(key)
-    if not item:
-        return None
-    ts, value = item
-    if time.time() - ts > ttl:
-        _FAST_CACHE.pop(key, None)
-        return None
-    return value
+    with _FAST_CACHE_LOCK:
+        item = _FAST_CACHE.get(key)
+        if not item:
+            return None
+        ts, value = item
+        if time.time() - ts > ttl:
+            _FAST_CACHE.pop(key, None)
+            return None
+        return value
 
 
 def _cache_set(key: str, value) -> None:
@@ -396,17 +442,17 @@ def _cache_set(key: str, value) -> None:
     max_items = _fast_cache_max_items()
     if ttl <= 0:
         return
-    _FAST_CACHE[key] = (time.time(), value)
-    if len(_FAST_CACHE) <= max_items:
-        return
-    # Ленивая очистка: сначала удаляем протухшие, затем старейшие.
-    now = time.time()
-    expired = [k for k, (ts, _) in _FAST_CACHE.items() if now - ts > ttl]
-    for k in expired:
-        _FAST_CACHE.pop(k, None)
-    if len(_FAST_CACHE) > max_items:
-        for k in sorted(_FAST_CACHE, key=lambda x: _FAST_CACHE[x][0])[: len(_FAST_CACHE) - max_items]:
+    with _FAST_CACHE_LOCK:
+        _FAST_CACHE[key] = (time.time(), value)
+        if len(_FAST_CACHE) <= max_items:
+            return
+        now = time.time()
+        expired = [k for k, (ts, _) in _FAST_CACHE.items() if now - ts > ttl]
+        for k in expired:
             _FAST_CACHE.pop(k, None)
+        if len(_FAST_CACHE) > max_items:
+            for k in sorted(_FAST_CACHE, key=lambda x: _FAST_CACHE[x][0])[: len(_FAST_CACHE) - max_items]:
+                _FAST_CACHE.pop(k, None)
 
 
 def analyze_messages(text: str) -> tuple[bool, str, str]:
@@ -552,6 +598,7 @@ def analyze_image(image_bytes: bytes, caption: str = "") -> tuple[bool, str, str
     """
     if not image_bytes or len(image_bytes) < 100:
         return False, "", "neutral", "other", "other", "", "👍", False
+    image_bytes = _resize_image_if_needed(image_bytes)
     b64 = base64.standard_b64encode(image_bytes).decode("ascii")
     mime = "image/jpeg"
     if image_bytes[:8] == b"\x89PNG\r\n\x1a\n":
@@ -881,7 +928,8 @@ def update_user_portrait(current_portrait: str, daily_messages: list, user_displ
         if t:
             lines.append(f"[{s}] {t}")
     day_summary = "\n".join(lines) if lines else "(нет текста)"
-    user_content = f"Текущий портрет:\n{current_portrait or '(пусто)'}\n\nСообщения за день (sentiment: positive/negative/neutral):\n{day_summary}\n\nИмя/ник: {user_display_name or '—'}"
+    safe_name = _sanitize_display_name(user_display_name) or "—"
+    user_content = f"Текущий портрет:\n{current_portrait or '(пусто)'}\n\nСообщения за день (sentiment: positive/negative/neutral):\n{day_summary}\n\nИмя/ник: {safe_name}"
     client = get_client()
     for attempt in range(3):
         try:
@@ -902,7 +950,9 @@ def update_user_portrait(current_portrait: str, daily_messages: list, user_displ
                     if part.startswith("{"):
                         content = part
                         break
-            data = json.loads(content)
+            data = parse_json(content)
+            if data is None or not isinstance(data, dict):
+                continue
             portrait = (data.get("portrait") or current_portrait or "").strip()[:1500]
             rank = (data.get("rank") or "neutral").strip().lower()
             if rank not in ("loyal", "neutral", "opposition"):
@@ -948,7 +998,8 @@ def build_deep_portrait_from_messages(
         return "Недостаточно текста для анализа.", "unknown"
 
     block = "\n".join(lines[-500:])
-    user_content = f"Имя/ник: {user_display_name or '—'}\n\nСообщения пользователя:\n{block}"
+    safe_name = _sanitize_display_name(user_display_name) or "—"
+    user_content = f"Имя/ник: {safe_name}\n\nСообщения пользователя:\n{block}"
 
     msgs = [
         {"role": "system", "content": DEEP_PORTRAIT_PROMPT},
@@ -1565,7 +1616,8 @@ def generate_question_of_day(messages: list[dict], display_name: str, graph_cont
     graph_block = ""
     if graph_context and graph_context.strip():
         graph_block = f"\n\nКонтекст связей/тем:\n{sanitize_for_prompt(graph_context, max_len=900)}"
-    user_content = f"Имя пользователя: {display_name or 'друг'}\n\nСообщения за сегодня:\n{context}{graph_block}"
+    safe_name = _sanitize_display_name(display_name) or "друг"
+    user_content = f"Имя пользователя: {safe_name}\n\nСообщения за сегодня:\n{context}{graph_block}"
     content = _generate_reply_ensemble(
         system_prompt=QUESTION_OF_DAY_PROMPT,
         user_content=user_content,

@@ -1434,6 +1434,11 @@ async def on_message_to_bot(message: Message) -> None:
                 exc_info=True,
             )
     if not text and not has_photo:
+        if chat_type == "private" and has_voice:
+            try:
+                await message.reply("не разобрал голосом — напиши текстом или покороче.", parse_mode="HTML")
+            except Exception as e:
+                logger.warning("[личка] ответ про голос: %s", e)
         return
     display_text = text or ("[фото]" if has_photo else ("[голос]" if has_voice else ""))
     user_name = message.from_user.username or message.from_user.first_name or "Участник"
@@ -1480,8 +1485,7 @@ async def on_message_to_bot(message: Message) -> None:
     except Exception as e:
         logger.warning("db ingest scheduling failed (on_message_to_bot): %s", e)
 
-    # В личке отвечаем на сообщения до 10 минут (после перезапуска/OOM накопленная очередь всё ещё получает ответ).
-    # В группах порог 3 мин — см. check_and_reply.
+    # Личка: лимит «свежести» апдейта (настраивается; по умолчанию сутки — после ребута очередь Telegram не теряется молча).
     try:
         msg_dt = message.date
         if msg_dt.tzinfo is None:
@@ -1489,8 +1493,17 @@ async def on_message_to_bot(message: Message) -> None:
         age_sec = (datetime.now(tz=timezone.utc) - msg_dt).total_seconds()
     except Exception:
         age_sec = 0
-    if age_sec > 600:
-        logger.info("[личка %s] Пропуск ответа: старое сообщение (%s сек)", chat_id, int(age_sec))
+    max_age_dm = bot_settings.get_int("reply_dm_max_age_sec", lo=120, hi=604800)
+    if chat_type == "private" and age_sec > max_age_dm:
+        logger.info("[личка %s] Пропуск ответа: старое сообщение (%s сек > %s)", chat_id, int(age_sec), max_age_dm)
+        if bot_settings.get("reply_dm_stale_ping_enabled"):
+            try:
+                await message.reply(
+                    "это сообщение из старой очереди (бот долго был офлайн). напиши ещё раз — отвечу на свежее.",
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                logger.warning("[личка] stale ping: %s", e)
         return
 
     # В личке сразу показываем «печатает», пока ждём очередь executor и ответ ИИ
@@ -1533,10 +1546,18 @@ async def on_message_to_bot(message: Message) -> None:
         # Ответ на «вопрос дня»: только для текстовых ответов
         qod_status, qod_user_id, qod_question = _qod_tracking_find(message) if text else (None, None, "")
         if qod_status == "other":
-            # Ответил не адресат — ведём себя как обычно, без участливости (не отвечаем)
-            logger.info("Чат %s: на вопрос дня ответил не адресат (%s) — пропуск", chat_id, first_name)
-            _debug_log("QOD_OTHER", chat_id=chat_id, user=first_name, detail="ответил не адресат")
-            return
+            # В группе: ответил не адресат вопроса дня — молчим. В личке только один человек:
+            # «other» бывает из-за битого/устаревшего by_reply — нельзя оставлять пользователя без ответа.
+            if chat_type == "private":
+                logger.info(
+                    "[личка %s] вопрос дня: трекинг «не адресат» — игнор, обычный ответ",
+                    chat_id,
+                )
+                _debug_log("QOD_OTHER_PRIVATE_FALLTHROUGH", chat_id=chat_id, user=first_name, detail="личка")
+            else:
+                logger.info("Чат %s: на вопрос дня ответил не адресат (%s) — пропуск", chat_id, first_name)
+                _debug_log("QOD_OTHER", chat_id=chat_id, user=first_name, detail="ответил не адресат")
+                return
         if qod_status == "addressee" and qod_user_id and qod_question:
             should_engage = await loop.run_in_executor(
                 None,
@@ -1676,12 +1697,18 @@ async def on_message_to_bot(message: Message) -> None:
             logger.warning("ИИ недоступен: 402")
         else:
             logger.exception("Ошибка API ИИ при ответе: %s", e)
-        _reply = await _last_resort_gemini_reply(context, display_text, first_name, message.from_user.id)
-        await message.reply(_reply, parse_mode="HTML")
+        try:
+            _reply = await _last_resort_gemini_reply(context, display_text, first_name, message.from_user.id)
+            await message.reply(_reply, parse_mode="HTML")
+        except Exception as send_e:
+            logger.exception("Не удалось отправить fallback-ответ в личку: %s", send_e)
     except Exception as e:
         logger.exception("Ошибка при генерации ответа: %s", e)
-        _reply = await _last_resort_gemini_reply(context, display_text, first_name, message.from_user.id)
-        await message.reply(_reply, parse_mode="HTML")
+        try:
+            _reply = await _last_resort_gemini_reply(context, display_text, first_name, message.from_user.id)
+            await message.reply(_reply, parse_mode="HTML")
+        except Exception as send_e:
+            logger.exception("Не удалось отправить fallback-ответ в личку: %s", send_e)
 
 
 async def on_private_other(message: Message) -> None:
@@ -1805,7 +1832,10 @@ def _qod_tracking_find(message: Message) -> tuple[str | None, int | None, str]:
             addressee_id = entry.get("user_id")
             if addressee_id == replier_id:
                 return "addressee", replier_id, entry.get("question", "")
-            # Ответил не адресат — без участливости
+            # Личка: chat.id == user.id, других людей нет — не считаем «чужим» ответом из‑за битого user_id в трекере
+            if chat_id == replier_id:
+                return "addressee", replier_id, entry.get("question", "")
+            # В группе ответил не адресат — без участливости
             return "other", None, ""
     # Личка: только адресат может писать, вопрос задавали сегодня
     if chat_id == replier_id:

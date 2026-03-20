@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
 
+from db.datetime_utils import to_naive_utc
 from db.engine import get_db
 from db.repositories.edge_repo import EdgeRepository
 from db.repositories.message_repo import MessageRepository
@@ -60,7 +60,7 @@ async def ingest_message_event(
         _log.info("db ingest skip: user_id=0")
         return False
 
-    sent_at = datetime.now(tz=timezone.utc)
+    sent_at = to_naive_utc()
     tone_score = _sentiment_to_score(sentiment)
     async with _ingest_semaphore:
         async with get_db() as session:

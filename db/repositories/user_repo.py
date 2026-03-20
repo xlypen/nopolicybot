@@ -1,9 +1,8 @@
-from datetime import datetime
-
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from db.datetime_utils import to_naive_utc
 from db.models import User
 
 
@@ -44,7 +43,7 @@ class UserRepository:
                 setattr(user, field, text[:200])
         if "is_active" in kwargs:
             user.is_active = bool(kwargs.get("is_active"))
-        user.last_seen = kwargs.get("last_seen") or datetime.utcnow()
+        user.last_seen = to_naive_utc(kwargs.get("last_seen"))
         return user
 
     async def get_all(self, chat_id: int) -> list[User]:

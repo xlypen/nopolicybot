@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from db.datetime_utils import to_naive_utc
 from db.engine import get_db, init_db
 from db.repositories.edge_repo import EdgeRepository
 from db.repositories.message_repo import MessageRepository
@@ -119,11 +120,11 @@ async def migrate(dry_run: bool = True, write_marker: bool = False):
                     for cid, msgs in by_chat.items():
                         for idx, m in enumerate(msgs or []):
                             try:
-                                sent_at = datetime.now(tz=timezone.utc)
+                                sent_at = to_naive_utc(datetime.now(tz=timezone.utc))
                                 raw = str(m.get("date", "") or "")[:19]
                                 if raw:
                                     try:
-                                        sent_at = datetime.fromisoformat(raw)
+                                        sent_at = to_naive_utc(datetime.fromisoformat(raw))
                                     except Exception:
                                         pass
                                 if not dry_run:

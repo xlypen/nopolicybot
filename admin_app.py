@@ -1208,6 +1208,8 @@ def settings():
         "reply_resume_on_apology_enabled",
         "reply_resume_text",
         "reply_yesterday_quotes_chance",
+        "reply_dm_max_age_sec",
+        "reply_dm_stale_ping_enabled",
         "reply_fallback_on_error",
         "greeting_on_join",
         "greeting_text",

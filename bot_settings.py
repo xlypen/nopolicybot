@@ -60,6 +60,10 @@ DEFAULTS = {
     "reply_resume_on_apology_enabled": True,
     "reply_resume_text": "ладно, амнистия. но не путай это со слабостью.",
     "reply_yesterday_quotes_chance": 0.01,
+    # Личка: не отвечать на апдейты старше N сек (очередь после офлайна). 86400 = сутки.
+    "reply_dm_max_age_sec": 86400,
+    # Если сообщение слишком старое — коротко объяснить (не молчать без причины).
+    "reply_dm_stale_ping_enabled": True,
     "reply_fallback_on_error": "сейчас не в настроении, напиши потом.",
     # Приветствие и команды
     "greeting_on_join": True,

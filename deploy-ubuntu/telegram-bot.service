@@ -14,7 +14,8 @@ ExecStart=/opt/telegram-political-monitor-bot/venv/bin/python /opt/telegram-poli
 Restart=always
 RestartSec=10
 KillSignal=SIGINT
-TimeoutStopSec=20
+# Длинные LLM-запросы / aiogram shutdown — иначе SIGKILL через 20s и потеря очереди апдейтов
+TimeoutStopSec=90
 WatchdogSec=300
 MemoryMax=512M
 MemorySwapMax=128M

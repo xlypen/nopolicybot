@@ -6,6 +6,7 @@ def test_pair_key_is_symmetric():
 
 
 def test_append_dialogue_message_skips_self_reply(tmp_path, monkeypatch):
+    monkeypatch.setenv("STORAGE_MODE", "json")
     graph_path = tmp_path / "social_graph.json"
     monkeypatch.setattr(social_graph, "GRAPH_JSON", graph_path)
     monkeypatch.setattr(social_graph, "DATA_DIR", tmp_path)
@@ -22,6 +23,7 @@ def test_append_dialogue_message_skips_self_reply(tmp_path, monkeypatch):
 
 
 def test_process_realtime_updates_builds_connection(tmp_path, monkeypatch):
+    monkeypatch.setenv("STORAGE_MODE", "json")
     graph_path = tmp_path / "social_graph.json"
     monkeypatch.setattr(social_graph, "GRAPH_JSON", graph_path)
     monkeypatch.setattr(social_graph, "DATA_DIR", tmp_path)
@@ -56,6 +58,7 @@ def test_process_realtime_updates_builds_connection(tmp_path, monkeypatch):
 
 
 def test_get_connections_enriches_metrics_for_legacy_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("STORAGE_MODE", "json")
     graph_path = tmp_path / "social_graph.json"
     monkeypatch.setattr(social_graph, "GRAPH_JSON", graph_path)
     monkeypatch.setattr(social_graph, "DATA_DIR", tmp_path)

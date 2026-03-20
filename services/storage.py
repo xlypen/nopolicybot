@@ -51,6 +51,26 @@ class IStorage(Protocol):
         """Upsert chat."""
         ...
 
+    def list_storage_chats(self) -> list[dict]:
+        """All rows from storage_chats: [{chat_id, title, last_seen}, ...]."""
+        ...
+
+    def iter_user_profiles(self) -> list[tuple[int, dict]]:
+        """(user_id, profile dict) for all user_profiles rows."""
+        ...
+
+    def delete_user_message_archive(self, user_id: int, chat_id: int | None = None) -> int:
+        """Delete archive rows; chat_id None = all chats. Returns deleted count."""
+        ...
+
+    def get_graph_meta(self) -> dict:
+        """Graph metadata blob (last_processed_date, realtime_cursors, ...)."""
+        ...
+
+    def replace_graph_meta(self, data: dict) -> None:
+        """Replace graph metadata blob entirely."""
+        ...
+
     def append_dialogue_message(
         self,
         chat_id: int,

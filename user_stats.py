@@ -110,7 +110,14 @@ def _migrate_portrait_image(data: dict) -> bool:
     return modified
 
 
+def _json_disk_enabled() -> bool:
+    """Читать/писать user_stats.json (dual / db_first с fallback)."""
+    return _json_fallback() or _json_writes()
+
+
 def _load() -> dict:
+    if not _json_disk_enabled():
+        return {"users": {}, "chats": {}}
     if not USERS_JSON.exists():
         return {"users": {}, "chats": {}}
     try:
@@ -127,6 +134,16 @@ def _load() -> dict:
     except Exception as e:
         logger.warning("Не удалось загрузить user_stats: %s", e)
         return {"users": {}, "chats": {}}
+
+
+def _persist_full_user(user_id: int, u: dict) -> None:
+    """Профиль в SQLite (и зеркало в JSON при включённой записи JSON)."""
+    _sync_user_to_storage(user_id, u)
+    if not _json_writes():
+        return
+    data = _load()
+    data.setdefault("users", {})[str(user_id)] = u
+    _save(data)
 
 
 def _save(data: dict) -> None:
@@ -348,11 +365,7 @@ def record_image_analysis(
     """Сохраняет результат анализа изображения: категория, описание, реакция бота, политичность."""
     if not category and not description:
         return
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
-        data["users"][key] = _default_user(user_id, display_name)
-    u = data["users"][key]
+    u = get_user(user_id, display_name)
     if display_name:
         u["display_name"] = display_name
     archive = u.get("images_archive") or []
@@ -365,16 +378,12 @@ def record_image_analysis(
         "is_political": bool(is_political),
     })
     u["images_archive"] = archive[-IMAGES_ARCHIVE_LIMIT:]
-    _save(data)
-    _sync_user_to_storage(user_id, u)
+    _persist_full_user(user_id, u)
 
 
 def get_user_images_archive(user_id: int) -> list[dict]:
     """Возвращает архив проанализированных изображений пользователя: [{category, description, date, reaction_emoji, is_political}, ...]."""
-    data = _load()
-    u = data.get("users", {}).get(str(user_id))
-    if not u:
-        return []
+    u = get_user(user_id)
     return list(u.get("images_archive") or [])
 
 
@@ -407,12 +416,17 @@ def format_images_archive_for_context(user_id: int, max_items: int = 15) -> str:
 
 def clear_user_images_archive(user_id: int) -> bool:
     """Очищает архив проанализированных изображений пользователя."""
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
+    st = _get_storage()
+    if not _json_disk_enabled() and st and st.get_user_profile(user_id) is None:
         return False
-    data["users"][key]["images_archive"] = []
-    _save(data)
+    if _json_disk_enabled():
+        data = _load()
+        key = str(user_id)
+        if key not in data.get("users", {}):
+            return False
+    u = get_user(user_id)
+    u["images_archive"] = []
+    _persist_full_user(user_id, u)
     return True
 
 
@@ -435,6 +449,18 @@ def get_user_display_names() -> dict[str, str]:
 
 def get_chats() -> list[dict]:
     """Возвращает список чатов, в которых бот видел сообщения. [{chat_id, title}, ...] по last_seen."""
+    if _db_reads():
+        st = _get_storage()
+        if st:
+            try:
+                rows = st.list_storage_chats()
+                if rows:
+                    return sorted(
+                        [{"chat_id": int(r["chat_id"]), "title": r.get("title") or str(r["chat_id"])} for r in rows],
+                        key=lambda x: x["chat_id"],
+                    )
+            except Exception as e:
+                logger.debug("get_chats from storage: %s", e)
     data = _load()
     chats = data.get("chats") or {}
     result = [{"chat_id": cid, "title": c.get("title") or cid} for cid, c in chats.items()]
@@ -503,45 +529,75 @@ def get_user_messages_archive(user_id: int, chat_id: int | None = None) -> list[
 
 def get_user_archive_by_chat(user_id: int) -> dict:
     """Возвращает архив по чатам: {chat_id: [{text, date}, ...], ...}."""
-    data = _load()
-    u = data.get("users", {}).get(str(user_id))
-    if not u:
-        return {}
+    if _db_reads():
+        st = _get_storage()
+        if st:
+            try:
+                msgs = st.get_user_messages(user_id, None, MESSAGES_ARCHIVE_LIMIT * 20)
+                if msgs:
+                    by_chat: dict[str, list] = {}
+                    for m in msgs:
+                        cid = m.get("chat_id")
+                        ckey = str(cid) if cid is not None else "unknown"
+                        by_chat.setdefault(ckey, []).append(
+                            {"text": m.get("text", ""), "date": m.get("date", "")}
+                        )
+                    return by_chat
+            except Exception as e:
+                logger.debug("get_user_archive_by_chat from storage: %s", e)
+    u = get_user(user_id)
     if _ensure_messages_by_chat(u):
-        _save(data)
+        _persist_full_user(user_id, u)
     return dict(u.get("messages_by_chat") or {})
 
 
 def clear_user_archive(user_id: int, chat_id: int | str | None = None) -> bool:
     """Очищает архив пользователя. chat_id=None — весь архив, иначе только указанный чат."""
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
+    st = _get_storage()
+    if not _json_disk_enabled() and st and st.get_user_profile(user_id) is None:
         return False
-    u = data["users"][key]
+    if _json_disk_enabled():
+        data = _load()
+        if str(user_id) not in data.get("users", {}):
+            return False
+    if _db_writes() and st:
+        try:
+            cid = int(chat_id) if chat_id is not None else None
+            st.delete_user_message_archive(user_id, cid)
+        except Exception as e:
+            logger.debug("clear_user_archive storage: %s", e)
+    u = get_user(user_id)
     if _ensure_messages_by_chat(u):
-        _save(data)
-    by_chat = u["messages_by_chat"]
+        pass
+    by_chat = u.setdefault("messages_by_chat", {})
     if chat_id is None:
         u["messages_by_chat"] = {}
     else:
         ckey = str(chat_id)
         if ckey in by_chat:
             del by_chat[ckey]
-    _save(data)
+    _persist_full_user(user_id, u)
     return True
 
 
 def get_user_messages_for_today(user_id: int) -> list[dict]:
     """Сообщения пользователя за сегодня (архив + daily_buffer) для «вопроса дня»."""
     today_str = date.today().isoformat()
-    data = _load()
-    u = data.get("users", {}).get(str(user_id))
-    if not u:
-        return []
-    if _ensure_messages_by_chat(u):
-        _save(data)
     result = []
+    if _db_reads():
+        st = _get_storage()
+        if st:
+            try:
+                for m in st.get_user_messages(user_id, None, 3000):
+                    if str(m.get("date", "")).startswith(today_str):
+                        result.append(
+                            {"text": m.get("text", ""), "date": m.get("date", ""), "sentiment": ""}
+                        )
+            except Exception as e:
+                logger.debug("get_user_messages_for_today storage: %s", e)
+    u = get_user(user_id)
+    if _ensure_messages_by_chat(u):
+        _persist_full_user(user_id, u)
     for msgs in (u.get("messages_by_chat") or {}).values():
         for m in msgs:
             if m.get("date", "").startswith(today_str):
@@ -559,12 +615,11 @@ def get_user_messages_for_today(user_id: int) -> list[dict]:
 
 def set_question_of_day_enabled(user_id: int, enabled: bool) -> bool:
     """Включить/выключить «вопрос дня» для пользователя."""
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
+    if _json_disk_enabled() and str(user_id) not in (_load().get("users") or {}):
         return False
-    data["users"][key]["question_of_day_enabled"] = bool(enabled)
-    _save(data)
+    u = get_user(user_id)
+    u["question_of_day_enabled"] = bool(enabled)
+    _persist_full_user(user_id, u)
     return True
 
 
@@ -572,24 +627,20 @@ def set_question_of_day_destination(user_id: int, destination: str) -> bool:
     """Куда отправлять «вопрос дня»: "chat" — в чат, "private" — в личку."""
     if destination not in ("chat", "private"):
         return False
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
+    if _json_disk_enabled() and str(user_id) not in (_load().get("users") or {}):
         return False
-    data["users"][key]["question_of_day_destination"] = destination
-    _save(data)
+    u = get_user(user_id)
+    u["question_of_day_destination"] = destination
+    _persist_full_user(user_id, u)
     return True
 
 
 def get_chat_for_question_of_day(user_id: int) -> int | None:
     """Чат, куда отправить «вопрос дня»: где пользователь был активнее всего сегодня. None если нет сообщений за сегодня."""
     today_str = date.today().isoformat()
-    data = _load()
-    u = data.get("users", {}).get(str(user_id))
-    if not u:
-        return None
+    u = get_user(user_id)
     if _ensure_messages_by_chat(u):
-        _save(data)
+        _persist_full_user(user_id, u)
     by_chat = u.get("messages_by_chat") or {}
     best_chat, best_count = None, 0
     for ckey, msgs in by_chat.items():
@@ -607,14 +658,11 @@ def get_chat_for_question_of_day(user_id: int) -> int | None:
 
 def get_user_chats_for_question_of_day(user_id: int) -> list[dict]:
     """Чаты пользователя для выбора «вопрос дня»: где есть сообщения. [{chat_id, title, today_count}, ...], отсортировано по активности сегодня."""
-    data = _load()
-    u = data.get("users", {}).get(str(user_id))
-    if not u:
-        return []
+    u = get_user(user_id)
     if _ensure_messages_by_chat(u):
-        _save(data)
+        _persist_full_user(user_id, u)
     by_chat = u.get("messages_by_chat") or {}
-    chats = data.get("chats") or {}
+    chats = {str(c["chat_id"]): c for c in get_chats()}
     today_str = date.today().isoformat()
     result = []
     for ckey, msgs in by_chat.items():
@@ -625,8 +673,10 @@ def get_user_chats_for_question_of_day(user_id: int) -> list[dict]:
         except ValueError:
             continue
         today_count = sum(1 for m in msgs if (m.get("date") or "").startswith(today_str))
-        title = (chats.get(ckey) or {}).get("title") or ckey
-        result.append({"chat_id": cid, "title": str(title), "today_count": today_count})
+        chat_row = chats.get(ckey) or {}
+        title = chat_row.get("title") if isinstance(chat_row, dict) else chat_row
+        title = str(title or ckey)
+        result.append({"chat_id": cid, "title": title, "today_count": today_count})
     result.sort(key=lambda x: (-x["today_count"], x["chat_id"]))
     return result
 
@@ -634,8 +684,25 @@ def get_user_chats_for_question_of_day(user_id: int) -> list[dict]:
 def get_users_for_question_of_day() -> list[tuple[int, str]]:
     """Пользователи с включённым «вопрос дня», которым ещё не задали сегодня. Возвращает [(user_id, display_name), ...]."""
     today_str = date.today().isoformat()
-    data = _load()
+    if not _json_disk_enabled():
+        result: list[tuple[int, str]] = []
+        if _db_reads():
+            st = _get_storage()
+            if st:
+                try:
+                    for uid, u in st.iter_user_profiles():
+                        if not u.get("question_of_day_enabled"):
+                            continue
+                        if u.get("question_of_day_last_asked") == today_str:
+                            continue
+                        if _ensure_messages_by_chat(u):
+                            _sync_user_to_storage(uid, u)
+                        result.append((int(uid), u.get("display_name") or str(uid)))
+                except Exception as e:
+                    logger.debug("get_users_for_question_of_day storage: %s", e)
+        return result
     result = []
+    data = _load()
     for uid, u in data.get("users", {}).items():
         if not u.get("question_of_day_enabled"):
             continue
@@ -649,20 +716,14 @@ def get_users_for_question_of_day() -> list[tuple[int, str]]:
 
 def mark_question_of_day_asked(user_id: int) -> None:
     """Отметить, что пользователю задали вопрос дня сегодня."""
-    data = _load()
-    key = str(user_id)
-    if key in data["users"]:
-        data["users"][key]["question_of_day_last_asked"] = date.today().isoformat()
-        _save(data)
+    u = get_user(user_id)
+    u["question_of_day_last_asked"] = date.today().isoformat()
+    _persist_full_user(user_id, u)
 
 
 def record_message(user_id: int, text_snippet: str, sentiment: str, is_political: bool, display_name: str = "") -> None:
     """Учитывает полит. сообщение: political_messages, sentiment, daily_buffer. total_messages ведётся в record_chat_message."""
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
-        data["users"][key] = _default_user(user_id, display_name)
-    u = data["users"][key]
+    u = get_user(user_id, display_name)
     if display_name:
         u["display_name"] = display_name
     if is_political:
@@ -678,8 +739,7 @@ def record_message(user_id: int, text_snippet: str, sentiment: str, is_political
         "sentiment": sentiment,
         "date": date.today().isoformat(),
     })
-    _save(data)
-    _sync_user_to_storage(user_id, u)
+    _persist_full_user(user_id, u)
 
 
 def record_warning(user_id: int) -> None:
@@ -691,12 +751,9 @@ def record_warning(user_id: int) -> None:
                 st.increment_warnings(int(user_id))
             except Exception as e:
                 logger.debug("increment_warnings in storage: %s", e)
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
-        data["users"][key] = _default_user(user_id)
-    data["users"][key]["stats"]["warnings_received"] = data["users"][key]["stats"].get("warnings_received", 0) + 1
-    _save(data)
+    u = get_user(user_id)
+    u.setdefault("stats", {})["warnings_received"] = u["stats"].get("warnings_received", 0) + 1
+    _persist_full_user(user_id, u)
 
 
 def _compute_rank_from_stats(stats: dict) -> str:
@@ -724,11 +781,13 @@ def daily_update_user(user_id: int) -> bool:
     Обновляет портрет пользователя по буферу за день (вызов ИИ), сбрасывает буфер за сегодня.
     Возвращает True, если обновление прошло.
     """
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
+    st = _get_storage()
+    if not _json_disk_enabled() and st and st.get_user_profile(user_id) is None:
         return False
-    u = data["users"][key]
+    if _json_disk_enabled():
+        if str(user_id) not in (_load().get("users") or {}):
+            return False
+    u = get_user(user_id)
     today = date.today().isoformat()
     _ensure_daily_buffer_clean(u)
     daily_messages = u.get("daily_buffer", [])
@@ -745,7 +804,7 @@ def daily_update_user(user_id: int) -> bool:
         u["portrait_updated_date"] = today
         u["yesterday_quotes"] = [m.get("text", "").strip()[:120] for m in daily_messages[-5:] if (m.get("text") or "").strip()]
         u["daily_buffer"] = []
-        _save(data)
+        _persist_full_user(user_id, u)
         logger.info("Портрет пользователя %s обновлён, ранг %s", user_id, u["rank"])
         return True
     except Exception as e:
@@ -754,23 +813,19 @@ def daily_update_user(user_id: int) -> bool:
         u["portrait_updated_date"] = today
         u["yesterday_quotes"] = [m.get("text", "").strip()[:120] for m in daily_messages[-5:] if (m.get("text") or "").strip()]
         u["daily_buffer"] = []
-        _save(data)
+        _persist_full_user(user_id, u)
         return False
 
 
 def record_message_to_bot(user_id: int, text: str, display_name: str = "") -> None:
     """Учитывает обращение пользователя к боту (для оценки тона обращений)."""
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
-        data["users"][key] = _default_user(user_id, display_name)
-    u = data["users"][key]
+    u = get_user(user_id, display_name)
     if display_name:
         u["display_name"] = display_name
     buf = u.get("messages_to_bot_buffer") or []
     buf.append({"text": (text or "").strip()[:500], "date": date.today().isoformat()})
     u["messages_to_bot_buffer"] = buf[-20:]
-    _save(data)
+    _persist_full_user(user_id, u)
 
 
 def _update_tone_to_bot(u: dict) -> None:
@@ -799,10 +854,7 @@ def _update_tone_to_bot(u: dict) -> None:
 
 def get_yesterday_quotes(user_id: int) -> list[str]:
     """Цитаты из недавних сообщений пользователя (для редкой отсылки «а вчера ты сказал»)."""
-    data = _load()
-    u = data.get("users", {}).get(str(user_id))
-    if not u:
-        return []
+    u = get_user(user_id)
     return list(u.get("yesterday_quotes") or [])[:5]
 
 
@@ -811,13 +863,17 @@ def get_portrait_for_reply_fast(user_id: int, display_name: str = "") -> str:
     Возвращает портрет без вызова ИИ (daily_update, tone_update).
     Для быстрого ответа — обновления можно запустить в фоне отдельно.
     """
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
-        return ""
-    u = data["users"][key]
+    if _json_disk_enabled():
+        data = _load()
+        if str(user_id) not in (data.get("users") or {}):
+            return ""
+    else:
+        st = _get_storage()
+        if st and st.get_user_profile(user_id) is None:
+            return ""
+    u = get_user(user_id, display_name)
     if _ensure_messages_by_chat(u):
-        _save(data)
+        _persist_full_user(user_id, u)
     portrait = (u.get("portrait") or "").strip()
     tone = (u.get("tone_override") or "").strip() or (u.get("tone_to_bot") or "").strip()
     if tone:
@@ -855,14 +911,9 @@ def _schedule_tone_update(user_id: int) -> None:
 
     def _do():
         try:
-            data = _load()
-            key = str(user_id)
-            if key not in data["users"]:
-                return
-            u = data["users"][key]
+            u = get_user(user_id)
             _update_tone_to_bot(u)
-            _save(data)
-            _sync_user_to_storage(user_id, u)
+            _persist_full_user(user_id, u)
         except Exception as e:
             logger.debug("_schedule_tone_update: %s", e)
 
@@ -882,15 +933,10 @@ def get_portrait_for_reply(user_id: int, display_name: str = "") -> str:
     Все тяжёлые операции (ИИ, запись на диск) запускаются в фоне.
     Сама функция не блокирует event loop.
     """
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
-        data["users"][key] = _default_user(user_id, display_name)
-        _save(data)
-    u = data["users"][key]
+    u = get_user(user_id, display_name)
     if display_name and u.get("display_name") != display_name:
         u["display_name"] = display_name
-        _save(data)
+        _persist_full_user(user_id, u)
 
     today = date.today().isoformat()
     if u.get("portrait_updated_date") != today:
@@ -903,27 +949,24 @@ def get_portrait_for_reply(user_id: int, display_name: str = "") -> str:
 
 def set_deep_portrait(user_id: int, portrait: str, rank: str = "neutral") -> bool:
     """Сохраняет глубокий портрет пользователя (из архива сообщений + ИИ)."""
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
-        data["users"][key] = _default_user(user_id)
-    u = data["users"][key]
+    u = get_user(user_id)
     u["portrait"] = (portrait or "").strip()[:8000]
     u["rank"] = rank if rank in RANKS else "neutral"
     u["portrait_updated_date"] = date.today().isoformat()
-    _save(data)
-    _sync_user_to_storage(user_id, u)
+    _persist_full_user(user_id, u)
     return True
 
 
 def set_portrait_image_updated_date(user_id: int) -> bool:
     """Обновляет дату последней генерации картинки портрета."""
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
+    st = _get_storage()
+    if not _json_disk_enabled() and st and st.get_user_profile(user_id) is None:
         return False
-    data["users"][key]["portrait_image_updated_date"] = date.today().isoformat()
-    _save(data)
+    if _json_disk_enabled() and str(user_id) not in (_load().get("users") or {}):
+        return False
+    u = get_user(user_id)
+    u["portrait_image_updated_date"] = date.today().isoformat()
+    _persist_full_user(user_id, u)
     return True
 
 
@@ -934,11 +977,12 @@ def save_tone_override(
     save_current_to_history: bool = False,
 ) -> bool:
     """Сохраняет ручное настроение. value=None — сброс на авто. add_to_history — добавить value в историю. save_current_to_history — перед сбросом сохранить текущее в историю."""
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
+    st = _get_storage()
+    if not _json_disk_enabled() and st and st.get_user_profile(user_id) is None:
         return False
-    u = data["users"][key]
+    if _json_disk_enabled() and str(user_id) not in (_load().get("users") or {}):
+        return False
+    u = get_user(user_id)
     cur = (u.get("tone_override") or "").strip()
     new_val = (value or "").strip()
     save_prev = (save_current_to_history or (add_to_history and cur != new_val)) and cur
@@ -951,52 +995,41 @@ def save_tone_override(
         hist = u.get("tone_history") or []
         hist = [new_val] + [x for x in hist if x != new_val][:2]
         u["tone_history"] = hist[:3]
-    _save(data)
+    _persist_full_user(user_id, u)
     return True
 
 
 def get_close_attention_enabled(user_id: int) -> bool:
     """Включён ли режим «пристальное внимание» для пользователя."""
-    data = _load()
-    u = data.get("users", {}).get(str(user_id))
-    return bool(u.get("close_attention_enabled") if u else False)
+    u = get_user(user_id)
+    return bool(u.get("close_attention_enabled"))
 
 
 def get_factcheck_enabled(user_id: int) -> bool:
     """Включён ли факт-чек для пользователя."""
-    data = _load()
-    u = data.get("users", {}).get(str(user_id))
-    return bool(u.get("factcheck_enabled") if u else False)
+    u = get_user(user_id)
+    return bool(u.get("factcheck_enabled"))
 
 
 def set_factcheck_enabled(user_id: int, enabled: bool) -> bool:
     """Включить/выключить факт-чек для пользователя."""
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
-        data["users"][key] = _default_user(user_id, "")
-    data["users"][key]["factcheck_enabled"] = bool(enabled)
-    _save(data)
+    u = get_user(user_id)
+    u["factcheck_enabled"] = bool(enabled)
+    _persist_full_user(user_id, u)
     return True
 
 
 def set_close_attention_enabled(user_id: int, enabled: bool) -> bool:
     """Включить/выключить режим «пристальное внимание»."""
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
-        data["users"][key] = _default_user(user_id)
-    data["users"][key]["close_attention_enabled"] = bool(enabled)
-    _save(data)
+    u = get_user(user_id)
+    u["close_attention_enabled"] = bool(enabled)
+    _persist_full_user(user_id, u)
     return True
 
 
 def get_close_attention_views(user_id: int) -> list[dict]:
     """Возвращает накопленные взгляды пользователя в режиме пристального внимания."""
-    data = _load()
-    u = data.get("users", {}).get(str(user_id))
-    if not u:
-        return []
+    u = get_user(user_id)
     return list(u.get("close_attention_views") or [])
 
 
@@ -1009,11 +1042,7 @@ def append_close_attention_view(
     display_name: str = "",
 ) -> None:
     """Добавляет запись о взглядах пользователя (режим пристального внимания)."""
-    data = _load()
-    key = str(user_id)
-    if key not in data["users"]:
-        data["users"][key] = _default_user(user_id, display_name)
-    u = data["users"][key]
+    u = get_user(user_id, display_name)
     if display_name:
         u["display_name"] = display_name
     archive = u.get("close_attention_views") or []
@@ -1025,7 +1054,7 @@ def append_close_attention_view(
         "evidence_found": bool(evidence_found),
     })
     u["close_attention_views"] = archive[-CLOSE_ATTENTION_VIEWS_LIMIT:]
-    _save(data)
+    _persist_full_user(user_id, u)
 
 
 def format_close_attention_context(user_id: int, max_items: int = 15) -> str:
@@ -1052,9 +1081,8 @@ def format_close_attention_context(user_id: int, max_items: int = 15) -> str:
 
 def get_emotion_score(user_id: int) -> dict | None:
     """Шкала эмоций по последним 15 сообщениям к боту: score (-10..+10), positivity, aggression. None если не считалось."""
-    data = _load()
-    u = data.get("users", {}).get(str(user_id))
-    if not u or u.get("emotion_score") is None:
+    u = get_user(user_id)
+    if u.get("emotion_score") is None:
         return None
     return {
         "score": u.get("emotion_score"),
@@ -1073,8 +1101,18 @@ def get_effective_tone(u: dict) -> str:
 
 def get_stats_for_log() -> str:
     """Формирует текст статистики по всем пользователям для вывода в лог."""
-    data = _load()
-    users = data.get("users", {})
+    users: dict = {}
+    if not _json_disk_enabled():
+        st = _get_storage()
+        if st:
+            try:
+                for iuid, prof in st.iter_user_profiles():
+                    users[str(iuid)] = prof
+            except Exception as e:
+                logger.debug("get_stats_for_log storage: %s", e)
+    if not users:
+        data = _load()
+        users = data.get("users", {}) or {}
     if not users:
         return "База участников пуста."
     lines = ["=== Статистика пользователей ===", f"Всего: {len(users)}", ""]
@@ -1094,15 +1132,24 @@ def get_stats_for_log() -> str:
         if tone:
             lines.append(f"  настроение к боту: {tone}" + (" (ручное)" if override else " (авто)"))
         lines.append("")
-    lines.append(f"Файл базы: {USERS_JSON}")
+    lines.append(f"База: {DB_PATH}")
     return "\n".join(lines)
 
 
 def get_ranks_for_chat() -> str:
     """Формирует текст рангов для вывода в чат (кратко, до ~4000 символов)."""
     from html import escape
-    data = _load()
-    users = data.get("users", {})
+    users: dict = {}
+    if not _json_disk_enabled():
+        st = _get_storage()
+        if st:
+            try:
+                for iuid, prof in st.iter_user_profiles():
+                    users[str(iuid)] = prof
+            except Exception as e:
+                logger.debug("get_ranks_for_chat storage: %s", e)
+    if not users:
+        users = (_load().get("users", {}) or {})
     if not users:
         return "База участников пуста."
     rank_emoji = {"loyal": "🇷🇺", "neutral": "⚪", "opposition": "🔴", "unknown": "❓"}

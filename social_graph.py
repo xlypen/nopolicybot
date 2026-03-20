@@ -21,6 +21,32 @@ CONNECTION_SUMMARY_MAX_LEN = 6000
 
 
 def _load() -> dict:
+    # Режим только БД: не читаем social_graph.json (источник — SQLite + storage_settings).
+    try:
+        from services.storage_cutover import (
+            storage_db_reads_enabled,
+            storage_json_fallback_enabled,
+            storage_json_writes_enabled,
+        )
+        from services.sqlite_storage import get_storage
+
+        if (
+            storage_db_reads_enabled()
+            and not storage_json_writes_enabled()
+            and not storage_json_fallback_enabled()
+        ):
+            st = get_storage()
+            meta = st.get_graph_meta() if st else {}
+            return {
+                "dialogue_log": {},
+                "processed_dates": {},
+                "connections": {},
+                "realtime_cursors": dict(meta.get("realtime_cursors") or {}),
+                LAST_PROCESSED_KEY: meta.get("last_processed_date"),
+            }
+    except Exception:
+        pass
+
     if not GRAPH_JSON.exists():
         return {"dialogue_log": {}, "processed_dates": {}, "connections": {}, "realtime_cursors": {}, LAST_PROCESSED_KEY: None}
     try:
@@ -56,6 +82,21 @@ def _save(data: dict) -> None:
 def get_graph_version() -> str:
     """Версия данных графа для проверки обновлений (polling)."""
     try:
+        from services.storage_cutover import (
+            storage_db_reads_enabled,
+            storage_json_fallback_enabled,
+        )
+        from services.sqlite_storage import get_storage
+
+        db_path = DATA_DIR / "data" / "bot.db"
+        if storage_db_reads_enabled() and not storage_json_fallback_enabled():
+            st = get_storage()
+            if st:
+                rows = st.get_all_connections(None)
+                conn_count = len(rows)
+                last_proc = st.get_last_processed_date() or ""
+                mtime = db_path.stat().st_mtime if db_path.exists() else 0
+                return f"{mtime:.0f}|{conn_count}|{last_proc}"
         if not GRAPH_JSON.exists():
             return "0"
         mtime = GRAPH_JSON.stat().st_mtime
@@ -676,6 +717,16 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
             logger.warning("Ошибка обработки дня %s чата %s: %s", day, ckey, e)
     data[LAST_PROCESSED_KEY] = today
     _save(data)
+    try:
+        from services.storage_cutover import storage_db_writes_enabled
+        from services.sqlite_storage import get_storage as _gst
+
+        if storage_db_writes_enabled() and processed_count > 0:
+            _st = _gst()
+            if _st:
+                _st.set_last_processed_date(today)
+    except Exception:
+        pass
     return processed_count
 
 
@@ -718,7 +769,9 @@ def process_realtime_updates(
     json_chats = set((data.get("dialogue_log") or {}).keys())
     all_chats = db_chats | json_chats
 
+    from services.storage_cutover import storage_db_writes_enabled
     from services.sqlite_storage import get_storage as _sg_realtime
+
     st_realtime = _sg_realtime()
     for ckey in all_chats:
         msgs = st_realtime.get_dialogue_messages(int(ckey), today) if st_realtime else []
@@ -741,6 +794,11 @@ def process_realtime_updates(
         data["connections"].setdefault(ckey, {})
         chat_cursor = data["realtime_cursors"].setdefault(ckey, {})
 
+        try:
+            cid_int = int(ckey)
+        except ValueError:
+            cid_int = None
+
         for pk, pair_msgs in pairs.items():
             if len(pair_msgs) < 2:
                 continue
@@ -753,8 +811,15 @@ def process_realtime_updates(
             summary = _summarize_dialogue_pair(pair_msgs, names)
             if not summary:
                 continue
+            existing_conn: dict = {}
+            if st_realtime and cid_int is not None:
+                existing_conn = dict(st_realtime.get_connection(cid_int, pk) or {})
+            merge_data = {
+                "connections": {ckey: {pk: existing_conn}},
+                "dialogue_log": data.get("dialogue_log") or {},
+            }
             entry = _merge_connection_entry(
-                data=data,
+                data=merge_data,
                 ckey=ckey,
                 pk=pk,
                 day=today,
@@ -764,11 +829,24 @@ def process_realtime_updates(
             )
             data["connections"][ckey][pk] = entry
             chat_cursor[pk] = len(pair_msgs)
+            if st_realtime and cid_int is not None and storage_db_writes_enabled():
+                st_realtime.upsert_connection(cid_int, pk, entry)
             updated += 1
             updated_by_chat[ckey] = int(updated_by_chat.get(ckey, 0) or 0) + 1
 
     if updated > 0:
         _save(data)
+        if st_realtime and storage_db_writes_enabled():
+            meta = st_realtime.get_graph_meta()
+            rc = dict(meta.get("realtime_cursors") or {})
+            for ck, sub in (data.get("realtime_cursors") or {}).items():
+                if not isinstance(sub, dict):
+                    continue
+                cur = dict(rc.get(ck) or {})
+                cur.update(sub)
+                rc[ck] = cur
+            meta["realtime_cursors"] = rc
+            st_realtime.replace_graph_meta(meta)
     if return_details:
         return {
             "updated": int(updated),
@@ -797,6 +875,85 @@ def get_connections(chat_id: int | None = None) -> list[dict]:
     Возвращает список связей для отображения в админке.
     chat_id=None — все чаты (объединённо).
     """
+    try:
+        from services.storage_cutover import (
+            storage_db_reads_enabled,
+            storage_json_fallback_enabled,
+        )
+        from services.sqlite_storage import get_storage
+
+        if storage_db_reads_enabled() and not storage_json_fallback_enabled():
+            st = get_storage()
+            if st:
+                db_rows = st.get_all_connections(chat_id)
+                if db_rows:
+                    data_shell: dict = {"dialogue_log": {}, "connections": {}}
+                    result_db: list[dict] = []
+                    for row in db_rows:
+                        ckey = str(int(row["chat_id"]))
+                        pk = str(row.get("pair_key") or "")
+                        parts = pk.split("|")
+                        ua = int(parts[0]) if len(parts) > 1 else 0
+                        ub = int(parts[1]) if len(parts) > 1 else 0
+                        sbd = list(row.get("summary_by_date") or [])
+                        v = {
+                            "user_a": ua,
+                            "user_b": ub,
+                            "summary": row.get("summary", ""),
+                            "summary_by_date": sbd,
+                            "last_updated": "",
+                            "message_count": int(row.get("message_count", 0) or 0),
+                        }
+                        metrics = {}
+                        if ua and ub and (
+                            "message_count_7d" not in v
+                            or "tone" not in v
+                            or "confidence" not in v
+                            or "tone_trend" not in v
+                            or "connection_cooling" not in v
+                        ):
+                            metrics = _connection_metrics(
+                                data_shell, ckey, ua, ub, sbd
+                            )
+                        a_to_b = v.get("message_count_a_to_b", metrics.get("message_count_a_to_b"))
+                        b_to_a = v.get("message_count_b_to_a", metrics.get("message_count_b_to_a"))
+                        if a_to_b is None or b_to_a is None:
+                            a_to_b, b_to_a = _pair_directional_counts(
+                                data_shell, ckey, ua, ub
+                            )
+                        result_db.append({
+                            "chat_id": int(ckey),
+                            "user_a": ua or v.get("user_a"),
+                            "user_b": ub or v.get("user_b"),
+                            "summary": v.get("summary", ""),
+                            "summary_by_date": sbd,
+                            "last_updated": v.get("last_updated", ""),
+                            "message_count": v.get("message_count", 0),
+                            "message_count_total": v.get(
+                                "message_count_total",
+                                metrics.get("message_count_total", v.get("message_count", 0)),
+                            ),
+                            "message_count_24h": v.get("message_count_24h", metrics.get("message_count_24h", 0)),
+                            "message_count_7d": v.get("message_count_7d", metrics.get("message_count_7d", 0)),
+                            "message_count_30d": v.get("message_count_30d", metrics.get("message_count_30d", 0)),
+                            "message_count_a_to_b": a_to_b if a_to_b is not None else 0,
+                            "message_count_b_to_a": b_to_a if b_to_a is not None else 0,
+                            "trend_delta": v.get("trend_delta", metrics.get("trend_delta", 0)),
+                            "tone": v.get("tone", metrics.get("tone", "neutral")),
+                            "topics": list(v.get("topics") or metrics.get("topics") or []),
+                            "confidence": v.get("confidence", metrics.get("confidence", 0.0)),
+                            "first_seen_at": v.get("first_seen_at", metrics.get("first_seen_at", "")),
+                            "last_seen_at": v.get("last_seen_at", metrics.get("last_seen_at", "")),
+                            "alert_flags": list(v.get("alert_flags") or metrics.get("alert_flags") or []),
+                            "tone_trend": v.get("tone_trend", metrics.get("tone_trend", "stable")),
+                            "connection_cooling": v.get(
+                                "connection_cooling", metrics.get("connection_cooling", False)
+                            ),
+                        })
+                    return result_db
+    except Exception as e:
+        logger.debug("get_connections from sqlite: %s", e)
+
     data = _load()
     conn = data.get("connections", {})
     result = []
@@ -1100,8 +1257,31 @@ def build_chat_digest(
 
 def get_chats_with_connections() -> list[dict]:
     """Чаты, в которых есть связи или лог диалогов (для выбора в админке)."""
-    data = _load()
     from user_stats import get_chats
+
+    try:
+        from services.storage_cutover import (
+            storage_db_reads_enabled,
+            storage_json_fallback_enabled,
+        )
+        from services.sqlite_storage import get_storage
+
+        if storage_db_reads_enabled() and not storage_json_fallback_enabled():
+            st = get_storage()
+            if st:
+                ckeys: set[str] = set()
+                for row in st.get_all_connections(None):
+                    ckeys.add(str(int(row["chat_id"])))
+                for cid in st.get_all_dialogue_chat_ids():
+                    ckeys.add(str(int(cid)))
+                chats_map = {str(c["chat_id"]): c for c in get_chats()}
+                result = [chats_map[k] for k in sorted(ckeys) if k in chats_map]
+                if result:
+                    return sorted(result, key=lambda x: x["chat_id"])
+    except Exception as e:
+        logger.debug("get_chats_with_connections sqlite: %s", e)
+
+    data = _load()
     chats_map = {str(c["chat_id"]): c for c in get_chats()}
     seen = set()
     result = []

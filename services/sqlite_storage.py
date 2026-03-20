@@ -257,6 +257,87 @@ class SqliteStorage:
         finally:
             pass
 
+    def list_storage_chats(self) -> list[dict]:
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT chat_id, title, last_seen FROM storage_chats ORDER BY chat_id"
+            ).fetchall()
+            return [
+                {"chat_id": int(r[0]), "title": r[1] or "", "last_seen": r[2] or ""}
+                for r in rows
+            ]
+        finally:
+            pass
+
+    def iter_user_profiles(self) -> list[tuple[int, dict]]:
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT user_id, profile_json FROM user_profiles ORDER BY user_id"
+            ).fetchall()
+            out: list[tuple[int, dict]] = []
+            for uid, raw in rows:
+                try:
+                    d = json.loads(raw) if isinstance(raw, str) else (raw or {})
+                    if isinstance(d, dict):
+                        out.append((int(uid), d))
+                except Exception:
+                    continue
+            return out
+        finally:
+            pass
+
+    def delete_user_message_archive(self, user_id: int, chat_id: int | None = None) -> int:
+        if not storage_db_writes_enabled():
+            return 0
+        conn = self._conn()
+        try:
+            if chat_id is not None:
+                cur = conn.execute(
+                    "DELETE FROM user_message_archive WHERE user_id = ? AND chat_id = ?",
+                    (int(user_id), int(chat_id)),
+                )
+            else:
+                cur = conn.execute(
+                    "DELETE FROM user_message_archive WHERE user_id = ?",
+                    (int(user_id),),
+                )
+            conn.commit()
+            return int(cur.rowcount or 0)
+        finally:
+            pass
+
+    def get_graph_meta(self) -> dict:
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                "SELECT data_json FROM storage_settings WHERE id = ?",
+                (_GRAPH_META_ID,),
+            ).fetchone()
+            if not row or not row[0]:
+                return {}
+            raw = row[0]
+            d = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            return dict(d) if isinstance(d, dict) else {}
+        finally:
+            pass
+
+    def replace_graph_meta(self, data: dict) -> None:
+        if not storage_db_writes_enabled():
+            return
+        conn = self._conn()
+        try:
+            payload = json.dumps(data if isinstance(data, dict) else {}, ensure_ascii=False)
+            conn.execute(
+                "INSERT INTO storage_settings (id, data_json) VALUES (?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET data_json = excluded.data_json",
+                (_GRAPH_META_ID, payload),
+            )
+            conn.commit()
+        finally:
+            pass
+
     def append_dialogue_message(
         self,
         chat_id: int,
@@ -358,18 +439,20 @@ class SqliteStorage:
         conn = self._conn()
         try:
             row = conn.execute(
-                "SELECT summary, summary_by_date FROM edges "
+                "SELECT summary, summary_by_date, weight FROM edges "
                 "WHERE chat_id = ? AND from_user = ? AND to_user = ?",
                 (int(chat_id), ua, ub),
             ).fetchone()
             if not row:
                 return None
             summary_by_date = json.loads(row[1]) if isinstance(row[1], str) else (row[1] or [])
+            w = row[2] if len(row) > 2 else 0
             return {
                 "summary": row[0] or "",
                 "summary_by_date": summary_by_date,
                 "user_a": ua,
                 "user_b": ub,
+                "message_count": int(w or 0),
             }
         finally:
             pass
@@ -383,29 +466,33 @@ class SqliteStorage:
         summary = (data.get("summary") or "")[:6000]
         summary_by_date = data.get("summary_by_date") or []
         payload = json.dumps(summary_by_date, ensure_ascii=False)
+        weight = int(data.get("message_count", 0) or 0)
+        if weight < 1:
+            weight = 1
         conn = self._conn()
         try:
             conn.execute(
                 "INSERT INTO edges (chat_id, from_user, to_user, weight, summary, summary_by_date) "
-                "VALUES (?, ?, ?, 1, ?, ?) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(chat_id, from_user, to_user) DO UPDATE SET "
-                "summary = excluded.summary, summary_by_date = excluded.summary_by_date",
-                (int(chat_id), ua, ub, summary, payload),
+                "summary = excluded.summary, summary_by_date = excluded.summary_by_date, "
+                "weight = excluded.weight",
+                (int(chat_id), ua, ub, weight, summary, payload),
             )
             conn.commit()
         except Exception as e:
             # edges may have different schema (unique constraint name)
             try:
                 conn.execute(
-                    "UPDATE edges SET summary = ?, summary_by_date = ? "
+                    "UPDATE edges SET summary = ?, summary_by_date = ?, weight = ? "
                     "WHERE chat_id = ? AND from_user = ? AND to_user = ?",
-                    (summary, payload, int(chat_id), ua, ub),
+                    (summary, payload, weight, int(chat_id), ua, ub),
                 )
                 if conn.total_changes == 0:
                     conn.execute(
                         "INSERT INTO edges (chat_id, from_user, to_user, weight, summary, summary_by_date) "
-                        "VALUES (?, ?, ?, 1, ?, ?)",
-                        (int(chat_id), ua, ub, summary, payload),
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (int(chat_id), ua, ub, weight, summary, payload),
                     )
                 conn.commit()
             except Exception as e2:
@@ -415,21 +502,24 @@ class SqliteStorage:
         try:
             if chat_id is not None:
                 rows = conn.execute(
-                    "SELECT chat_id, from_user, to_user, summary, summary_by_date FROM edges WHERE chat_id = ?",
+                    "SELECT chat_id, from_user, to_user, summary, summary_by_date, weight "
+                    "FROM edges WHERE chat_id = ?",
                     (int(chat_id),),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT chat_id, from_user, to_user, summary, summary_by_date FROM edges"
+                    "SELECT chat_id, from_user, to_user, summary, summary_by_date, weight FROM edges"
                 ).fetchall()
             out = []
             for r in rows:
                 sbd = json.loads(r[4]) if isinstance(r[4], str) else (r[4] or [])
+                w = int(r[5] or 0) if len(r) > 5 else 0
                 out.append({
                     "chat_id": r[0],
                     "pair_key": f"{min(r[1], r[2])}|{max(r[1], r[2])}",
                     "summary": r[3] or "",
                     "summary_by_date": sbd,
+                    "message_count": w,
                 })
             return out
         finally:

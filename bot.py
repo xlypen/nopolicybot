@@ -442,6 +442,34 @@ class IsDirectedAtBotFilter(BaseFilter):
         return False
 
 
+def _on_message_to_bot_already_recorded(message: Message, *, text_stripped: str, has_photo: bool, has_voice: bool) -> bool:
+    """
+    True, если до check_and_reply уже вызван add_to_history в on_message_to_bot
+    (личка / ответ боту / @username при включённом reply_to_bot_enabled).
+    """
+    if not bot_settings.get("reply_to_bot_enabled"):
+        return False
+    if message.from_user and message.from_user.is_bot:
+        return False
+    has_text = bool(text_stripped)
+    if not has_text and not has_photo and not has_voice:
+        return False
+    if getattr(message.chat, "type", None) == "private":
+        return True
+    if message.reply_to_message and message.reply_to_message.from_user and message.reply_to_message.from_user.is_bot:
+        return True
+    if has_text:
+        global _ME_CACHE
+        now = time.monotonic()
+        me = _ME_CACHE[0] if _ME_CACHE is not None and now < _ME_CACHE[1] else None
+        uname = getattr(me, "username", None) if me else None
+        if uname:
+            low = (message.text or message.caption or "").lower()
+            if f"@{str(uname).lower()}" in low:
+                return True
+    return False
+
+
 def _years_word(n: int) -> str:
     if n % 10 == 1 and n % 100 != 11:
         return "год"
@@ -1138,12 +1166,17 @@ async def check_and_reply(message: Message) -> None:
 
     user_name = message.from_user.username or message.from_user.first_name or "Участник"
     _apply_reset_political_count(chat_id)
-    add_to_history(
-        chat_id, user_name, display_text,
-        user_id=message.from_user.id,
-        display_name=first_name,
-        chat_title=(message.chat.title or "") if message.chat else "",
+    # on_message_to_bot уже вызвал add_to_history (и record_chat_message) для лички / @бота / ответа боту
+    skip_history_dup = _on_message_to_bot_already_recorded(
+        message, text_stripped=text, has_photo=has_photo, has_voice=has_voice
     )
+    if not skip_history_dup:
+        add_to_history(
+            chat_id, user_name, display_text,
+            user_id=message.from_user.id,
+            display_name=first_name,
+            chat_title=(message.chat.title or "") if message.chat else "",
+        )
 
     append_social_dialogue(message, chat_id, first_name, display_text, social_graph, logger)
 

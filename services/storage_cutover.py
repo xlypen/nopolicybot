@@ -72,6 +72,9 @@ def get_storage_mode() -> str:
             return _normalize_mode(str(payload.get("mode", "")).strip().lower())
         except Exception:
             pass
+    # После миграции в SQLite по умолчанию только таблицы, без user_stats/social_graph JSON.
+    if _MIGRATION_MARKER.exists():
+        return _normalize_mode("db_only")
     return _normalize_mode("dual")
 
 

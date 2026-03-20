@@ -103,13 +103,22 @@ def validate_secrets(service: str, *, force: bool = False) -> None:
     if not force and _validation_disabled():
         return
 
+    try:
+        from config.database_url import materialize_database_url_env
+
+        materialize_database_url_env()
+    except ImportError:
+        pass
+
     errors: list[str] = []
     required = _SERVICE_REQUIRED[service_norm]
     values = {name: str(os.getenv(name, "") or "").strip() for name in required}
     for name, value in values.items():
+        if name == "DATABASE_URL":
+            continue
         _require_non_empty(name, value, errors)
 
-    _validate_database_url(values.get("DATABASE_URL", ""), errors)
+    _validate_database_url(str(os.getenv("DATABASE_URL", "") or "").strip(), errors)
 
     if service_norm == "bot":
         _validate_bot_token(values.get("TELEGRAM_BOT_TOKEN", ""), errors)

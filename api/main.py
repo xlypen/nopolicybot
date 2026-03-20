@@ -6,8 +6,15 @@ from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
-# До импорта db.engine (пул и DATABASE_URL из .env)
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+# До импорта db.engine (DATABASE_URL из POSTGRES_* и пул из .env)
+_root_env = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(_root_env)
+try:
+    from config.database_url import materialize_database_url_env
+
+    materialize_database_url_env()
+except ImportError:
+    pass
 from fastapi import Depends, FastAPI, Path, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse

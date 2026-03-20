@@ -4,11 +4,12 @@ After=network.target
 
 [Service]
 Type=notify
+NotifyAccess=main
 User=root
 Group=root
 WorkingDirectory=/opt/telegram-political-monitor-bot
 Environment=PATH=/opt/telegram-political-monitor-bot/venv/bin
-Environment=USE_SQLITE=true
+EnvironmentFile=-/opt/telegram-political-monitor-bot/.env
 ExecStart=/opt/telegram-political-monitor-bot/venv/bin/python /opt/telegram-political-monitor-bot/bot.py
 Restart=always
 RestartSec=10

@@ -1,4 +1,9 @@
 .env
+.env.*.bak
+.env.broken-*
+.env.from_proc
+.env.merged
+.env.new
 venv/
 __pycache__/
 .pytest_cache/

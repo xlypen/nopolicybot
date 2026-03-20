@@ -1,9 +1,13 @@
 import time
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
+
+# До импорта db.engine (пул и DATABASE_URL из .env)
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 from fastapi import Depends, FastAPI, Path, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -29,7 +33,6 @@ from services.monitoring import build_alerts, record_request, snapshot, to_prome
 from services.rate_limiter import RateLimiter
 from services.structured_logging import configure_logging
 
-load_dotenv()
 configure_logging("api-v2")
 
 

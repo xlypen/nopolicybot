@@ -589,7 +589,10 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
                         logger.warning("Ошибка обработки дня %s чата %s: %s", day, chat_id, e)
             if processed > 0:
                 st.set_last_processed_date(today)
-            return processed
+            # При processed==0 не выходим: диалоги могут быть только в JSON (dialogue_log),
+            # тогда get_all_dialogue_chat_ids() пуст и нужна нижняя ветка.
+            if processed > 0:
+                return processed
 
     data = _load()
     from services.sqlite_storage import get_storage as _sg

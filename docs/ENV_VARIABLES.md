@@ -32,7 +32,7 @@
 | Переменная | Назначение |
 |------------|------------|
 | `DATABASE_URL` | DSN. Рекомендуется `postgresql+asyncpg://...`. SQLite остаётся для локальной отладки без Postgres. |
-| `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Если заданы (вместе с БД и пользователем), `materialize_database_url_env()` **подставляет** `DATABASE_URL` на Postgres и **заменяет** строку sqlite в `.env`. Уже заданный в `.env` `postgresql+…` не трогается. |
+| `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Если заданы (вместе с БД и пользователем), `materialize_database_url_env()` **подставляет** `DATABASE_URL` на Postgres и **заменяет** строку sqlite в `.env`. Уже заданный в `.env` `postgresql+…` не трогается. Альтернатива: стандартные **`PGHOST`**, **`PGPORT`**, **`PGDATABASE`**, **`PGUSER`**, **`PGPASSWORD`**. Если хост пустой, но есть БД и пользователь — для сборки URL используется **`127.0.0.1`**. |
 | `POSTGRES_DRIVER` | По умолчанию `asyncpg` |
 | `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | Пул SQLAlchemy (`db/engine.py`) |
 

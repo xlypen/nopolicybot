@@ -4,7 +4,7 @@
 
 Как берётся URL:
   1) DATABASE_URL, если это postgresql* / postgres://
-  2) иначе POSTGRES_HOST + POSTGRES_DB + POSTGRES_USER + POSTGRES_PASSWORD (+ PORT)
+  2) иначе POSTGRES_* или стандартные PGHOST, PGDATABASE, PGUSER, PGPASSWORD (+ PGPORT)
      — даже если в .env для бота оставлен sqlite (частая ситуация).
 
 Зависимости: sqlalchemy, psycopg2-binary
@@ -25,7 +25,9 @@ if str(ROOT) not in sys.path:
 try:
     from dotenv import load_dotenv
 
-    load_dotenv(ROOT / ".env")
+    # override=True: значения из .env перекрывают пустые/устаревшие переменные окружения
+    # (иначе DATABASE_URL=sqlite из профиля и т.п. мешают собрать URL из POSTGRES_* / PG*).
+    load_dotenv(ROOT / ".env", override=True)
 except Exception:
     pass
 
@@ -72,7 +74,8 @@ def main() -> int:
         print("Нет URL PostgreSQL.")
         print("")
         print("Задайте либо полный DATABASE_URL=postgresql+asyncpg://..., либо POSTGRES_HOST,")
-        print("POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD (sqlite в DATABASE_URL будет заменён).")
+        print("POSTGRES_DB, POSTGRES_USER (+ POSTGRES_PASSWORD) или те же роли через PGHOST,")
+        print("PGDATABASE, PGUSER, PGPASSWORD (sqlite в DATABASE_URL будет заменён).")
         if url and not _is_postgres(url):
             print("")
             print(f"Сейчас DATABASE_URL начинается с: {url[:60]}…")

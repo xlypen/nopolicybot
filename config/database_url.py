@@ -1,4 +1,4 @@
-"""Сборка DATABASE_URL из POSTGRES_* если явная строка не задана."""
+"""Сборка DATABASE_URL из POSTGRES_* / стандартных PG* если явная строка не задана."""
 
 from __future__ import annotations
 
@@ -6,15 +6,31 @@ import os
 from urllib.parse import quote_plus
 
 
+def _env_first_nonempty(*keys: str) -> str:
+    """Первое непустое значение из os.environ (POSTGRES_* и дубли libpq PG*)."""
+    for key in keys:
+        raw = os.getenv(key)
+        if raw is None:
+            continue
+        val = str(raw).strip()
+        if val:
+            return val
+    return ""
+
+
 def build_postgresql_url_from_env(*, driver: str | None = None) -> str | None:
-    """Собрать DSN PostgreSQL только из POSTGRES_* (без чтения DATABASE_URL)."""
-    host = str(os.getenv("POSTGRES_HOST", "") or "").strip()
+    """Собрать DSN из POSTGRES_* или PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD (без чтения DATABASE_URL)."""
+    port = _env_first_nonempty("POSTGRES_PORT", "PGPORT") or "5432"
+    db = _env_first_nonempty("POSTGRES_DB", "PGDATABASE")
+    user = _env_first_nonempty("POSTGRES_USER", "PGUSER")
+    password = _env_first_nonempty("POSTGRES_PASSWORD", "PGPASSWORD")
+    host = _env_first_nonempty("POSTGRES_HOST", "PGHOST")
     if not host:
-        return None
-    port = str(os.getenv("POSTGRES_PORT", "5432") or "5432").strip()
-    db = str(os.getenv("POSTGRES_DB", "") or "").strip()
-    user = str(os.getenv("POSTGRES_USER", "") or "").strip()
-    password = str(os.getenv("POSTGRES_PASSWORD", "") or "").strip()
+        # Частый случай: в .env заданы только пользователь/БД/пароль, хост не указан — локальный Postgres.
+        if db and user:
+            host = "127.0.0.1"
+        else:
+            return None
     if not (db and user):
         return None
     drv = str(driver or os.getenv("POSTGRES_DRIVER", "asyncpg") or "asyncpg").strip()

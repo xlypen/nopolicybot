@@ -4,7 +4,7 @@
 
 1. Читается `.env` (`load_dotenv`).
 2. Вызывается `config.database_url.materialize_database_url_env()`:
-   - если заданы **`POSTGRES_HOST`**, **`POSTGRES_DB`**, **`POSTGRES_USER`** (и при необходимости пароль),
+   - если заданы **`POSTGRES_DB`**, **`POSTGRES_USER`** (и при необходимости пароль), плюс **`POSTGRES_HOST`** или пустой хост → тогда **`127.0.0.1`**; можно вместо префикса `POSTGRES_` использовать **`PGHOST`**, **`PGDATABASE`**, **`PGUSER`**, **`PGPASSWORD`**, **`PGPORT`**,
      в **`DATABASE_URL`** подставляется `postgresql+asyncpg://…`, **даже если в .env осталась строка sqlite**;
    - если в `.env` уже указан **`postgresql+…`** / **`postgres://`**, он **не перезаписывается**.
 3. `db/engine.py` создаёт async SQLAlchemy engine на итоговом `DATABASE_URL`.

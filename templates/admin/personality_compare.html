@@ -65,6 +65,7 @@
   var radarChart = null;
   var OCEAN_KEYS = ["openness", "conscientiousness", "extraversion", "agreeableness", "neuroticism"];
   var OCEAN_LABELS = ["Открытость", "Добросовестность", "Экстраверсия", "Доброжелательность", "Нейротизм"];
+  var DIM_RU = { openness: "открытость", conscientiousness: "добросовестность", extraversion: "экстраверсия", agreeableness: "доброжелательность", neuroticism: "нейротизм" };
 
   function esc(t) { return String(t || "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"); }
   function apiFetch(url, opts) {
@@ -145,12 +146,22 @@
       if (!body.ok) throw new Error(body.error || "Ошибка");
       var c = body.comparison || {};
       var chatParam = encodeURIComponent(chat);
+      var verbal = (c.ocean_verbal_lines || []);
+      var verbalBlock = verbal.length
+        ? ("<div style='margin:12px 0;padding:12px;background:var(--panel-elevated, rgba(0,0,0,0.04));border-radius:8px;border:1px solid var(--border-subtle, rgba(255,255,255,0.08));'><div style='font-weight:600;margin-bottom:8px;'>Словесное сравнение</div><ul style='margin:0;padding-left:1.25rem;line-height:1.5;'>" +
+          verbal.map(function (line) { return "<li>" + esc(line) + "</li>"; }).join("") +
+          "</ul><p class='meta-line' style='margin-top:8px;margin-bottom:0;'>Δ в таблице ниже: положительное значение — у пользователя B показатель выше, чем у A.</p></div>")
+        : "";
+      var dimList = function (arr) {
+        return (arr || []).map(function (k) { return DIM_RU[k] || k; }).join(", ");
+      };
       var html = [
         '<div style="text-align:center;margin-bottom:12px;"><canvas id="compareRadar" width="350" height="300"></canvas></div>',
         "<p><strong title='ID: " + esc(ua) + "'>" + esc(c.username_a || "Без имени") + "</strong> vs <strong title='ID: " + esc(ub) + "'>" + esc(c.username_b || "Без имени") + "</strong></p>",
         "<p>Схожесть: <strong>" + Number(c.similarity_score || 0).toFixed(2) + "</strong> (1 = идентичны)</p>",
-        "<p class='meta-line'>Наиболее похожие: " + (c.most_similar_dimensions || []).join(", ") + "</p>",
-        "<p class='meta-line'>Наиболее разные: " + (c.most_different_dimensions || []).join(", ") + "</p>",
+        "<p class='meta-line'>Наиболее похожие измерения: " + dimList(c.most_similar_dimensions) + "</p>",
+        "<p class='meta-line'>Наиболее разные измерения: " + dimList(c.most_different_dimensions) + "</p>",
+        verbalBlock,
         "<table style='margin-top:8px;'><tr><th>Измерение</th><th>Δ (B − A)</th></tr>",
         Object.entries(c.ocean_deltas || {}).map(function (kv) {
           var label = { openness: "Открытость", conscientiousness: "Добросовестность", extraversion: "Экстраверсия", agreeableness: "Доброжелательность", neuroticism: "Нейротизм" }[kv[0]] || kv[0];

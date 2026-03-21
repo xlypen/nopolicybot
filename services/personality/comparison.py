@@ -9,6 +9,41 @@ from services.personality.schema import OCEAN_KEYS, PersonalityProfile
 
 logger = logging.getLogger(__name__)
 
+# Подписи для словесного сравнения (Δ = B − A): кто «выше» по шкале — тот сильнее проявляет черту.
+OCEAN_VERBAL_RU: dict[str, str] = {
+    "openness": "открытость к новому опыту",
+    "conscientiousness": "добросовестность и организованность",
+    "extraversion": "экстраверсия и общительность",
+    "agreeableness": "доброжелательность",
+    "neuroticism": "нейротизм (склонность к переживаниям и стрессу)",
+}
+
+
+def build_ocean_verbal_summary(
+    username_a: str,
+    username_b: str,
+    ocean_deltas: dict[str, float],
+    *,
+    eps: float = 0.02,
+) -> list[str]:
+    """
+    Короткие фразы для UI: кто сильнее по каждой оси OCEAN.
+    ocean_deltas: значения (B - A), как в compare_two.
+    """
+    na = (username_a or "").strip() or "Пользователь A"
+    nb = (username_b or "").strip() or "Пользователь B"
+    lines: list[str] = []
+    for k in OCEAN_KEYS:
+        d = float(ocean_deltas.get(k) or 0.0)
+        label = OCEAN_VERBAL_RU.get(k, k)
+        if abs(d) <= eps:
+            lines.append(f"По показателю «{label}» {na} и {nb} почти не различаются.")
+        elif d > 0:
+            lines.append(f"У {nb} выше {label}, чем у {na}.")
+        else:
+            lines.append(f"У {na} выше {label}, чем у {nb}.")
+    return lines
+
 
 @dataclass
 class ComparisonResult:

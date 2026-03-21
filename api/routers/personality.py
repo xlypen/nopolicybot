@@ -10,6 +10,7 @@ from api.dependencies import get_db_session, require_auth
 from services.personality.comparison import (
     ComparisonResult,
     PersonalityCluster,
+    build_ocean_verbal_summary,
     cluster_community,
     compare_two,
 )
@@ -193,6 +194,11 @@ async def post_compare(
         return {"ok": False, "error": f"Profile not found for user {ub}"}
 
     result: ComparisonResult = compare_two(pa, pb)
+    verbal = build_ocean_verbal_summary(
+        result.username_a or str(ua),
+        result.username_b or str(ub),
+        result.ocean_deltas,
+    )
     return {
         "ok": True,
         "comparison": {
@@ -204,6 +210,7 @@ async def post_compare(
             "similarity_score": result.similarity_score,
             "most_similar_dimensions": result.most_similar_dimensions,
             "most_different_dimensions": result.most_different_dimensions,
+            "ocean_verbal_lines": verbal,
         },
     }
 

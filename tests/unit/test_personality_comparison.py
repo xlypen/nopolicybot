@@ -3,6 +3,7 @@
 from services.personality.comparison import (
     ComparisonResult,
     PersonalityCluster,
+    build_ocean_verbal_summary,
     cluster_community,
     compare_two,
 )
@@ -18,6 +19,20 @@ def test_compare_two_identical():
     r = compare_two(p, p)
     assert r.similarity_score == 1.0
     assert all(d == 0 for d in r.ocean_deltas.values())
+
+
+def test_build_ocean_verbal_summary():
+    deltas = {
+        "openness": 0.1,
+        "conscientiousness": -0.2,
+        "extraversion": 0.0,
+        "agreeableness": 0.05,
+        "neuroticism": -0.15,
+    }
+    lines = build_ocean_verbal_summary("Paul", "Вильям", deltas, eps=0.02)
+    assert len(lines) == 5
+    assert any("Вильям" in x and "Paul" in x for x in lines)
+    assert any("почти не различаются" in x for x in lines)  # extraversion ~ 0
 
 
 def test_compare_two_different():

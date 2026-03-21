@@ -1,6 +1,7 @@
 """Admin dashboard API — dashboard, community-structure, leaderboard, at-risk, log-tail, prompts, topic-policies."""
 
 import asyncio
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -21,16 +22,20 @@ from services.audit_log import write_event
 
 router = APIRouter()
 
-# Кэш ответов админки (TTL 45 сек), чтобы дашборд не грузился минутами при каждом открытии/переключении чата
-_ADMIN_CACHE_TTL_SEC = 45
+# Кэш ответов админки: короче TTL — виджеты ближе к «сейчас»; тяжёлые расчёты не дублируем каждую секунду.
+_ADMIN_CACHE_TTL_SEC = int(os.getenv("ADMIN_DASHBOARD_CACHE_TTL_SEC", "25") or "25")
 _admin_cache: dict[tuple, tuple[Any, float]] = {}
+# Жёсткий предел на расчёт одного виджета (иначе прокси/браузер висят на «Загрузка…»).
+_ADMIN_BUILD_TIMEOUT_SEC = float(os.getenv("ADMIN_DASHBOARD_BUILD_TIMEOUT_SEC", "90") or "90")
 
 
 def _cache_key(*parts: Any) -> tuple:
     return tuple(parts)
 
 
-def _cached(key: tuple, builder: Callable[[], Any]) -> Any:
+def _cached(key: tuple, builder: Callable[[], Any], *, skip_cache: bool = False) -> Any:
+    if skip_cache:
+        return builder()
     now = time.monotonic()
     if key in _admin_cache:
         val, expiry = _admin_cache[key]
@@ -55,6 +60,19 @@ def _run_sync(fn, *args, **kwargs) -> Any:
     return asyncio.to_thread(fn, *args, **kwargs)
 
 
+async def _run_cached_build(key: tuple, builder: Callable[[], Any], *, skip_cache: bool = False) -> Any:
+    """Считает payload в thread pool с лимитом по времени."""
+    try:
+        return await asyncio.wait_for(
+            _run_sync(_cached, key, builder, skip_cache=skip_cache),
+            timeout=max(15.0, _ADMIN_BUILD_TIMEOUT_SEC),
+        )
+    except asyncio.TimeoutError:
+        if not skip_cache and key in _admin_cache:
+            del _admin_cache[key]
+        raise
+
+
 def start_admin_cache_warmer() -> None:
     """Запуск подогрева кэша админки. Пока заглушка — кэш заполняется по первому запросу."""
     pass
@@ -69,6 +87,7 @@ async def stop_admin_cache_warmer() -> None:
 async def get_admin_dashboard(
     chat_id: str | None = Query(default="all"),
     days: int = Query(default=30, ge=1, le=180),
+    refresh: bool = Query(default=False, description="Пропустить кэш и пересчитать"),
     _auth=Depends(require_auth),
 ):
     cid, err = _parse_chat_id(chat_id)
@@ -76,7 +95,19 @@ async def get_admin_dashboard(
         return {"ok": False, "error": err}
     try:
         key = _cache_key("dashboard", cid, days)
-        payload = await _run_sync(_cached, key, lambda: build_chat_health_dashboard(cid, days=days))
+        payload = await _run_cached_build(
+            key,
+            lambda: build_chat_health_dashboard(cid, days=days),
+            skip_cache=refresh,
+        )
+    except asyncio.TimeoutError:
+        return JSONResponse(
+            status_code=504,
+            content={
+                "ok": False,
+                "error": f"Таймаут расчёта дашборда (>{int(_ADMIN_BUILD_TIMEOUT_SEC)} с). Попробуйте позже или чат «все».",
+            },
+        )
     except Exception as e:
         return JSONResponse(
             status_code=500,
@@ -89,7 +120,8 @@ async def get_admin_dashboard(
 async def get_community_structure(
     chat_id: str | None = Query(default="all"),
     period: str = Query(default="30d"),
-    limit: int = Query(default=1200, ge=200, le=5000),
+    limit: int = Query(default=800, ge=200, le=5000),
+    refresh: bool = Query(default=False),
     _auth=Depends(require_auth),
 ):
     cid, err = _parse_chat_id(chat_id)
@@ -97,8 +129,18 @@ async def get_community_structure(
         return {"ok": False, "error": err}
     try:
         key = _cache_key("community", cid, period, limit)
-        payload = await _run_sync(
-            _cached, key, lambda: build_community_structure_dashboard(cid, period=period, limit=limit)
+        payload = await _run_cached_build(
+            key,
+            lambda: build_community_structure_dashboard(cid, period=period, limit=limit),
+            skip_cache=refresh,
+        )
+    except asyncio.TimeoutError:
+        return JSONResponse(
+            status_code=504,
+            content={
+                "ok": False,
+                "error": f"Таймаут расчёта структуры сообщества (>{int(_ADMIN_BUILD_TIMEOUT_SEC)} с). Уменьшите limit в запросе.",
+            },
         )
     except Exception as e:
         return JSONResponse(
@@ -128,15 +170,27 @@ async def get_leaderboard(
     metric: str = Query(default="engagement"),
     days: int = Query(default=30, ge=1, le=180),
     limit: int = Query(default=10, ge=1, le=100),
+    refresh: bool = Query(default=False),
     _auth=Depends(require_auth),
 ):
     cid, err = _parse_chat_id(chat_id)
     if err:
         return {"ok": False, "error": err}
+    if refresh:
+        from services.marketing_metrics import invalidate_graph_rows_cache
+
+        invalidate_graph_rows_cache()
     try:
         key = _cache_key("leaderboard", cid, metric, days, limit)
-        payload = await _run_sync(
-            _cached, key, lambda: build_user_leaderboard_dashboard(cid, metric=metric, limit=limit, days=days)
+        payload = await _run_cached_build(
+            key,
+            lambda: build_user_leaderboard_dashboard(cid, metric=metric, limit=limit, days=days),
+            skip_cache=refresh,
+        )
+    except asyncio.TimeoutError:
+        return JSONResponse(
+            status_code=504,
+            content={"ok": False, "error": f"Таймаут расчёта рейтинга (>{int(_ADMIN_BUILD_TIMEOUT_SEC)} с)."},
         )
     except Exception as e:
         return JSONResponse(
@@ -152,6 +206,7 @@ async def get_at_risk_users(
     days: int = Query(default=30, ge=1, le=180),
     limit: int = Query(default=30, ge=1, le=200),
     threshold: float = Query(default=0.6, ge=0.0, le=1.0),
+    refresh: bool = Query(default=False),
     _auth=Depends(require_auth),
 ):
     cid, err = _parse_chat_id(chat_id)
@@ -159,8 +214,15 @@ async def get_at_risk_users(
         return {"ok": False, "error": err}
     try:
         key = _cache_key("at_risk", cid, days, limit, threshold)
-        payload = await _run_sync(
-            _cached, key, lambda: build_at_risk_users_dashboard(cid, threshold=threshold, days=days, limit=limit)
+        payload = await _run_cached_build(
+            key,
+            lambda: build_at_risk_users_dashboard(cid, threshold=threshold, days=days, limit=limit),
+            skip_cache=refresh,
+        )
+    except asyncio.TimeoutError:
+        return JSONResponse(
+            status_code=504,
+            content={"ok": False, "error": f"Таймаут расчёта at-risk (>{int(_ADMIN_BUILD_TIMEOUT_SEC)} с)."},
         )
     except Exception as e:
         return JSONResponse(

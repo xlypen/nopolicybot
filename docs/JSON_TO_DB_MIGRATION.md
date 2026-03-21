@@ -9,6 +9,7 @@
 | Обработанные даты (processed_dates) | Таблица `processed_dates` | Чтение/запись из БД, fallback на JSON |
 | Участники чата, счётчики сообщений | `messages` + `users` | `get_users_in_chat`, `get_user_display_names`, `get_user` — приоритет БД |
 | Переопределения настроек по чатам | `chat_settings` | Чтение/запись через `get_chat_overrides`, `set_chat_override` |
+| Метрики лидерборда / здоровья чата | `messages` + `marketing_signal_events` | При `storage_db_reads_enabled()` расчёт в `marketing_metrics` из БД; см. `scripts/migrate_marketing_metrics_pg.sql` |
 
 ## В работе / следующий шаг
 
@@ -18,7 +19,7 @@
 | **bot_settings.json** | Глобальные настройки (DEFAULTS) | Вариант 1: одна строка в таблице `global_settings` (key-value или один JSON). Вариант 2: оставить файл/env для глобальных настроек, в БД только переопределения по чатам (уже сделано) |
 | **storage_mode.json** | Режим хранения (db_only, dual и т.д.) | Готово: приоритет у `STORAGE_MODE` / `STORAGE_PRIMARY`, затем файл |
 | **decision_events.json** | События решений движка | Таблица `decision_events` (id, created_at, payload JSON) |
-| **marketing_metrics.json** | Метрики маркетинга | Таблица `marketing_metrics` или отдельная БД/сервис |
+| **marketing_metrics.json** | Legacy-счётчики (только dual/fallback) | Расчёты из БД; JSON — опционально при dual |
 | **question_of_day_*.json**, **reset_political_count.json** | Состояние вопросов дня и сбросов | Таблицы или одна таблица `bot_state` (key, value JSON) |
 | **bot_last_start.json**, **bot_state.json**, **bot_explainability.json** | Время старта, состояние, объяснимость | Та же `bot_state` или отдельные маленькие таблицы |
 | **social_graph.json** | `last_processed`, `realtime_cursors`, fallback для connections/dialogue_log | `last_processed` и курсоры можно хранить в таблице `social_graph_state` (key-value); связи уже в `edges`, диалоги в `messages` |
@@ -28,7 +29,7 @@
 1. **storage_mode** → env (минимальные изменения).
 2. **bot_settings** глобальные → либо оставить JSON, либо одна запись в БД.
 3. **user_stats** расширение → добавить в БД поля для ранга, political_messages, warnings, sentiment; чтение/запись через репозиторий с fallback на JSON.
-4. **decision_events**, **marketing_metrics** → отдельные таблицы при необходимости масштабирования.
+4. **decision_events** → отдельная таблица при необходимости; **marketing_metrics.json** — убрать после полного отказа от dual-write.
 5. Мелкие state-файлы (**question_of_day**, **reset_political_count**, **bot_last_start**, **bot_state**) → таблица `bot_state` (key, value, updated_at).
 
 После переноса каждого блока: отключить запись в JSON (или оставить dual-write на переходный период), затем убрать чтение из JSON.

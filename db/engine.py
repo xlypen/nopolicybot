@@ -1,5 +1,21 @@
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
+
+# Загрузить .env и собрать DATABASE_URL из POSTGRES_* до создания engine (как в api/main.py).
+try:
+    from dotenv import load_dotenv
+
+    _root = Path(__file__).resolve().parent.parent
+    load_dotenv(_root / ".env", encoding="utf-8-sig")
+except Exception:
+    pass
+try:
+    from config.database_url import materialize_database_url_env
+
+    materialize_database_url_env()
+except Exception:
+    pass
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 

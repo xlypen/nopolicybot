@@ -381,7 +381,10 @@ def build_user_leaderboard_dashboard(
     for row in rows:
         uid = _safe_int(row.get("user_id", 0), 0)
         current_score = round(_safe_float(row.get("score", 0.0), 0.0), 4)
-        prev_window = marketing_metrics.get_user_metrics(uid, chat_id=chat_id, days=max(7, min(180, safe_days * 2)))
+        # Сравниваем два одинаковых по длине интервала: последние N дней vs предыдущие N дней (без смешения 30d с 60d).
+        prev_window = marketing_metrics.get_user_metrics(
+            uid, chat_id=chat_id, days=safe_days, window_end_offset_days=safe_days
+        )
         previous_score = round(_safe_float(prev_window.get(score_key, 0.0), 0.0), 4)
         trend_delta = round(current_score - previous_score, 4)
         if abs(trend_delta) < 0.005:

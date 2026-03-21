@@ -17,8 +17,9 @@ KillSignal=SIGINT
 # Длинные LLM-запросы / aiogram shutdown — иначе SIGKILL через 20s и потеря очереди апдейтов
 TimeoutStopSec=90
 WatchdogSec=300
-MemoryMax=512M
-MemorySwapMax=128M
+# LLM + граф + кэши; 512M часто упирается в OOM после часов работы
+MemoryMax=768M
+MemorySwapMax=256M
 
 [Install]
 WantedBy=multi-user.target

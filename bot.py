@@ -22,10 +22,21 @@ from pathlib import Path
 from collections import deque
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.enums import MessageEntityType
 from aiogram.filters import Command, BaseFilter
 from aiogram.types import Message, InputProfilePhotoStatic, ReactionTypeEmoji
 from aiogram.types import FSInputFile
 from dotenv import load_dotenv
+
+# До импорта db.engine: Postgres из POSTGRES_* перекрывает sqlite в .env
+_bot_root = Path(__file__).resolve().parent
+load_dotenv(_bot_root / ".env", encoding="utf-8-sig")
+try:
+    from config.database_url import materialize_database_url_env
+
+    materialize_database_url_env()
+except ImportError:
+    pass
 
 from config.validate_secrets import validate_secrets
 from ai_analyzer import (
@@ -129,6 +140,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 _background_tasks: set[asyncio.Task] = set()
+# Обновляется из asyncio-задачи; поток watchdog не шлёт WATCHDOG, если цикл залип — systemd перезапустит бота.
+_loop_heartbeat_mono: float = time.monotonic()
 
 
 def _spawn_task(coro) -> asyncio.Task:
@@ -146,6 +159,15 @@ def _spawn_task(coro) -> asyncio.Task:
 
     task.add_done_callback(_log_exception)
     return task
+
+
+async def _event_loop_heartbeat_task() -> None:
+    """Пульс живого event loop для связки с systemd watchdog (поток не залипает при deadlock в asyncio)."""
+    global _loop_heartbeat_mono
+    await asyncio.sleep(5)
+    while True:
+        _loop_heartbeat_mono = time.monotonic()
+        await asyncio.sleep(25)
 
 
 CHAT_HISTORY: dict[int, deque[tuple[str, str]]] = {}
@@ -415,6 +437,33 @@ _ME_CACHE: tuple[object, float] | None = None
 _ME_CACHE_TTL_SEC = 120
 
 
+def _is_directed_at_bot_in_group(message: Message, me) -> bool:
+    """Группа/супергруппа: @username в тексте/подписи или entity text_mention на id бота (если нет username)."""
+    bot_id = int(getattr(me, "id", 0) or 0)
+    username = getattr(me, "username", None)
+    uname = str(username).strip().lower() if username else ""
+    full = (message.text or message.caption or "") or ""
+    if uname and f"@{uname}" in full.lower():
+        return True
+    entities = list(message.entities or []) + list(message.caption_entities or [])
+    for entity in entities:
+        try:
+            if getattr(entity, "type", None) == MessageEntityType.TEXT_MENTION:
+                u = getattr(entity, "user", None)
+                if u and int(getattr(u, "id", 0) or 0) == bot_id:
+                    return True
+            if uname and getattr(entity, "type", None) == MessageEntityType.MENTION:
+                off = int(getattr(entity, "offset", 0) or 0)
+                ln = int(getattr(entity, "length", 0) or 0)
+                if ln > 0 and off >= 0 and off + ln <= len(full):
+                    frag = full[off : off + ln].lower()
+                    if frag == f"@{uname}":
+                        return True
+        except Exception:
+            continue
+    return False
+
+
 class IsDirectedAtBotFilter(BaseFilter):
     """Сообщение обращено к боту: личка, ответ на бота, упоминание @username бота, фото или голос в ответ боту."""
 
@@ -436,10 +485,7 @@ class IsDirectedAtBotFilter(BaseFilter):
             _ME_CACHE = (me, now + _ME_CACHE_TTL_SEC)
         if message.reply_to_message and message.reply_to_message.from_user and message.reply_to_message.from_user.is_bot:
             return True
-        if has_text:
-            text = (message.text or message.caption or "").lower()
-            return me.username and f"@{me.username}".lower() in text
-        return False
+        return _is_directed_at_bot_in_group(message, me)
 
 
 def _on_message_to_bot_already_recorded(message: Message, *, text_stripped: str, has_photo: bool, has_voice: bool) -> bool:
@@ -458,15 +504,12 @@ def _on_message_to_bot_already_recorded(message: Message, *, text_stripped: str,
         return True
     if message.reply_to_message and message.reply_to_message.from_user and message.reply_to_message.from_user.is_bot:
         return True
-    if has_text:
+    if has_text or has_photo or has_voice:
         global _ME_CACHE
         now = time.monotonic()
         me = _ME_CACHE[0] if _ME_CACHE is not None and now < _ME_CACHE[1] else None
-        uname = getattr(me, "username", None) if me else None
-        if uname:
-            low = (message.text or message.caption or "").lower()
-            if f"@{str(uname).lower()}" in low:
-                return True
+        if me is not None and _is_directed_at_bot_in_group(message, me):
+            return True
     return False
 
 
@@ -1133,6 +1176,7 @@ async def check_and_reply(message: Message) -> None:
                     last_name=(message.from_user.last_name or "") if message.from_user else "",
                     media_type=media_type,
                     replied_to_user_id=reply_to_user_id,
+                    mention_user_ids=_extract_mentioned_user_ids(message),
                     sentiment=None,
                     is_political=False,
                 )
@@ -1156,6 +1200,7 @@ async def check_and_reply(message: Message) -> None:
                     last_name=(message.from_user.last_name or "") if message.from_user else "",
                     media_type=media_type,
                     replied_to_user_id=reply_to_user_id,
+                    mention_user_ids=_extract_mentioned_user_ids(message),
                     sentiment=None,
                     is_political=False,
                 )
@@ -1286,6 +1331,7 @@ async def check_and_reply(message: Message) -> None:
                 last_name=(message.from_user.last_name or "") if message.from_user else "",
                 media_type=media_type,
                 replied_to_user_id=reply_to_user_id,
+                mention_user_ids=_extract_mentioned_user_ids(message),
                 sentiment=None,
                 is_political=bool(is_political_event and active_topic == "politics"),
             )
@@ -1478,6 +1524,7 @@ async def on_message_to_bot(message: Message) -> None:
                 last_name=(message.from_user.last_name or "") if message.from_user else "",
                 media_type=media_type,
                 replied_to_user_id=reply_to_user_id,
+                mention_user_ids=_extract_mentioned_user_ids(message),
                 sentiment=None,
                 is_political=False,
             )
@@ -1948,14 +1995,27 @@ def _sd_notify(msg: str) -> None:
 
 
 def _watchdog_thread_fn() -> None:
-    """Send WATCHDOG=1 to systemd every 60s from a separate thread (survives event loop blocking)."""
+    """WATCHDOG в systemd только если event loop недавно тикал (см. _event_loop_heartbeat_task)."""
+    global _loop_heartbeat_mono
+    # Ниже WatchdogSec=300 из unit-файла; при залипании цикла перестаём слать — придёт SIGABRT/restart.
+    stale_sec = max(60, min(int(os.getenv("BOT_WATCHDOG_STALE_SEC", "120") or 120), 270))
     while True:
-        _sd_notify("WATCHDOG=1")
         time.sleep(60)
+        age = time.monotonic() - _loop_heartbeat_mono
+        if age > float(stale_sec):
+            logger.error(
+                "Watchdog: event loop не тикал %.0f с (порог %s) — WATCHDOG не отправляю; ожидается перезапуск systemd",
+                age,
+                stale_sec,
+            )
+            continue
+        _sd_notify("WATCHDOG=1")
 
 
 def _start_watchdog_thread() -> None:
     """Start background thread that pings systemd watchdog; send READY=1 once."""
+    global _loop_heartbeat_mono
+    _loop_heartbeat_mono = time.monotonic()
     _sd_notify("READY=1")
     t = threading.Thread(target=_watchdog_thread_fn, daemon=True, name="watchdog")
     t.start()
@@ -2062,6 +2122,7 @@ async def main() -> None:
     )
     logger.info("Бот запущен. ИИ: %s", os.getenv("OPENAI_BASE_URL", "(не задан)"))
     _debug_log("SESSION_START", detail=f"ИИ={os.getenv('OPENAI_BASE_URL', '—')}")
+    _spawn_task(_event_loop_heartbeat_task())
     _start_watchdog_thread()
     _spawn_task(restart_checker(RESTART_FLAG_PATH, logger))
     _spawn_task(_state_persistence_loop())

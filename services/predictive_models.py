@@ -66,6 +66,17 @@ def _metrics_data() -> dict:
 
 
 def _chat_daily_rows(chat_id: int) -> list[tuple[str, dict]]:
+    try:
+        from services.storage_cutover import storage_db_reads_enabled
+
+        if storage_db_reads_enabled():
+            from services.marketing_metrics_db import chat_daily_series
+
+            rows = chat_daily_series(chat_id=int(chat_id), lookback_days=120)
+            if rows:
+                return rows
+    except Exception:
+        pass
     data = _metrics_data()
     chat = ((data.get("chats") or {}).get(str(int(chat_id))) or {})
     daily = chat.get("chat_daily") or {}
@@ -76,6 +87,28 @@ def _chat_daily_rows(chat_id: int) -> list[tuple[str, dict]]:
         rows.append((str(day), payload))
     rows.sort(key=lambda x: x[0])
     return rows
+
+
+def _metrics_chat_ids_for_overview(limit: int = 40) -> list[int]:
+    try:
+        from services.storage_cutover import storage_db_reads_enabled
+
+        if storage_db_reads_enabled():
+            from db.sync_engine import sync_session_scope
+            from services.marketing_metrics_db import all_distinct_chat_ids
+
+            with sync_session_scope() as s:
+                ids = all_distinct_chat_ids(s)
+            return ids[: max(1, int(limit or 40))]
+    except Exception:
+        pass
+    data = _metrics_data()
+    out: list[int] = []
+    for key in sorted((data.get("chats") or {}).keys()):
+        if not str(key).lstrip("-").isdigit():
+            continue
+        out.append(int(key))
+    return out[: max(1, int(limit or 40))]
 
 
 def predict_toxicity(chat_id: int, *, horizon_days: int = 7, lookback_days: int = 30) -> dict:
@@ -191,14 +224,10 @@ def predict_overview(chat_id: int | None, *, horizon_days: int = 7, lookback_day
     if chat_id is None:
         churn = predict_churn(None, horizon_days=horizon_days, lookback_days=lookback_days)
         # For global mode, virality/toxicity use weighted average over known chats.
-        data = _metrics_data()
-        chat_keys = sorted((data.get("chats") or {}).keys())
+        chat_ids = _metrics_chat_ids_for_overview(40)
         toxicity_rows = []
         virality_rows = []
-        for key in chat_keys[:40]:
-            if not str(key).lstrip("-").isdigit():
-                continue
-            cid = int(key)
+        for cid in chat_ids:
             toxicity_rows.append(predict_toxicity(cid, horizon_days=horizon_days, lookback_days=lookback_days))
             virality_rows.append(predict_virality(cid, horizon_days=horizon_days, lookback_days=lookback_days))
         if toxicity_rows:

@@ -232,6 +232,20 @@
 <div class="grid">
   <div class="card">
     <div class="title">Рейтинг участников</div>
+    <details style="margin:-4px 0 10px;font-size:12px;color:var(--text-secondary);">
+      <summary style="cursor:pointer;color:var(--accent);">Как считается и откуда данные</summary>
+      <div style="margin-top:8px;line-height:1.45;">
+        Оценки строятся из событий, которые бот пишет в <code>marketing_metrics.json</code> (ответы, упоминания, тональность за выбранное число дней, по умолчанию 30).
+        <strong>Вовлечённость</strong> — ответы, глубина тредов, упоминания, скорость ответа.
+        <strong>Влияние</strong> — позиция в графе связей + охват.
+        <strong>Удержание</strong> — активные дни, серия, свежесть, меньше негатива.
+        <strong>Виральность</strong> — упоминания к пользователю относительно его сообщений.
+        <strong>Отток</strong> — 1 − удержание (выше = рискованнее).
+        Колонка <strong>Тренд</strong> сравнивает последние N дней с <em>предыдущими</em> N днями (одинаковая длина окна).
+        Кэш API ~25 с; при смене чата виджеты запрашивают свежий пересчёт.
+        Подробнее: <code>docs/LEADERBOARD_METRICS.md</code> в репозитории.
+      </div>
+    </details>
     <div class="row" style="margin-bottom:8px;">
       <label>Метрика:</label>
       <select id="leaderboardMetricSel">
@@ -311,6 +325,45 @@ function esc(text) {
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;');
+}
+
+/** Таймаут виджетов админки: иначе «Загрузка…» без конца при зависшем API */
+const ADMIN_WIDGET_TIMEOUT_MS = 120000;
+
+async function fetchWithTimeout(url, init = {}, timeoutMs = ADMIN_WIDGET_TIMEOUT_MS) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { credentials: 'same-origin', ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function fetchAdminWidget(url) {
+  let r;
+  try {
+    r = await fetchWithTimeout(url);
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      throw new Error(`Таймаут загрузки (>${ADMIN_WIDGET_TIMEOUT_MS / 1000} с). Проверьте сервис telegram-bot-api.`);
+    }
+    throw e;
+  }
+  const text = await r.text();
+  let b = null;
+  try {
+    b = text ? JSON.parse(text) : null;
+  } catch (_e) {
+    b = null;
+  }
+  if (!r.ok) {
+    throw new Error((b && b.error) || `HTTP ${r.status}`);
+  }
+  if (!b || b.ok === false) {
+    throw new Error((b && b.error) || 'API: ok=false');
+  }
+  return b;
 }
 
 async function requestJson(url, options) {
@@ -759,7 +812,7 @@ async function loadAndRender() {
   try {
     renderGraphFromState();
   } finally {
-    await loadInsights(chat);
+    await loadInsights(chat, { forceRefresh: true });
   }
   })();
   try {
@@ -843,7 +896,7 @@ async function fetchAndApplyDelta() {
     applyGraphDelta(body.delta || {}, body.graph_version || '');
     updateGraphMetaLine(_graphState);
     renderGraphFromState();
-    await loadInsights(chat);
+    await loadInsights(chat, { forceRefresh: false });
   })();
   try {
     await _deltaPromise;
@@ -852,16 +905,17 @@ async function fetchAndApplyDelta() {
   }
 }
 
-async function loadInsights(chat) {
+async function loadInsights(chat, opts) {
+  const forceRefresh = !!(opts && opts.forceRefresh);
   await Promise.allSettled([
     loadRecommendations(chat),
     loadPredictive(chat),
     loadStorageStatus(),
     loadAiCreditsStatus(),
-    loadAdminHealth(chat),
-    loadAdminCommunity(chat),
-    loadAdminLeaderboard(chat),
-    loadAdminPanel(chat),
+    loadAdminHealth(chat, forceRefresh),
+    loadAdminCommunity(chat, forceRefresh),
+    loadAdminLeaderboard(chat, forceRefresh),
+    loadAdminPanel(chat, forceRefresh),
   ]);
 }
 
@@ -1140,17 +1194,22 @@ function metricVsTargetColor(value, target) {
   return '#22c55e';
 }
 
-async function loadAdminHealth(chat) {
+async function loadAdminHealth(chat, refresh) {
   const main = document.getElementById('healthOverviewMain');
   const topics = document.getElementById('healthOverviewTopics');
   if (!main || !topics) return;
   main.textContent = 'Загрузка...';
   topics.textContent = '';
   const slowHint = setTimeout(() => { if (main.textContent === 'Загрузка...') main.textContent = 'Загрузка… (подождите)'; }, 4000);
+  const rf = refresh ? '&refresh=1' : '';
   let b;
   try {
-    const r = await fetch(`/api/v2/admin/dashboard?chat_id=${encodeURIComponent(chat)}&days=30`);
-    b = await r.json();
+    b = await fetchAdminWidget(`/api/v2/admin/dashboard?chat_id=${encodeURIComponent(chat)}&days=30${rf}`);
+  } catch (e) {
+    clearTimeout(slowHint);
+    main.innerHTML = `<span style="color:#ef4444;font-size:13px;">${esc(e.message || e)}</span>`;
+    topics.textContent = '';
+    return;
   } finally { clearTimeout(slowHint); }
   const d = (b && b.dashboard) || {};
   const targets = d.targets || {};
@@ -1203,14 +1262,23 @@ async function loadAdminHealth(chat) {
   }
 }
 
-async function loadAdminCommunity(chat) {
+async function loadAdminCommunity(chat, refresh) {
   const main = document.getElementById('communityStructureMain');
   const rows = document.getElementById('communityBridgeRows');
   if (!main || !rows) return;
   main.textContent = 'Загрузка...';
   rows.innerHTML = '';
-  const r = await fetch(`/api/v2/admin/community-structure?chat_id=${encodeURIComponent(chat)}&period=30d&limit=1200`);
-  const b = await r.json();
+  const rf = refresh ? '&refresh=1' : '';
+  let b;
+  try {
+    b = await fetchAdminWidget(
+      `/api/v2/admin/community-structure?chat_id=${encodeURIComponent(chat)}&period=30d&limit=600${rf}`,
+    );
+  } catch (e) {
+    main.innerHTML = `<span style="color:#ef4444;font-size:13px;">${esc(e.message || e)}</span>`;
+    rows.innerHTML = '';
+    return;
+  }
   const d = (b && b.community) || {};
   main.innerHTML = `
     <div>Плотность: <strong>${fmt(d.density, 4)}</strong> · Средняя степень: <strong>${fmt(d.avg_degree, 2)}</strong></div>
@@ -1230,7 +1298,7 @@ async function loadAdminCommunity(chat) {
   }).join('');
 }
 
-async function loadAdminLeaderboard(chat) {
+async function loadAdminLeaderboard(chat, refresh) {
   const body = document.getElementById('leaderboardRows');
   const metricSel = document.getElementById('leaderboardMetricSel');
   if (!body || !metricSel) return;
@@ -1240,10 +1308,16 @@ async function loadAdminLeaderboard(chat) {
     const cell = body.querySelector('td');
     if (cell && cell.textContent === 'Загрузка...') cell.textContent = 'Загрузка… (подождите)';
   }, 4000);
+  const rf = refresh ? '&refresh=1' : '';
   let b;
   try {
-    const r = await fetch(`/api/v2/admin/leaderboard?chat_id=${encodeURIComponent(chat)}&metric=${encodeURIComponent(metric)}&limit=12&days=30`);
-    b = await r.json();
+    b = await fetchAdminWidget(
+      `/api/v2/admin/leaderboard?chat_id=${encodeURIComponent(chat)}&metric=${encodeURIComponent(metric)}&limit=12&days=30${rf}`,
+    );
+  } catch (e) {
+    clearTimeout(slowHint);
+    body.innerHTML = `<tr><td colspan="4" style="padding:6px;color:#ef4444;">${esc(e.message || e)}</td></tr>`;
+    return;
   } finally { clearTimeout(slowHint); }
   const users = (((b || {}).leaderboard || {}).users) || [];
   if (!users.length) {
@@ -1272,20 +1346,33 @@ async function loadAdminLeaderboard(chat) {
   `).join('');
 }
 
-async function loadAdminPanel(chat) {
+async function loadAdminPanel(chat, refresh) {
   const sel = document.getElementById('analyticsPanelSel');
   const body = document.getElementById('analyticsPanelBody');
   if (!sel || !body) return;
   const view = String(sel.value || 'at-risk-users');
   body.textContent = 'Загрузка...';
   const slowHint = setTimeout(() => { if (body.textContent === 'Загрузка...') body.textContent = 'Загрузка… (подождите)'; }, 4000);
+  const rf = refresh ? '&refresh=1' : '';
   let b;
   try {
     const endpoint = view === 'at-risk-users'
-      ? `/api/v2/admin/at-risk-users?chat_id=${encodeURIComponent(chat)}&days=30&limit=12&threshold=0.6`
+      ? `/api/v2/admin/at-risk-users?chat_id=${encodeURIComponent(chat)}&days=30&limit=12&threshold=0.6${rf}`
       : `/api/admin/${encodeURIComponent(view)}?chat_id=${encodeURIComponent(chat)}&period_days=30&lookback_days=30&horizon_days=7&limit=12`;
-    const r = await fetch(endpoint);
-    b = await r.json();
+    const r = await fetchWithTimeout(endpoint);
+    const raw = await r.text();
+    try {
+      b = raw ? JSON.parse(raw) : null;
+    } catch (_e) {
+      b = null;
+    }
+    if (!r.ok) {
+      throw new Error((b && b.error) || `HTTP ${r.status}`);
+    }
+  } catch (e) {
+    clearTimeout(slowHint);
+    body.innerHTML = `<span style="color:#ef4444;font-size:13px;">${esc(e.message || e)}</span>`;
+    return;
   } finally { clearTimeout(slowHint); }
   if (!b || !b.ok) {
     body.textContent = 'Ошибка загрузки.';
@@ -1860,7 +1947,7 @@ document.getElementById('modeSel').addEventListener('change', () => {
 document.getElementById('autoRefreshChk').addEventListener('change', handleAutoToggle);
 document.getElementById('leaderboardMetricSel').addEventListener('change', () => {
   const chat = document.getElementById('chatSel').value;
-  loadAdminLeaderboard(chat).catch(() => {});
+  loadAdminLeaderboard(chat, true).catch(() => {});
 });
 document.getElementById('leaderboardSearch').addEventListener('input', function() {
   const q = this.value.trim().toLowerCase();
@@ -1872,7 +1959,7 @@ document.getElementById('leaderboardSearch').addEventListener('input', function(
 });
 document.getElementById('analyticsPanelSel').addEventListener('change', () => {
   const chat = document.getElementById('chatSel').value;
-  loadAdminPanel(chat).catch(() => {});
+  loadAdminPanel(chat, true).catch(() => {});
 });
 
 // Восстановить выбранный чат из URL (?chat=...) при переходе из профиля

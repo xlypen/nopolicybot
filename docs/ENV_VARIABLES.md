@@ -31,10 +31,12 @@
 
 | Переменная | Назначение |
 |------------|------------|
-| `DATABASE_URL` | DSN (SQLite или `postgresql+asyncpg://...`) |
-| `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Если `DATABASE_URL` пустой — сборка URL в `config/database_url.py` |
+| `DATABASE_URL` | DSN. Рекомендуется `postgresql+asyncpg://...`. SQLite остаётся для локальной отладки без Postgres. |
+| `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Если заданы (вместе с БД и пользователем), `materialize_database_url_env()` **подставляет** `DATABASE_URL` на Postgres и **заменяет** строку sqlite в `.env`. Уже заданный в `.env` `postgresql+…` не трогается. |
 | `POSTGRES_DRIVER` | По умолчанию `asyncpg` |
 | `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | Пул SQLAlchemy (`db/engine.py`) |
+
+**CLI только для PostgreSQL** (`scripts/apply_marketing_metrics_migration.py`, `scripts/pg_quick_status.py`): URL берётся как `postgresql*` из `DATABASE_URL`, **либо** собирается из `POSTGRES_*`, даже если в `DATABASE_URL` остался sqlite (см. `config.database_url.postgres_url_for_cli_scripts`).
 
 ## Хранилище (JSON ↔ БД)
 

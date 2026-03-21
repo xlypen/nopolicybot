@@ -36,7 +36,23 @@ class Message(Base):
     sent_at = Column(TIMESTAMP, nullable = False)
     tone_score = Column(Float)
     risk_flags = Column(JSON, default = list)
+    mention_user_ids = Column(JSON, default=list)
     __table_args__ = (Index('idx_messages_chat_sent', 'chat_id', 'sent_at'), Index('idx_messages_user_sent', 'user_id', 'sent_at'))
+
+
+class MarketingSignalEvent(Base):
+    """События тональности/политики после анализа ИИ (замена счётчиков в marketing_metrics.json)."""
+    __tablename__ = 'marketing_signal_events'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chat_id = Column(BigInteger, nullable=False)
+    user_id = Column(BigInteger, nullable=False)
+    occurred_at = Column(TIMESTAMP, nullable=False)
+    sentiment = Column(String(16), nullable=False, default='neutral')
+    is_political = Column(Boolean, nullable=False, default=False)
+    __table_args__ = (
+        Index('idx_mse_chat_time', 'chat_id', 'occurred_at'),
+        Index('idx_mse_user_chat_time', 'user_id', 'chat_id', 'occurred_at'),
+    )
 
 
 class Edge(Base):

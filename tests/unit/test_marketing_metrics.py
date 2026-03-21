@@ -20,9 +20,12 @@ def isolated_metrics_store(tmp_path, monkeypatch):
             303: {"pagerank": 0.45, "reach": 0.4},
         },
     )
-    # A5: allow JSON writes in tests (db_only would skip)
+    # В репозитории может лежать storage_mode.json с db_only — для JSON-метрик нужен dual.
     from services import storage_cutover
+    monkeypatch.setattr(storage_cutover, "get_storage_mode", lambda: "dual")
     monkeypatch.setattr(storage_cutover, "storage_json_writes_enabled", lambda: True)
+    # Иначе sync_engine ходит в ./data/bot.db проекта со старой схемой.
+    monkeypatch.setattr("services.marketing_metrics._reads_metrics_from_db", lambda: False)
     return data_file
 
 

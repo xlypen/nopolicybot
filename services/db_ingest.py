@@ -49,6 +49,7 @@ async def ingest_message_event(
     last_name: str = "",
     media_type: str = "text",
     replied_to_user_id: int | None = None,
+    mention_user_ids: list[int] | None = None,
     sentiment: str | None = None,
     is_political: bool = False,
 ) -> bool:
@@ -89,6 +90,14 @@ async def ingest_message_event(
                 )
 
             telegram_id = _combined_telegram_id(int(chat_id), int(message_id))
+            mentions: list[int] = []
+            if mention_user_ids:
+                for x in mention_user_ids:
+                    try:
+                        mentions.append(int(x))
+                    except (TypeError, ValueError):
+                        continue
+                mentions = sorted({m for m in mentions if m and int(m) != int(user_id)})
             try:
                 async with session.begin_nested():
                     await msg_repo.add(
@@ -101,6 +110,7 @@ async def ingest_message_event(
                         sent_at=sent_at,
                         tone_score=tone_score,
                         risk_flags=(["politics"] if is_political else []),
+                        mention_user_ids=mentions,
                     )
             except Exception as e:
                 _log.warning("db ingest msg_repo.add failed chat=%s msg=%s: %s", chat_id, message_id, e)

@@ -41,6 +41,12 @@ from services.rate_limiter import RateLimiter
 from services.structured_logging import configure_logging
 
 load_dotenv(Path(__file__).resolve().parent / ".env", encoding="utf-8-sig")
+try:
+    from config.database_url import materialize_database_url_env
+
+    materialize_database_url_env()
+except ImportError:
+    pass
 
 configure_logging("flask-admin")
 validate_secrets("admin")

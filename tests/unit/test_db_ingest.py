@@ -47,7 +47,7 @@ async def test_ingest_message_event_writes_db(db_session, monkeypatch):
     msgs = (await db_session.execute(select(Message))).scalars().all()
     edges = (await db_session.execute(select(Edge))).scalars().all()
 
-    assert len(users) == 1
+    assert len(users) == 2  # автор + пользователь, на которого ответ
     assert len(msgs) == 1
     assert len(edges) == 1
     assert msgs[0].chat_id == 1001

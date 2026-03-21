@@ -1,5 +1,27 @@
 # PostgreSQL как основная БД
 
+## Docker (compose в корне репозитория)
+
+Файл **`docker-compose.yml`** поднимает сервис **`postgres`** с теми же переменными, что ожидает бот (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`). Значения по умолчанию в compose: пользователь **`postgres`**, пароль **`postgres`**, БД **`nopolicybot`** — их можно переопределить в `.env`.
+
+### Где «лежит» DATABASE_URL
+
+Отдельного секрета в коде нет: строка **всегда** собирается из переменных (или задаётся явно в `.env`).
+
+- **Бот на хосте** (как у вас с systemd), Postgres в Docker с пробросом порта **`5432:5432`**:
+  - в `.env` те же `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB`, что задали контейнеру;
+  - **`POSTGRES_HOST=127.0.0.1`**, **`POSTGRES_PORT=5432`** (или ваш `POSTGRES_PUBLISH_PORT`, если меняли публикацию).
+
+Эквивалентная явная строка (подставьте свои значения, пароль — URL-encoded при спецсимволах):
+
+```text
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/nopolicybot
+```
+
+- **Бот в том же `docker compose`** (отдельный сервис в одной сети): хост БД — имя сервиса, **`POSTGRES_HOST=postgres`**, порт **`5432`**.
+
+После старта контейнера: миграции и проверка — `scripts/apply_marketing_metrics_migration.py`, `scripts/pg_quick_status.py`.
+
 ## Как подключается приложение
 
 1. Читается `.env` (`load_dotenv`).

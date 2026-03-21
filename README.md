@@ -69,6 +69,7 @@ pip install -r requirements.txt
 2. В `.env` укажите:
    - `TELEGRAM_BOT_TOKEN` — токен от BotFather  
    - `OPENAI_API_KEY` — ключ API ИИ  
+   - **База:** PostgreSQL рекомендуется. Пример с Docker: в корне `docker compose up -d postgres` (см. `docker-compose.yml`), в `.env` те же `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB`, что у контейнера, и **`POSTGRES_HOST=127.0.0.1`** если бот на хосте. Явный DSN: `docs/DATABASE_POSTGRES.md`.
    - При необходимости: `OPENAI_BASE_URL`, `OPENAI_MODEL`
    - Для мульти-модельных ответов бота (по обращениям к боту):  
      `OPENAI_REPLY_MODELS=model1,model2,model3`  

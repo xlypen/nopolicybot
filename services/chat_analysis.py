@@ -4,29 +4,53 @@
 """
 
 import logging
-from pathlib import Path
 from html import escape as esc
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 DATA_DIR = Path(__file__).resolve().parent.parent
 
 
 def _get_chat_participants_from_db(chat_id: int) -> list[tuple[str, int]]:
-    """Участники чата и число сообщений из таблицы messages: [(user_id_str, count), ...]."""
-    import sqlite3
+    """Участники чата и число сообщений из таблицы messages: [(user_id_str, count), ...].
+
+    Источник — та же БД, что и у бота (DATABASE_URL): Postgres через db.sync_engine,
+    либо SQLite по DSN. Fallback: старый файл data/bot.db, если основной DSN недоступен.
+    """
+    cid = int(chat_id)
+    try:
+        from sqlalchemy import func, select
+
+        from db.models import Message
+        from db.sync_engine import sync_session_scope
+
+        with sync_session_scope() as session:
+            stmt = (
+                select(Message.user_id, func.count(Message.id))
+                .where(Message.chat_id == cid)
+                .where(Message.user_id.isnot(None))
+                .group_by(Message.user_id)
+            )
+            rows = session.execute(stmt).all()
+        return [(str(int(uid)), int(cnt)) for uid, cnt in rows if uid is not None]
+    except Exception as e:
+        logger.debug("_get_chat_participants_from_db (sync ORM): %s", e)
+
     db_path = DATA_DIR / "data" / "bot.db"
     if not db_path.exists():
         return []
     try:
+        import sqlite3
+
         conn = sqlite3.connect(str(db_path))
         rows = conn.execute(
             "SELECT user_id, COUNT(*) FROM messages WHERE chat_id = ? AND user_id IS NOT NULL GROUP BY user_id",
-            (chat_id,),
+            (cid,),
         ).fetchall()
         conn.close()
         return [(str(uid), int(cnt)) for uid, cnt in rows]
     except Exception as e:
-        logger.debug("_get_chat_participants_from_db: %s", e)
+        logger.debug("_get_chat_participants_from_db (legacy sqlite file): %s", e)
         return []
 
 

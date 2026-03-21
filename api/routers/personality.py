@@ -10,6 +10,7 @@ from api.dependencies import get_db_session, require_auth
 from services.personality.comparison import (
     ComparisonResult,
     PersonalityCluster,
+    build_ocean_narrative_paragraphs,
     build_ocean_verbal_summary,
     cluster_community,
     compare_two,
@@ -199,6 +200,14 @@ async def post_compare(
         result.username_b or str(ub),
         result.ocean_deltas,
     )
+    narrative = build_ocean_narrative_paragraphs(
+        result.username_a or str(ua),
+        result.username_b or str(ub),
+        result.ocean_deltas,
+        result.similarity_score,
+        result.most_similar_dimensions,
+        result.most_different_dimensions,
+    )
     return {
         "ok": True,
         "comparison": {
@@ -211,6 +220,7 @@ async def post_compare(
             "most_similar_dimensions": result.most_similar_dimensions,
             "most_different_dimensions": result.most_different_dimensions,
             "ocean_verbal_lines": verbal,
+            "ocean_narrative_paragraphs": narrative,
         },
     }
 

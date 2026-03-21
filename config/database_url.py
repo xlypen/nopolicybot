@@ -21,7 +21,7 @@ def _env_first_nonempty(*keys: str) -> str:
 def build_postgresql_url_from_env(*, driver: str | None = None) -> str | None:
     """Собрать DSN из POSTGRES_* или PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD (без чтения DATABASE_URL)."""
     port = _env_first_nonempty("POSTGRES_PORT", "PGPORT") or "5432"
-    db = _env_first_nonempty("POSTGRES_DB", "PGDATABASE")
+    db = _env_first_nonempty("POSTGRES_DB", "POSTGRES_DATABASE", "PGDATABASE")
     user = _env_first_nonempty("POSTGRES_USER", "PGUSER")
     password = _env_first_nonempty("POSTGRES_PASSWORD", "PGPASSWORD")
     host = _env_first_nonempty("POSTGRES_HOST", "PGHOST")

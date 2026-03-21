@@ -4,6 +4,7 @@ from services.personality.comparison import (
     ComparisonResult,
     PersonalityCluster,
     build_ocean_narrative_paragraphs,
+    build_ocean_narrative_sections,
     build_ocean_verbal_summary,
     cluster_community,
     compare_two,
@@ -22,6 +23,29 @@ def test_compare_two_identical():
     assert all(d == 0 for d in r.ocean_deltas.values())
 
 
+def test_build_ocean_narrative_sections():
+    deltas = {
+        "openness": 0.1,
+        "conscientiousness": -0.2,
+        "extraversion": 0.0,
+        "agreeableness": 0.05,
+        "neuroticism": -0.15,
+    }
+    secs = build_ocean_narrative_sections(
+        "Paul",
+        "Вильям",
+        deltas,
+        similarity_score=0.85,
+        most_similar_dimensions=["extraversion", "openness", "neuroticism"],
+        most_different_dimensions=["conscientiousness", "agreeableness", "openness"],
+    )
+    assert len(secs) >= 4
+    assert secs[0].get("emoji")
+    assert secs[0].get("title")
+    contrast = next(s for s in secs if s.get("bullets"))
+    assert len(contrast["bullets"]) >= 1
+
+
 def test_build_ocean_narrative_paragraphs():
     deltas = {
         "openness": 0.1,
@@ -38,10 +62,11 @@ def test_build_ocean_narrative_paragraphs():
         most_similar_dimensions=["extraversion", "openness", "neuroticism"],
         most_different_dimensions=["conscientiousness", "agreeableness", "openness"],
     )
-    assert len(paras) == 5
-    assert "Paul" in paras[0] and "Вильям" in paras[0]
-    assert "0.85" in paras[0]
-    assert "Напоминание" in paras[-1]
+    assert len(paras) >= 5
+    joined = " ".join(paras)
+    assert "Paul" in joined and "Вильям" in joined
+    assert "0.85" in joined
+    assert any("Важно помнить" in p or "медицинским" in p for p in paras)
 
 
 def test_build_ocean_verbal_summary():

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 from services.personality.schema import OCEAN_KEYS, PersonalityProfile
 
@@ -90,31 +91,166 @@ def _trait_narrative_sentence(
     t = _DIM_TITLE_RU.get(trait, trait)
     if trait == "openness":
         return (
-            f"{strength.capitalize()} выражена {t} у {winner}: в переписке это может соответствовать "
-            f"большей готовности к новым углам обсуждения и менее шаблонным формулировкам по сравнению с {other}."
+            f"У {winner} {strength} заметнее «игра с идеями»: готовность к неожиданным ассоциациям, иронии "
+            f"и смене ракурса — на фоне {other} это выглядит как чуть более пластичный интеллектуальный темп."
         )
     if trait == "conscientiousness":
         return (
-            f"По {t} {strength} лидирует {winner} — в текстах это иногда читается как более выстроенная "
-            f"аргументация, внимание к деталям и последовательность по сравнению с {other}."
+            f"{winner} {strength} чаще «держит линию»: в текстах проступают выверенность формулировок, "
+            f"опора на факты и последовательность шагов — у {other} тот же чат может читаться свободнее или рванее."
         )
     if trait == "extraversion":
         return (
-            f"{strength.capitalize()} выше {t} у {winner}: в чате это может проявляться как более частая "
-            f"инициатива в диалоге, энергичный тон или охват большего числа собеседников относительно {other}."
+            f"У {winner} {strength} выше заряд «социальной батареи» в переписке: чаще заводит тему, "
+            f"подхватывает тред, задаёт ритм — {other} в этой паре может звучать чуть более камерно или выборочно."
         )
     if trait == "agreeableness":
         return (
-            f"По {t} {strength} сильнее проявляется у {winner} — в сообщениях это может выглядеть как более "
-            f"сглаженные формулировки, ориентация на поддержку или поиск компромисса по сравнению с {other}."
+            f"{winner} {strength} сильнее «смазывает углы»: больше поддержки, меньше колкости в лексике, "
+            f"больше сигналов сотрудничества — на контрасте с {other}, где тон может быть плотнее или прямее."
         )
     if trait == "neuroticism":
         return (
-            f"У {winner} {strength} выше {t} (эмоциональная реактивность): в обсуждениях это иногда "
-            f"совпадает с более острыми реакциями на напряжённые темы по сравнению с {other}; "
-            f"у {other} профиль в этом измерении ровнее."
+            f"У {winner} {strength} выше эмоциональная амплитуда по тексту: острее реагирует на напряжение "
+            f"и неопределённость; у {other} в тех же обсуждениях чаще ощущается более ровный, «спокойный» фон."
         )
     return f"По показателю «{t}» {strength} выше у {winner}, чем у {other}."
+
+
+TRAIT_BULLET_EMOJI: dict[str, str] = {
+    "openness": "🧠",
+    "conscientiousness": "📐",
+    "extraversion": "⚡",
+    "agreeableness": "🤝",
+    "neuroticism": "🌊",
+}
+
+
+def build_ocean_narrative_sections(
+    username_a: str,
+    username_b: str,
+    ocean_deltas: dict[str, float],
+    similarity_score: float,
+    most_similar_dimensions: list[str],
+    most_different_dimensions: list[str],
+    *,
+    eps: float = 0.02,
+) -> list[dict[str, Any]]:
+    """
+    Структурированный разбор для богатого UI: эмодзи, подзаголовки, маркеры.
+    Дельты: B − A. Без LLM; формулировки осторожные.
+    """
+    na = (username_a or "").strip() or "Пользователь A"
+    nb = (username_b or "").strip() or "Пользователь B"
+    deltas = {k: float(ocean_deltas.get(k) or 0.0) for k in OCEAN_KEYS}
+    sim = max(0.0, min(1.0, float(similarity_score)))
+
+    intro_p1 = (
+        f"Это не анкета и не диагноз — скорее два «отпечатка стиля»: как в тексте чата проступают {na} и {nb}, "
+        f"если смотреть через призму Big Five (OCEAN). Модель сравнивает не людей целиком, а то, "
+        f"как они звучат рядом друг с другом в переписке."
+    )
+    intro_p2 = (
+        f"Индекс схожести {sim:.2f} из 1.00 — {_similarity_interpretation(sim)}. "
+        f"Чем он выше, тем спокойнее часто ощущается «музыка» диалога; чем ниже — тем заметнее могут быть разные привычки "
+        f"в споре, шутке или поддержке. Ниже — разбор по слоям."
+    )
+
+    ranked = sorted(OCEAN_KEYS, key=lambda k: abs(deltas[k]), reverse=True)
+    contrast_traits = [k for k in ranked if abs(deltas[k]) > eps][:3]
+
+    sections: list[dict[str, Any]] = [
+        {
+            "emoji": "✨",
+            "title": "Два голоса в одном чате",
+            "subtitle": "OCEAN · восстановлено из стиля сообщений",
+            "paragraphs": [intro_p1, intro_p2],
+            "bullets": [],
+        }
+    ]
+
+    if contrast_traits:
+        bullets: list[str] = []
+        for k in contrast_traits:
+            d = deltas[k]
+            sw = _strength_word(d)
+            em = TRAIT_BULLET_EMOJI.get(k, "·")
+            lab = _DIM_TITLE_RU.get(k, k).capitalize()
+            if d > 0:
+                sent = _trait_narrative_sentence(k, winner=nb, other=na, strength=sw)
+            else:
+                sent = _trait_narrative_sentence(k, winner=na, other=nb, strength=sw)
+            bullets.append(f"{em} {lab}: {sent}")
+        sections.append({
+            "emoji": "⚡",
+            "title": "Где контуры расходятся",
+            "subtitle": "Три самых глубоких различия (по модулю Δ)",
+            "paragraphs": [
+                "Здесь не «кто лучше», а где статистически чаще виден разный настрой в формулировках — "
+                "то, что модератор или бот могут учитывать как зоны повышенного трения или, наоборот, дополнения.",
+            ],
+            "bullets": bullets,
+        })
+    else:
+        sections.append({
+            "emoji": "◎",
+            "title": "Почти совпадение",
+            "subtitle": "По всем осям профили близки",
+            "paragraphs": [
+                f"По всем пяти измерениям {na} и {nb} почти не расходятся — на радаре многоугольники почти ложатся друг на друга. "
+                f"Это редкий случай «общего темпа» в тексте.",
+            ],
+            "bullets": [],
+        })
+
+    sim_dims = [k for k in (most_similar_dimensions or []) if k in OCEAN_KEYS]
+    if not sim_dims:
+        sim_dims = sorted(OCEAN_KEYS, key=lambda k: abs(deltas[k]))[:3]
+    sim_labels = ", ".join(_DIM_TITLE_RU.get(k, k) for k in sim_dims)
+    sections.append({
+        "emoji": "🤝",
+        "title": "Общий фон",
+        "subtitle": f"Ближе всего: {sim_labels}",
+        "paragraphs": [
+            f"На этих осях {na} и {nb} звучат на похожей ноте — меньше риска «ломки» стиля именно здесь. "
+            f"Даже когда другие измерения спорят, этот слой даёт общую почву: проще понимать друг друга без лишней интерпретации.",
+        ],
+        "bullets": [],
+    })
+
+    top_diff = [k for k in (most_different_dimensions or []) if abs(deltas.get(k, 0)) > eps][:2]
+    if top_diff:
+        dl = ", ".join(_DIM_TITLE_RU.get(k, k) for k in top_diff)
+        dyn_p = (
+            f"Контраст по {dl} иногда складывается в мини-сценарий: один сильнее тянет на себя структуру и тон треда, "
+            f"другой — эмоциональный цвет или смягчение. Такие пары часто «дополняют» друг друга в дискуссии — "
+            f"если не доводить разницу до поляризации. Используйте это как рабочую гипотезу для модерации, не как ярлык."
+        )
+    else:
+        dyn_p = (
+            f"По восстановленным шкалам {na} и {nb} выглядят согласованно: мало резких противоречий — "
+            f"боту и админу проще держать единый тон ответов."
+        )
+    sections.append({
+        "emoji": "🎭",
+        "title": "Хореография диалога",
+        "subtitle": "Как различия могут проявляться в живом чате",
+        "paragraphs": [dyn_p],
+        "bullets": [],
+    })
+
+    sections.append({
+        "emoji": "📎",
+        "title": "Важно помнить",
+        "subtitle": None,
+        "paragraphs": [
+            "Шкалы выведены из корпуса сообщений и контекста чата: они хороши для аналитики и тонкой настройки, "
+            "но не заменяют живое наблюдение и не являются медицинским или юридическим заключением.",
+        ],
+        "bullets": [],
+    })
+
+    return sections
 
 
 def build_ocean_narrative_paragraphs(
@@ -127,77 +263,20 @@ def build_ocean_narrative_paragraphs(
     *,
     eps: float = 0.02,
 ) -> list[str]:
-    """
-    Несколько абзацев связного текста для UI (без LLM).
-    Дельты: B − A. Формулировки осторожные — оценки по тексту чата, не клинический диагноз.
-    """
-    na = (username_a or "").strip() or "Пользователь A"
-    nb = (username_b or "").strip() or "Пользователь B"
-    deltas = {k: float(ocean_deltas.get(k) or 0.0) for k in OCEAN_KEYS}
-    sim = max(0.0, min(1.0, float(similarity_score)))
-
-    p1 = (
-        f"Ниже — сравнение {na} и {nb} по модели Big Five (OCEAN), восстановленной из стиля сообщений в чате. "
-        f"Сводный индекс схожести — {sim:.2f} (1 — максимально близкие оценки по всем шкалам); "
-        f"в вашем случае это значит, что {_similarity_interpretation(sim)}. "
-        f"Это не «истина о личности», а сжатое описание того, как участники выглядят в тексте относительно друг друга."
-    )
-
-    # Абзац 2: самые сильные различия (по модулю дельты)
-    ranked = sorted(OCEAN_KEYS, key=lambda k: abs(deltas[k]), reverse=True)
-    contrast_traits = [k for k in ranked if abs(deltas[k]) > eps][:3]
-    if contrast_traits:
-        chunks: list[str] = []
-        for k in contrast_traits:
-            d = deltas[k]
-            sw = _strength_word(d)
-            if d > 0:
-                chunks.append(_trait_narrative_sentence(k, winner=nb, other=na, strength=sw))
-            else:
-                chunks.append(_trait_narrative_sentence(k, winner=na, other=nb, strength=sw))
-        p2 = (
-            "Самые заметные расхождения — там, где стили общения в чате расходятся сильнее всего "
-            "(по оценке модели): "
-            + " ".join(chunks)
-        )
-    else:
-        p2 = (
-            f"По всем пяти измерениям {na} и {nb} близки — явных «перекосов» в восстановленном профиле почти нет. "
-            f"Визуально это хорошо видно на радаре: многоугольники почти совпадают."
-        )
-
-    # Абзац 3: где близки
-    sim_dims = [k for k in (most_similar_dimensions or []) if k in OCEAN_KEYS]
-    if not sim_dims:
-        sim_dims = sorted(OCEAN_KEYS, key=lambda k: abs(deltas[k]))[:3]
-    sim_labels = ", ".join(_DIM_TITLE_RU.get(k, k) for k in sim_dims)
-    p3 = (
-        f"Наиболее схожие измерения: {sim_labels}. "
-        f"В совместных тредах это может означать общий фон по этим аспектам — меньше «ломки» стиля "
-        f"именно здесь, даже если другие оси различаются."
-    )
-
-    # Абзац 4: практический смысл для чата
-    top_diff = [k for k in (most_different_dimensions or []) if abs(deltas.get(k, 0)) > eps][:2]
-    if top_diff:
-        dl = ", ".join(_DIM_TITLE_RU.get(k, k) for k in top_diff)
-        p4 = (
-            f"Если смотреть на динамику чата практически, контраст по {dl} иногда даёт дополняющие роли: "
-            f"один участник может сильнее «задавать тон» или удерживать план, другой — смягчать или, наоборот, "
-            f"подключать острые углы. Это рабочая гипотеза для модерации, а не ярлык."
-        )
-    else:
-        p4 = (
-            f"Для модерации и тонкой настройки бота оба профиля выглядят согласованно: резких противоречий "
-            f"между участниками по восстановленным шкалам мало."
-        )
-
-    p5 = (
-        "Напоминание: шкалы OCEAN здесь выведены из корпуса сообщений и контекста чата; "
-        "они полезны для аналитики и сравнения, но не заменяют живое наблюдение и не являются медицинским заключением."
-    )
-
-    return [p1, p2, p3, p4, p5]
+    """Плоский список абзацев (совместимость): все paragraphs + bullets по порядку секций."""
+    out: list[str] = []
+    for block in build_ocean_narrative_sections(
+        username_a,
+        username_b,
+        ocean_deltas,
+        similarity_score,
+        most_similar_dimensions,
+        most_different_dimensions,
+        eps=eps,
+    ):
+        out.extend(block.get("paragraphs") or [])
+        out.extend(block.get("bullets") or [])
+    return out
 
 
 @dataclass

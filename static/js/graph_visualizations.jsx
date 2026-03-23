@@ -366,9 +366,10 @@
     });
   }
 
-  function renderRadial(root, graph) {
+  function renderRadial(root, graph, payload) {
     const subset = pickSubset(graph, { maxNodes: 260, maxEdges: 800 });
     const nodes = subset.nodes;
+    const edges = subset.edges;
     const byComm = {};
     nodes.forEach((n) => {
       const c = String(n.community_id ?? "none");
@@ -382,52 +383,183 @@
     const cy = height / 2;
     const groupR = Math.min(width, height) * 0.32;
     const epoch = nextEpoch(root);
-
-    clear(root);
-    mountRenderHeader(root, "Radial", subset);
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("width", "100%");
-    svg.setAttribute("height", String(height));
-    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-    const nodeGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    const labelGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
-    svg.appendChild(nodeGroup);
-    svg.appendChild(labelGroup);
-    root.appendChild(svg);
-
+    const pos = {};
+    const hubIds = new Set();
     const meta = (graph && graph.meta) || {};
     const communityLabels = meta.community_labels || {};
-    const points = [];
+    const clusterLabels = [];
+
     comms.forEach((cid, ci) => {
       const ga = (ci / Math.max(1, comms.length)) * Math.PI * 2;
       const gcx = cx + Math.cos(ga) * groupR;
       const gcy = cy + Math.sin(ga) * groupR;
-      const members = byComm[cid];
-      members.forEach((node, i) => {
-        const a = (i / Math.max(1, members.length)) * Math.PI * 2;
-        points.push({
-          x: gcx + Math.cos(a) * 56,
-          y: gcy + Math.sin(a) * 56,
-          cid,
-        });
+      const members = byComm[cid].slice().sort((a, b) => nodeScore(b) - nodeScore(a));
+      const hub = members[0];
+      const hubId = n(hub && hub.id, 0);
+      const orbit = hubId ? members.filter((m) => n(m.id, 0) !== hubId) : members;
+      const ring = Math.max(44, Math.min(102, 42 + orbit.length * 2.4));
+      if (hubId) {
+        hubIds.add(hubId);
+        pos[hubId] = { x: gcx, y: gcy };
+      }
+      orbit.forEach((node, i) => {
+        const id = n(node.id, 0);
+        if (!id) return;
+        const a = (i / Math.max(1, orbit.length)) * Math.PI * 2;
+        pos[id] = {
+          x: gcx + Math.cos(a) * ring,
+          y: gcy + Math.sin(a) * ring,
+        };
       });
       const labelText = (communityLabels[cid] && String(communityLabels[cid]).trim()) || `сообщество ${cid}`;
+      clusterLabels.push({ gcx, gcy, ring, labelText });
+    });
+
+    const selectedNodeId = n(payload && payload.selectedNodeId, 0);
+    const onNodeSelect = payload && typeof payload.onNodeSelect === "function" ? payload.onNodeSelect : null;
+    const neighborsMap = buildNeighborMap(edges);
+    const selectedNeighbors = selectedNodeId && neighborsMap.has(selectedNodeId) ? neighborsMap.get(selectedNodeId) : new Set();
+
+    clear(root);
+    mountRenderHeader(root, "Radial", subset);
+    if (window.getComputedStyle(root).position === "static") {
+      root.style.position = "relative";
+    }
+    const tooltip = document.createElement("div");
+    tooltip.style.position = "absolute";
+    tooltip.style.pointerEvents = "none";
+    tooltip.style.padding = "4px 7px";
+    tooltip.style.borderRadius = "6px";
+    tooltip.style.background = "rgba(15,23,42,0.92)";
+    tooltip.style.color = "#e2e8f0";
+    tooltip.style.fontSize = "12px";
+    tooltip.style.display = "none";
+    tooltip.style.zIndex = "5";
+    root.appendChild(tooltip);
+
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("width", "100%");
+    svg.setAttribute("height", String(height));
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+    const edgeGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    const nodeGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    const labelGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    svg.appendChild(edgeGroup);
+    svg.appendChild(nodeGroup);
+    svg.appendChild(labelGroup);
+    root.appendChild(svg);
+
+    clusterLabels.forEach((cl) => {
       const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      t.setAttribute("x", String(gcx));
-      t.setAttribute("y", String(gcy - 68));
+      t.setAttribute("x", String(cl.gcx));
+      t.setAttribute("y", String(cl.gcy - cl.ring - 18));
       t.setAttribute("text-anchor", "middle");
       t.setAttribute("fill", "#b6cae6");
       t.setAttribute("font-size", "12");
-      t.textContent = labelText;
+      t.textContent = cl.labelText;
       labelGroup.appendChild(t);
     });
-    appendProgressive(root, epoch, nodeGroup, points, 220, (p) => {
-      const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-      c.setAttribute("cx", String(p.x));
-      c.setAttribute("cy", String(p.y));
-      c.setAttribute("r", "8");
-      c.setAttribute("fill", "rgba(79,70,229,.86)");
-      nodeGroup.appendChild(c);
+
+    const radialEdges =
+      selectedNodeId > 0
+        ? edges.filter(
+            (e) => n(e.source, 0) === selectedNodeId || n(e.target, 0) === selectedNodeId
+          )
+        : [];
+
+    appendProgressive(
+      root,
+      epoch,
+      edgeGroup,
+      radialEdges,
+      120,
+      (e) => {
+        const a = pos[n(e.source, 0)];
+        const b = pos[n(e.target, 0)];
+        if (!a || !b) return;
+        const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        line.setAttribute("x1", String(a.x));
+        line.setAttribute("y1", String(a.y));
+        line.setAttribute("x2", String(b.x));
+        line.setAttribute("y2", String(b.y));
+        line.setAttribute("stroke", "rgba(56,189,248,0.9)");
+        const w = Math.max(0.7, Math.min(3.2, n(e.weight_period || e.weight, 1) * 0.28));
+        line.setAttribute("stroke-opacity", "0.88");
+        line.setAttribute("stroke-width", String(w));
+        edgeGroup.appendChild(line);
+      },
+      () => {
+        appendProgressive(root, epoch, nodeGroup, nodes, 160, (node) => {
+          const p = pos[n(node.id, 0)];
+          if (!p) return;
+          const id = n(node.id, 0);
+          const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+          const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+          const isHub = hubIds.has(id);
+          let rad = (isHub ? 10.5 : 7) + Math.min(14, n(node.degree, 1) * 0.75);
+          const isSelected = selectedNodeId && id === selectedNodeId;
+          const isNeighbor = selectedNodeId && selectedNeighbors.has(id);
+          let fill = isHub ? "rgba(251,191,36,0.92)" : "rgba(79,70,229,.88)";
+          let stroke = "rgba(255,255,255,0.2)";
+          let opacity = 0.94;
+          if (selectedNodeId) {
+            if (isSelected) {
+              fill = "rgba(34,197,94,0.95)";
+              stroke = "rgba(226,232,240,0.95)";
+              opacity = 1;
+            } else if (isNeighbor) {
+              fill = "rgba(56,189,248,0.92)";
+              stroke = "rgba(226,232,240,0.75)";
+              opacity = 0.96;
+            } else {
+              fill = "rgba(148,163,184,0.38)";
+              stroke = "rgba(148,163,184,0.2)";
+              opacity = 0.48;
+            }
+          }
+          c.setAttribute("cx", String(p.x));
+          c.setAttribute("cy", String(p.y));
+          c.setAttribute("r", String(isSelected ? rad + 1.2 : rad));
+          c.setAttribute("fill", fill);
+          c.setAttribute("stroke", stroke);
+          c.setAttribute("stroke-width", isSelected ? "1.4" : isHub ? "1.1" : "0.85");
+          c.setAttribute("fill-opacity", String(opacity));
+          g.appendChild(c);
+          g.style.cursor = "pointer";
+          g.addEventListener("mouseenter", () => {
+            tooltip.textContent = String(node.label || node.username || node.id) + (isHub ? " · хаб" : "");
+            tooltip.style.display = "block";
+          });
+          g.addEventListener("mousemove", (evt) => {
+            const rect = root.getBoundingClientRect();
+            tooltip.style.left = `${evt.clientX - rect.left + 12}px`;
+            tooltip.style.top = `${evt.clientY - rect.top + 12}px`;
+          });
+          g.addEventListener("mouseleave", () => {
+            tooltip.style.display = "none";
+          });
+          g.addEventListener("click", (evt) => {
+            evt.stopPropagation();
+            if (!onNodeSelect) return;
+            const neighbors = neighborsMap.get(id) || new Set();
+            onNodeSelect({
+              id,
+              label: String(node.label || node.username || node.id),
+              username: String(node.username || ""),
+              rank: String(node.rank || node.tier || ""),
+              influence_score: n(node && node.influence_score, 0),
+              degree: n(node && node.degree, 0),
+              neighbor_count: neighbors.size,
+              last_activity: String(node.last_activity || node.last_active || node.last_seen || ""),
+            });
+          });
+          nodeGroup.appendChild(g);
+        });
+      }
+    );
+    svg.addEventListener("click", () => {
+      if (onNodeSelect) onNodeSelect(null);
     });
   }
 

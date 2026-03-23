@@ -117,11 +117,18 @@
         const ga = (gi / Math.max(1, groups.length)) * Math.PI * 2;
         const gcx = cx + Math.cos(ga) * groupR;
         const gcy = cy + Math.sin(ga) * groupR;
-        const members = byComm[gid];
-        const ring = Math.max(24, 28 + Math.min(160, members.length * 1.5));
-        members.forEach((node, i) => {
-          const a = (i / Math.max(1, members.length)) * Math.PI * 2;
+        const members = byComm[gid].slice().sort((a, b) => nodeScore(b) - nodeScore(a));
+        const hub = members[0];
+        const hubId = n(hub && hub.id, 0);
+        const orbit = hubId ? members.filter((x) => n(x.id, 0) !== hubId) : members;
+        const ring = Math.max(28, Math.min(160, 26 + orbit.length * 2.0));
+        if (hubId) {
+          pos[hubId] = { x: gcx, y: gcy };
+        }
+        orbit.forEach((node, i) => {
           const id = n(node && node.id, 0);
+          if (!id) return;
+          const a = (i / Math.max(1, orbit.length)) * Math.PI * 2;
           pos[id] = {
             x: gcx + Math.cos(a) * ring,
             y: gcy + Math.sin(a) * ring,
@@ -242,10 +249,15 @@
     ctx.fillStyle = "#0b1630";
     ctx.fillRect(0, 0, width, height);
 
+    const graphMode = String(state.mode || "");
     for (let i = 0; i < edges.length; i += 1) {
       const e = edges[i];
       const sourceId = n(e && e.source, 0);
       const targetId = n(e && e.target, 0);
+      if (graphMode === "radial" && !selectedId) continue;
+      if (graphMode === "radial" && selectedId) {
+        if (sourceId !== selectedId && targetId !== selectedId) continue;
+      }
       const a = posById[sourceId];
       const b = posById[targetId];
       if (!a || !b) continue;

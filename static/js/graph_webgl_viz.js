@@ -407,11 +407,14 @@
       }
     });
 
-    canvas.addEventListener("click", (e) => {
-      if (moved) return;
+    let lastPickAt = 0;
+    function pickAtClient(clientX, clientY) {
+      const now = Date.now();
+      if (now - lastPickAt < 45) return;
+      lastPickAt = now;
       const rect = canvas.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
       const nearest = findNearestNode(state, x, y, 5);
       if (!nearest) {
         state.selectedNodeId = 0;
@@ -439,6 +442,53 @@
         }
       }
       scheduleDraw(state);
+    }
+
+    canvas.addEventListener("click", (e) => {
+      if (moved) return;
+      pickAtClient(e.clientX, e.clientY);
+    });
+
+    let touchTracking = false;
+    let touchDownX = 0;
+    let touchDownY = 0;
+    let touchMoved = false;
+    canvas.addEventListener(
+      "touchstart",
+      (e) => {
+        if (e.touches.length !== 1) return;
+        touchTracking = true;
+        touchMoved = false;
+        touchDownX = e.touches[0].clientX;
+        touchDownY = e.touches[0].clientY;
+      },
+      { passive: true }
+    );
+    canvas.addEventListener(
+      "touchmove",
+      (e) => {
+        if (!touchTracking || e.touches.length !== 1) return;
+        const tx = e.touches[0].clientX;
+        const ty = e.touches[0].clientY;
+        if (Math.abs(tx - touchDownX) + Math.abs(ty - touchDownY) > 12) touchMoved = true;
+      },
+      { passive: true }
+    );
+    canvas.addEventListener(
+      "touchend",
+      (e) => {
+        if (!touchTracking) return;
+        touchTracking = false;
+        if (touchMoved) return;
+        if (e.changedTouches.length !== 1) return;
+        e.preventDefault();
+        const t = e.changedTouches[0];
+        pickAtClient(t.clientX, t.clientY);
+      },
+      { passive: false }
+    );
+    canvas.addEventListener("touchcancel", () => {
+      touchTracking = false;
     });
   }
 

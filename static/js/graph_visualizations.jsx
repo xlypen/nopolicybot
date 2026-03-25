@@ -30,6 +30,128 @@
     return Number.isFinite(x) ? x : fallback;
   }
 
+  /**
+   * Safari, Telegram WebView и часть мобильных браузеров не шлют надёжный `click` по SVG.
+   * Дубли (pointerup + click) гасим коротким debounce; на touch — preventDefault, чтобы не было второго click через ~300ms.
+   */
+  function bindSvgActivate(el, callback) {
+    if (!el || typeof callback !== "function") return;
+    let last = 0;
+    const gap = 50;
+    let ignoreClicksUntil = 0;
+    let touchSlop = false;
+    let t0x = 0;
+    let t0y = 0;
+    el.addEventListener(
+      "touchstart",
+      (e) => {
+        if (e.touches.length !== 1) return;
+        touchSlop = false;
+        t0x = e.touches[0].clientX;
+        t0y = e.touches[0].clientY;
+      },
+      { passive: true }
+    );
+    el.addEventListener(
+      "touchmove",
+      (e) => {
+        if (e.touches.length !== 1) return;
+        const tx = e.touches[0].clientX;
+        const ty = e.touches[0].clientY;
+        if (Math.abs(tx - t0x) + Math.abs(ty - t0y) > 14) {
+          touchSlop = true;
+          ignoreClicksUntil = Date.now() + 480;
+        }
+      },
+      { passive: true }
+    );
+    const run = (evt) => {
+      if (Date.now() < ignoreClicksUntil) return;
+      const t = Date.now();
+      if (t - last < gap) return;
+      last = t;
+      evt.stopPropagation();
+      callback(evt);
+    };
+    el.addEventListener("click", run);
+    el.addEventListener("pointerup", (evt) => {
+      if (evt.pointerType === "mouse" && evt.button !== 0) return;
+      run(evt);
+    });
+    el.addEventListener(
+      "touchend",
+      (evt) => {
+        if (touchSlop) {
+          ignoreClicksUntil = Date.now() + 480;
+          return;
+        }
+        evt.preventDefault();
+        run(evt);
+      },
+      { passive: false }
+    );
+  }
+
+  function bindSvgBackgroundClear(svgEl, onClear) {
+    if (!svgEl || typeof onClear !== "function") return;
+    let last = 0;
+    const gap = 50;
+    const maybe = (evt) => {
+      if (evt.target !== svgEl) return;
+      const t = Date.now();
+      if (t - last < gap) return;
+      last = t;
+      onClear();
+    };
+    svgEl.addEventListener("click", maybe);
+    svgEl.addEventListener("pointerup", (evt) => {
+      if (evt.pointerType === "mouse" && evt.button !== 0) return;
+      maybe(evt);
+    });
+    svgEl.addEventListener(
+      "touchend",
+      (evt) => {
+        if (evt.target !== svgEl) return;
+        evt.preventDefault();
+        const t = Date.now();
+        if (t - last < gap) return;
+        last = t;
+        onClear();
+      },
+      { passive: false }
+    );
+  }
+
+  function bindHtmlBackgroundClear(hostEl, onClear) {
+    if (!hostEl || typeof onClear !== "function") return;
+    let last = 0;
+    const gap = 50;
+    const maybe = (evt) => {
+      if (evt.target !== hostEl) return;
+      const t = Date.now();
+      if (t - last < gap) return;
+      last = t;
+      onClear();
+    };
+    hostEl.addEventListener("click", maybe);
+    hostEl.addEventListener("pointerup", (evt) => {
+      if (evt.pointerType === "mouse" && evt.button !== 0) return;
+      maybe(evt);
+    });
+    hostEl.addEventListener(
+      "touchend",
+      (evt) => {
+        if (evt.target !== hostEl) return;
+        evt.preventDefault();
+        const t = Date.now();
+        if (t - last < gap) return;
+        last = t;
+        onClear();
+      },
+      { passive: false }
+    );
+  }
+
   function nodeScore(node) {
     const influence = n(node && node.influence_score, 0);
     const degree = n(node && node.degree, 0);
@@ -117,6 +239,7 @@
     note.textContent = subset.culled
       ? `${title} (отрисовано ${subset.nodes.length}/${totalNodes} узлов, ${subset.edges.length}/${totalEdges} связей)`
       : `${title} (${subset.nodes.length} узлов, ${subset.edges.length} связей)`;
+    note.style.pointerEvents = "none";
     root.appendChild(note);
   }
 
@@ -261,6 +384,7 @@
     svg.setAttribute("height", String(height));
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
     svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+    svg.style.touchAction = "manipulation";
     const edgeGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
     const nodeGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
     svg.appendChild(edgeGroup);
@@ -293,16 +417,18 @@
         const w = Math.max(1, Math.min(6, n(e.weight_period || e.weight, 1)));
         line.setAttribute("stroke-opacity", String(alpha));
         line.setAttribute("stroke-width", String((selectedNodeId ? w * 0.55 : w * 0.35)));
+        line.setAttribute("pointer-events", "none");
         edgeGroup.appendChild(line);
       },
       () => {
         appendProgressive(root, epoch, nodeGroup, nodes, 180, (node) => {
-          const p = pos[node.id];
+          const id = n(node && node.id, 0);
+          if (!id) return;
+          const p = pos[id];
           if (!p) return;
           const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
           const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
           const rad = 7 + Math.min(18, n(node.degree, 1) * 0.9);
-          const id = n(node && node.id, 0);
           const isSelected = selectedNodeId && id === selectedNodeId;
           const isNeighbor = selectedNodeId && selectedNeighbors.has(id);
           let fill = "rgba(233,69,96,.85)";
@@ -323,14 +449,24 @@
               opacity = 0.45;
             }
           }
+          const visR = isSelected ? rad + 1.4 : rad;
           c.setAttribute("cx", String(p.x));
           c.setAttribute("cy", String(p.y));
-          c.setAttribute("r", String(isSelected ? rad + 1.4 : rad));
+          c.setAttribute("r", String(visR));
           c.setAttribute("fill", fill);
           c.setAttribute("stroke", stroke);
           c.setAttribute("stroke-width", isSelected ? "1.4" : "0.9");
           c.setAttribute("fill-opacity", String(opacity));
+          c.setAttribute("pointer-events", "none");
+          const hit = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+          hit.setAttribute("cx", String(p.x));
+          hit.setAttribute("cy", String(p.y));
+          hit.setAttribute("r", String(Math.max(visR + 12, 20)));
+          hit.setAttribute("fill", "transparent");
+          hit.setAttribute("stroke", "none");
+          hit.setAttribute("pointer-events", "all");
           g.appendChild(c);
+          g.appendChild(hit);
           g.style.cursor = "pointer";
           g.addEventListener("mouseenter", () => {
             tooltip.textContent = String(node.label || node.username || node.id);
@@ -344,8 +480,7 @@
           g.addEventListener("mouseleave", () => {
             tooltip.style.display = "none";
           });
-          g.addEventListener("click", (evt) => {
-            evt.stopPropagation();
+          bindSvgActivate(hit, () => {
             if (!onNodeSelect) return;
             const neighbors = neighborsMap.get(id) || new Set();
             onNodeSelect({
@@ -363,9 +498,9 @@
         });
       }
     );
-    svg.addEventListener("click", () => {
-      if (onNodeSelect) onNodeSelect(null);
-    });
+    if (onNodeSelect) {
+      bindSvgBackgroundClear(svg, () => onNodeSelect(null));
+    }
   }
 
   function renderRadial(root, graph, payload) {
@@ -444,6 +579,7 @@
     svg.setAttribute("height", String(height));
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
     svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+    svg.style.touchAction = "manipulation";
     const edgeGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
     const nodeGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
     const labelGroup = document.createElementNS("http://www.w3.org/2000/svg", "g");
@@ -459,6 +595,7 @@
       t.setAttribute("text-anchor", "middle");
       t.setAttribute("fill", "#b6cae6");
       t.setAttribute("font-size", "12");
+      t.setAttribute("pointer-events", "none");
       t.textContent = cl.labelText;
       labelGroup.appendChild(t);
     });
@@ -489,13 +626,15 @@
         const w = Math.max(0.7, Math.min(3.2, n(e.weight_period || e.weight, 1) * 0.28));
         line.setAttribute("stroke-opacity", "0.88");
         line.setAttribute("stroke-width", String(w));
+        line.setAttribute("pointer-events", "none");
         edgeGroup.appendChild(line);
       },
       () => {
         appendProgressive(root, epoch, nodeGroup, nodes, 160, (node) => {
-          const p = pos[n(node.id, 0)];
+          const id = n(node && node.id, 0);
+          if (!id) return;
+          const p = pos[id];
           if (!p) return;
-          const id = n(node.id, 0);
           const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
           const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
           const isHub = hubIds.has(id);
@@ -520,14 +659,24 @@
               opacity = 0.48;
             }
           }
+          const visR = isSelected ? rad + 1.2 : rad;
           c.setAttribute("cx", String(p.x));
           c.setAttribute("cy", String(p.y));
-          c.setAttribute("r", String(isSelected ? rad + 1.2 : rad));
+          c.setAttribute("r", String(visR));
           c.setAttribute("fill", fill);
           c.setAttribute("stroke", stroke);
           c.setAttribute("stroke-width", isSelected ? "1.4" : isHub ? "1.1" : "0.85");
           c.setAttribute("fill-opacity", String(opacity));
+          c.setAttribute("pointer-events", "none");
+          const hit = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+          hit.setAttribute("cx", String(p.x));
+          hit.setAttribute("cy", String(p.y));
+          hit.setAttribute("r", String(Math.max(visR + 12, 20)));
+          hit.setAttribute("fill", "transparent");
+          hit.setAttribute("stroke", "none");
+          hit.setAttribute("pointer-events", "all");
           g.appendChild(c);
+          g.appendChild(hit);
           g.style.cursor = "pointer";
           g.addEventListener("mouseenter", () => {
             tooltip.textContent = String(node.label || node.username || node.id) + (isHub ? " · хаб" : "");
@@ -541,8 +690,7 @@
           g.addEventListener("mouseleave", () => {
             tooltip.style.display = "none";
           });
-          g.addEventListener("click", (evt) => {
-            evt.stopPropagation();
+          bindSvgActivate(hit, () => {
             if (!onNodeSelect) return;
             const neighbors = neighborsMap.get(id) || new Set();
             onNodeSelect({
@@ -560,9 +708,9 @@
         });
       }
     );
-    svg.addEventListener("click", () => {
-      if (onNodeSelect) onNodeSelect(null);
-    });
+    if (onNodeSelect) {
+      bindSvgBackgroundClear(svg, () => onNodeSelect(null));
+    }
   }
 
   function renderCommunity(root, graph) {
@@ -692,12 +840,14 @@
     root.appendChild(tooltip);
 
     const wrap = document.createElement("div");
-    wrap.style.cssText = "overflow:auto;max-height:min(78vh,720px);border:1px solid var(--border-input,rgba(148,163,184,0.35));border-radius:10px;";
+    wrap.style.cssText =
+      "overflow:auto;max-height:min(78vh,720px);border:1px solid var(--border-input,rgba(148,163,184,0.35));border-radius:10px;touch-action:manipulation;";
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("width", "100%");
     svg.setAttribute("height", String(Math.min(720, vbH)));
     svg.setAttribute("viewBox", `0 0 ${vbW} ${vbH}`);
     svg.setAttribute("preserveAspectRatio", "xMinYMin meet");
+    svg.style.touchAction = "manipulation";
 
     const bandG = document.createElementNS("http://www.w3.org/2000/svg", "g");
     bandG.setAttribute("pointer-events", "none");
@@ -801,9 +951,8 @@
       }
     }
 
-    function bindNodeSelect(node, evt) {
+    function bindNodeSelect(node) {
       if (!onNodeSelect) return;
-      evt.stopPropagation();
       const id = matrixNodeId(node);
       const neighbors = neighborMap.get(id) || new Set();
       onNodeSelect({
@@ -859,12 +1008,11 @@
         r.addEventListener("mouseleave", () => {
           tooltip.style.display = "none";
         });
-        r.addEventListener("click", (evt) => {
+        bindSvgActivate(r, () => {
           if (!onNodeSelect || !ni) return;
-          evt.stopPropagation();
           _matrixFocusByRoot.set(root, { type: "pair", i, j });
           if (i === j) {
-            bindNodeSelect(ni, evt);
+            bindNodeSelect(ni);
             return;
           }
           const idI = matrixNodeId(ni);
@@ -917,9 +1065,9 @@
           hit.setAttribute("width", String(marginL - 8));
           hit.setAttribute("height", String(cell));
           hit.setAttribute("fill", "transparent");
-          hit.addEventListener("click", (evt) => {
+          bindSvgActivate(hit, () => {
             _matrixFocusByRoot.set(root, { type: "row", idx });
-            bindNodeSelect(node, evt);
+            bindNodeSelect(node);
           });
           g.appendChild(hit);
           const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
@@ -944,9 +1092,9 @@
           hit.setAttribute("width", String(cell));
           hit.setAttribute("height", String(marginT - 8));
           hit.setAttribute("fill", "transparent");
-          hit.addEventListener("click", (evt) => {
+          bindSvgActivate(hit, () => {
             _matrixFocusByRoot.set(root, { type: "col", idx: j });
-            bindNodeSelect(node, evt);
+            bindNodeSelect(node);
           });
           g.appendChild(hit);
           const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
@@ -968,18 +1116,14 @@
     wrap.appendChild(svg);
     root.appendChild(wrap);
 
-    svg.addEventListener("click", (evt) => {
-      if (evt.target === svg && onNodeSelect) {
+    if (onNodeSelect) {
+      const matrixClear = () => {
         _matrixFocusByRoot.delete(root);
         onNodeSelect(null);
-      }
-    });
-    wrap.addEventListener("click", (evt) => {
-      if (evt.target === wrap && onNodeSelect) {
-        _matrixFocusByRoot.delete(root);
-        onNodeSelect(null);
-      }
-    });
+      };
+      bindSvgBackgroundClear(svg, matrixClear);
+      bindHtmlBackgroundClear(wrap, matrixClear);
+    }
   }
 
   const handlers = {

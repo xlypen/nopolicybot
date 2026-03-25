@@ -66,12 +66,27 @@
   margin-bottom: 0.6rem;
 }
 .me-graph-controls { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+/* Рядом с графом — как .graph-view-layout в admin.css (панель справа; <768px — колонка) */
+.me-graph-with-panel {
+  align-items: start;
+}
+.me-graph-with-panel .graph-node-panel {
+  min-height: 420px;
+}
+@media (max-width: 768px) {
+  .me-graph-with-panel .graph-node-panel {
+    min-height: auto;
+  }
+}
 .me-graph-root {
   min-height: 420px;
   border: 1px solid var(--border-card);
   background: var(--bg-tertiary);
   border-radius: 10px;
   overflow: auto;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  min-width: 0;
 }
 .me-portrait-actions {
   display: flex;
@@ -371,7 +386,10 @@
         <span id="me-graph-status" class="text-muted" style="font-size: 0.82rem;">Загрузка…</span>
       </div>
     </div>
-    <div id="me-graph-root" class="me-graph-root"></div>
+    <div class="graph-view-layout me-graph-with-panel">
+      <div id="me-graph-root" class="me-graph-root"></div>
+      <aside id="meGraphNodePanel" class="graph-node-panel" aria-label="Карточка выбранного узла"></aside>
+    </div>
   </div>
 
   <div class="me-section-card" id="me-privacy">
@@ -411,6 +429,198 @@
   var graphVersion = '';
   var wsClient = null;
   var refreshTimer = null;
+  var meGraphPanel = document.getElementById('meGraphNodePanel');
+  var meSelectedGraphNodeId = null;
+  var meSelectedGraphNodeSnapshot = null;
+
+  function fmt(num, digits){
+    var d = Number(digits);
+    if (!Number.isFinite(d) || d < 0) d = 2;
+    var n = Number(num || 0);
+    return Number.isFinite(n) ? n.toFixed(d) : '0.00';
+  }
+  function esc(text){
+    return String(text || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function graphNodeById(nodeId){
+    var target = Number(nodeId || 0);
+    if (!Number.isFinite(target) || target === 0) return null;
+    var nodes = Array.isArray(graphData.nodes) ? graphData.nodes : [];
+    for (var i = 0; i < nodes.length; i++){
+      var node = nodes[i];
+      if (Number((node && node.id) || 0) === target) return node || null;
+    }
+    return null;
+  }
+
+  function graphMatrixPairSummaryHtml(primaryName, peerName, mp){
+    var wp = Number(mp && mp.weightPeriod);
+    var wt = Number(mp && mp.weightTotal);
+    var wmx = Number(mp && mp.weightMatrix);
+    var a = Number(mp && mp.msgsRowToCol);
+    var b = Number(mp && mp.msgsColToRow);
+    var lines = [];
+    if (Number.isFinite(wp) && wp > 0) {
+      lines.push('Активность пары за период графа (вес ребра): <strong>' + wp.toFixed(1) + '</strong>.');
+    } else if (Number.isFinite(wmx) && wmx > 0) {
+      lines.push('Сила связи в матрице: <strong>' + wmx.toFixed(1) + '</strong>.');
+    }
+    if (Number.isFinite(wt) && wt > 0 && Math.abs(wt - wp) > 0.5) {
+      lines.push('Суммарный вес связи (всего): ' + wt.toFixed(1) + '.');
+    }
+    if (a > 0 || b > 0) {
+      lines.push(
+        'Сообщений (оценка по направлениям): <strong>' + esc(primaryName) + '</strong> → <strong>' + esc(peerName) + '</strong>: ' + a + '; обратно: ' + b + '.'
+      );
+    }
+    if (mp && mp.crossCommunity) {
+      lines.push('Связь между разными сообществами (мост).');
+    } else if (mp && Number(mp.bridgeScore) >= 0.45) {
+      lines.push('Повышенный «мостовой» индекс у ребра.');
+    }
+    if (!lines.length) {
+      lines.push('Детальная статистика по этой паре в данных графа не размечена.');
+    }
+    return lines.map(function(h){ return '<div class="graph-node-panel-row">' + h + '</div>'; }).join('');
+  }
+
+  function graphNodeDegree(nodeId){
+    var target = Number(nodeId || 0);
+    if (!Number.isFinite(target) || target === 0) return 0;
+    var edges = Array.isArray(graphData.edges) ? graphData.edges : [];
+    var count = 0;
+    for (var i = 0; i < edges.length; i++){
+      var edge = edges[i];
+      var a = Number((edge && edge.source) || 0);
+      var b = Number((edge && edge.target) || 0);
+      if (a === target || b === target) count += 1;
+    }
+    return count;
+  }
+
+  function renderMeGraphNodePanel(snapshot){
+    if (!meGraphPanel) return;
+    var node = snapshot || null;
+    if (!node || !Number.isFinite(Number(node.id || 0))) {
+      meGraphPanel.innerHTML =
+        '<div class="graph-node-panel-title">Карточка узла</div>' +
+        '<div class="graph-node-panel-empty">Кликните по узлу, чтобы увидеть детали.</div>';
+      return;
+    }
+    var uid = Number(node.id || 0);
+    var name = String(node.label || node.username || uid);
+    if (name === String(uid) || /^\d+$/.test(name)) {
+      name = 'Участник (ID: ' + uid + ')';
+    }
+    var rank = String(node.rank || node.tier || 'unknown');
+    var influence = Number(node.influence_score || 0);
+    var degree = Number(node.degree || graphNodeDegree(uid));
+    var neighbors = Number(node.neighbor_count || degree || 0);
+    var lastActivity = String(node.last_activity || node.last_active || node.last_seen || 'нет данных');
+    var mp = node.matrixPair && typeof node.matrixPair === 'object' ? node.matrixPair : null;
+    var peerIdNum = mp != null ? Number(mp.peerId) : NaN;
+    var peerId = Number.isFinite(peerIdNum) && peerIdNum > 0 ? peerIdNum : 0;
+    var peerSnap = peerId ? graphNodeById(peerId) : null;
+    var peerName = mp && String(mp.peerLabel || '').trim();
+    if (!peerName && peerSnap) {
+      peerName = String(peerSnap.label || peerSnap.username || peerId);
+    }
+    if (!peerName || peerName === String(peerId)) {
+      peerName = peerId ? ('Участник (ID: ' + peerId + ')') : '';
+    }
+    var pairBlock = (mp && peerId > 0)
+      ? (
+        '<div class="graph-node-panel-title">Пара в матрице</div>' +
+        '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:10px;line-height:1.35;">' +
+        '<span style="font-weight:700;">' + esc(name) + '</span>' +
+        '<span style="color:var(--text-secondary);">↔</span>' +
+        '<span style="font-weight:700;">' + esc(peerName) + '</span>' +
+        '</div>' +
+        '<div class="graph-node-pair-summary" style="margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--border-input,rgba(148,163,184,0.35));">' +
+        graphMatrixPairSummaryHtml(name, peerName, mp) +
+        '</div>' +
+        '<div class="graph-node-panel-title" style="font-size:14px;margin-bottom:6px;">Строка матрицы: ' + esc(name) + '</div>'
+      )
+      : ('<div class="graph-node-panel-title">' + esc(name) + '</div>');
+    meGraphPanel.innerHTML =
+      pairBlock +
+      '<div class="graph-node-panel-row"><strong>ID:</strong> ' + esc(uid) + '</div>' +
+      '<div class="graph-node-panel-row"><strong>Ранг:</strong> ' + esc(rank) + '</div>' +
+      '<div class="graph-node-panel-row"><strong>Индекс влияния:</strong> ' + fmt(influence, 3) + '</div>' +
+      '<div class="graph-node-panel-row"><strong>Количество связей:</strong> ' + Number(degree) + '</div>' +
+      '<div class="graph-node-panel-row"><strong>Соседи:</strong> ' + Number(neighbors) + '</div>' +
+      '<div class="graph-node-panel-row"><strong>Последняя активность:</strong> ' + esc(lastActivity) + '</div>' +
+      '<div class="graph-node-panel-actions">' +
+      '<button class="btn btn-secondary btn-sm" type="button" id="meClearGraphSelectionBtn">Сбросить выделение</button>' +
+      '</div>';
+    var clearBtn = document.getElementById('meClearGraphSelectionBtn');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', function(){
+        meSelectedGraphNodeId = null;
+        meSelectedGraphNodeSnapshot = null;
+        renderMeGraphNodePanel(null);
+        renderGraph();
+      });
+    }
+  }
+
+  function handleMeGraphNodeSelect(payload){
+    var node = payload && typeof payload === 'object' ? payload : null;
+    var selectedId = Number(node && node.id || 0);
+    if (!Number.isFinite(selectedId) || selectedId === 0) {
+      meSelectedGraphNodeId = null;
+      meSelectedGraphNodeSnapshot = null;
+      renderMeGraphNodePanel(null);
+      renderGraph();
+      return;
+    }
+    var prevId = Number(meSelectedGraphNodeId || 0);
+    var prevPeer = (meSelectedGraphNodeSnapshot && meSelectedGraphNodeSnapshot.matrixPair)
+      ? Number(meSelectedGraphNodeSnapshot.matrixPair.peerId || 0)
+      : 0;
+    var newPeer = (node && node.matrixPair) ? Number(node.matrixPair.peerId || 0) : 0;
+    if (prevId === selectedId && prevPeer === newPeer) {
+      meSelectedGraphNodeId = null;
+      meSelectedGraphNodeSnapshot = null;
+      renderMeGraphNodePanel(null);
+      renderGraph();
+      return;
+    }
+    var fresh = graphNodeById(selectedId) || {};
+    meSelectedGraphNodeId = selectedId;
+    var snap = Object.assign({}, fresh, node, { id: selectedId });
+    if (node && node.matrixPair && typeof node.matrixPair === 'object') {
+      snap.matrixPair = Object.assign({}, node.matrixPair);
+    } else {
+      delete snap.matrixPair;
+    }
+    meSelectedGraphNodeSnapshot = snap;
+    renderMeGraphNodePanel(meSelectedGraphNodeSnapshot);
+    renderGraph();
+  }
+
+  function syncMeGraphSelectionWithData(){
+    if (meSelectedGraphNodeId && !graphNodeById(meSelectedGraphNodeId)) {
+      meSelectedGraphNodeId = null;
+      meSelectedGraphNodeSnapshot = null;
+      renderMeGraphNodePanel(null);
+    } else if (meSelectedGraphNodeId) {
+      var fresh = graphNodeById(meSelectedGraphNodeId);
+      if (fresh) {
+        meSelectedGraphNodeSnapshot = Object.assign({}, fresh, meSelectedGraphNodeSnapshot || {});
+        var mp = meSelectedGraphNodeSnapshot && meSelectedGraphNodeSnapshot.matrixPair;
+        var pid = mp && Number(mp.peerId);
+        if (pid && !graphNodeById(pid)) {
+          delete meSelectedGraphNodeSnapshot.matrixPair;
+        }
+        renderMeGraphNodePanel(meSelectedGraphNodeSnapshot);
+      }
+    }
+  }
 
   function setStatus(text, isError){
     if(!statusEl){return;}
@@ -425,6 +635,8 @@
         root: root,
         mode: (modeSel && modeSel.value) || 'force',
         data: graphData,
+        selectedNodeId: meSelectedGraphNodeId,
+        onNodeSelect: handleMeGraphNodeSelect,
         largeGraphThresholds: { nodes: 240, edges: 1000 },
         defer: true,
         onUnavailable: function(){
@@ -524,6 +736,7 @@
         return;
       }
       applyDelta(body.delta || {}, body.graph_version || '');
+      syncMeGraphSelectionWithData();
       renderGraph();
       setStatus('Live patch: узлов ' + ((graphData.nodes||[]).length) + ' · связей ' + ((graphData.edges||[]).length));
     }catch(_e){
@@ -541,6 +754,7 @@
       var body = await resp.json();
       graphData = (body && body.graph) || {nodes:[], edges:[], meta:{}};
       graphVersion = String((body && body.graph_version) || graphVersion || '');
+      syncMeGraphSelectionWithData();
       renderGraph();
       setStatus('Участников: ' + ((graphData.nodes||[]).length) + ' · Связей: ' + ((graphData.edges||[]).length));
     }catch(_e){
@@ -654,6 +868,7 @@
     });
   }
 
+  renderMeGraphNodePanel(null);
   loadGraph('init');
   startRealtime();
   window.addEventListener('beforeunload', function(){

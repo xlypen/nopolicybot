@@ -1,5 +1,7 @@
 (function () {
   const _renderEpochByRoot = new WeakMap();
+  /** @type {WeakMap<object, { type: string, i?: number, j?: number, idx?: number }>} */
+  const _matrixFocusByRoot = new WeakMap();
 
   function nextEpoch(root) {
     const next = Number(_renderEpochByRoot.get(root) || 0) + 1;
@@ -587,45 +589,396 @@
     panel(root, html);
   }
 
-  function renderMatrix(root, graph) {
+  function matrixShortLabel(node) {
+    const s = String((node && (node.label || node.username || node.id)) || "?");
+    return s.length > 12 ? `${s.slice(0, 11)}…` : s;
+  }
+
+  function renderMatrix(root, graph, payload) {
     const subset = pickSubset(graph, { maxNodes: 120, maxEdges: 2000 });
     const nodes = subset.nodes || [];
     const edges = subset.edges || [];
-    const idToIdx = {};
-    nodes.forEach((n, i) => { idToIdx[n.id] = i; });
+    const selectedNodeId = n(payload && payload.selectedNodeId, 0);
+    const onNodeSelect = payload && typeof payload.onNodeSelect === "function" ? payload.onNodeSelect : null;
+    const neighborMap = buildNeighborMap(edges);
+    function matrixNodeId(node) {
+      const a = n(node && node.id, 0);
+      if (a > 0) return a;
+      const b = n(node && node.user_id, 0);
+      if (b > 0) return b;
+      return n(node && node.telegram_id, 0);
+    }
+    const idToIdx = new Map();
+    nodes.forEach((node, idx) => {
+      const nid = matrixNodeId(node);
+      if (nid > 0) idToIdx.set(nid, idx);
+    });
     const count = nodes.length;
-    const size = Math.min(680, Math.max(300, count * 22));
     const epoch = nextEpoch(root);
     clear(root);
-    const note = document.createElement("div");
-    note.className = "text-sm text-muted mb-1";
-    note.textContent = subset.culled
-      ? `Матрица связей (${count} x ${count}, отрисовано ${subset.edges.length}/${subset.originalEdges} связей)`
-      : `Матрица связей (${count} x ${count})`;
-    root.appendChild(note);
+    mountRenderHeader(root, `Матрица связей (${count}×${count})`, subset);
+    const hint = document.createElement("div");
+    hint.className = "text-sm text-muted mb-1";
+    hint.textContent =
+      "Строки и столбцы — те же участники. Клик по ячейке (не диагональ): полоса строки и столбца выбранной ячейки, две ячейки пары с обводкой, в панели — оба участника и сводка; по подписи — акцент строки или столбца.";
+    root.appendChild(hint);
+
+    if (!count) {
+      const empty = document.createElement("div");
+      empty.className = "text-sm text-muted";
+      empty.textContent = "Нет узлов.";
+      root.appendChild(empty);
+      return;
+    }
+
+    let maxWt = 1;
+    edges.forEach((e) => {
+      maxWt = Math.max(maxWt, n(e && (e.weight_period || e.weight), 1));
+    });
+    const mat = Array.from({ length: count }, () => new Array(count).fill(0));
+    const rawMat = Array.from({ length: count }, () => new Array(count).fill(0));
+    edges.forEach((e) => {
+      const i = idToIdx.get(n(e.source, 0));
+      const j = idToIdx.get(n(e.target, 0));
+      if (i == null || j == null) return;
+      const wt = n(e.weight_period || e.weight, 1);
+      rawMat[i][j] = Math.max(rawMat[i][j], wt);
+      rawMat[j][i] = Math.max(rawMat[j][i], wt);
+      const norm = maxWt > 0 ? wt / maxWt : 0;
+      const alpha = Math.max(0.12, Math.min(1, 0.18 + norm * 0.82));
+      mat[i][j] = Math.max(mat[i][j], alpha);
+      mat[j][i] = Math.max(mat[j][i], alpha);
+    });
+
+    const selectedIdx = selectedNodeId
+      ? nodes.findIndex((node) => matrixNodeId(node) === selectedNodeId)
+      : -1;
+
+    let matrixFocus = _matrixFocusByRoot.get(root) || null;
+    if (!selectedNodeId) {
+      _matrixFocusByRoot.delete(root);
+      matrixFocus = null;
+    } else if (matrixFocus && selectedIdx >= 0) {
+      if (matrixFocus.type === "pair") {
+        const fi = matrixFocus.i;
+        const fj = matrixFocus.j;
+        if (fi !== selectedIdx && fj !== selectedIdx) {
+          _matrixFocusByRoot.delete(root);
+          matrixFocus = null;
+        }
+      } else if (matrixFocus.type === "row" && matrixFocus.idx !== selectedIdx) {
+        _matrixFocusByRoot.delete(root);
+        matrixFocus = null;
+      } else if (matrixFocus.type === "col" && matrixFocus.idx !== selectedIdx) {
+        _matrixFocusByRoot.delete(root);
+        matrixFocus = null;
+      }
+    }
+
+    const cell = 16;
+    const marginL = 118;
+    const marginT = 102;
+    const marginR = 14;
+    const marginB = 12;
+    const vbW = marginL + count * cell + marginR;
+    const vbH = marginT + count * cell + marginB;
+
+    if (window.getComputedStyle(root).position === "static") {
+      root.style.position = "relative";
+    }
+    const tooltip = document.createElement("div");
+    tooltip.style.cssText =
+      "position:absolute;pointer-events:none;padding:4px 8px;border-radius:6px;background:rgba(15,23,42,0.94);color:#e2e8f0;font-size:12px;display:none;z-index:6;max-width:280px;";
+    root.appendChild(tooltip);
+
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "overflow:auto;max-height:min(78vh,720px);border:1px solid var(--border-input,rgba(148,163,184,0.35));border-radius:10px;";
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("width", String(size));
-    svg.setAttribute("height", String(size));
-    svg.setAttribute("viewBox", `0 0 ${Math.max(1, count * 20)} ${Math.max(1, count * 20)}`);
-    root.appendChild(svg);
+    svg.setAttribute("width", "100%");
+    svg.setAttribute("height", String(Math.min(720, vbH)));
+    svg.setAttribute("viewBox", `0 0 ${vbW} ${vbH}`);
+    svg.setAttribute("preserveAspectRatio", "xMinYMin meet");
+
+    const bandG = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    bandG.setAttribute("pointer-events", "none");
+    const cellG = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    const axisG = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    svg.appendChild(bandG);
+    svg.appendChild(cellG);
+    svg.appendChild(axisG);
+
+    function addRowBand(rowIdx, opacity) {
+      const rr = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      rr.setAttribute("x", String(marginL));
+      rr.setAttribute("y", String(marginT + rowIdx * cell));
+      rr.setAttribute("width", String(count * cell));
+      rr.setAttribute("height", String(cell));
+      rr.setAttribute("fill", `rgba(56,189,248,${opacity})`);
+      bandG.appendChild(rr);
+    }
+    function addColBand(colIdx, opacity) {
+      const rc = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      rc.setAttribute("x", String(marginL + colIdx * cell));
+      rc.setAttribute("y", String(marginT));
+      rc.setAttribute("width", String(cell));
+      rc.setAttribute("height", String(count * cell));
+      rc.setAttribute("fill", `rgba(56,189,248,${opacity})`);
+      bandG.appendChild(rc);
+    }
+    if (matrixFocus && matrixFocus.type === "pair") {
+      const fi = matrixFocus.i;
+      const fj = matrixFocus.j;
+      const op = 0.17;
+      // Одна «перекладина»: строка узла строки + столбец узла столбца (без второго креста от симметрии).
+      addRowBand(fi, op);
+      addColBand(fj, op * 0.88);
+    } else if (matrixFocus && matrixFocus.type === "row") {
+      const k = matrixFocus.idx;
+      addRowBand(k, 0.2);
+      addColBand(k, 0.11);
+    } else if (matrixFocus && matrixFocus.type === "col") {
+      const k = matrixFocus.idx;
+      addColBand(k, 0.2);
+      addRowBand(k, 0.11);
+    }
+
+    function edgeBetweenIds(idA, idB) {
+      for (let k = 0; k < edges.length; k += 1) {
+        const e = edges[k];
+        const s = n(e.source, 0);
+        const t = n(e.target, 0);
+        if ((s === idA && t === idB) || (s === idB && t === idA)) return e;
+      }
+      return null;
+    }
+
+    function matrixCellStrokeStyle(ci, cj) {
+      const base = { stroke: "rgba(148,163,184,0.28)", width: "0.6" };
+      if (!matrixFocus) {
+        return base;
+      }
+      if (matrixFocus.type === "pair") {
+        const fi = matrixFocus.i;
+        const fj = matrixFocus.j;
+        if ((ci === fi && cj === fj) || (ci === fj && cj === fi)) {
+          return { stroke: "rgba(56,189,248,0.98)", width: "2.5" };
+        }
+        return base;
+      }
+      if (matrixFocus.type === "row" && ci === matrixFocus.idx) {
+        return { stroke: "rgba(56,189,248,0.78)", width: "1.35" };
+      }
+      if (matrixFocus.type === "col" && cj === matrixFocus.idx) {
+        return { stroke: "rgba(56,189,248,0.78)", width: "1.35" };
+      }
+      return base;
+    }
+
+    function rowLabelBold(idx) {
+      if (matrixFocus && matrixFocus.type === "pair") {
+        return idx === matrixFocus.i || idx === matrixFocus.j;
+      }
+      if (matrixFocus && matrixFocus.type === "row") return idx === matrixFocus.idx;
+      if (matrixFocus && matrixFocus.type === "col") return false;
+      return selectedIdx === idx;
+    }
+
+    function colLabelBold(j) {
+      if (matrixFocus && matrixFocus.type === "pair") {
+        return j === matrixFocus.i || j === matrixFocus.j;
+      }
+      if (matrixFocus && matrixFocus.type === "col") return j === matrixFocus.idx;
+      if (matrixFocus && matrixFocus.type === "row") return false;
+      return selectedIdx === j;
+    }
 
     const cells = [];
-    edges.forEach((e) => {
-      const i = idToIdx[e.source];
-      const j = idToIdx[e.target];
-      if (i == null || j == null) return;
-      const w = Math.max(0.15, Math.min(1, n(e.weight_period || e.weight, 1) / 10));
-      cells.push({ x: i * 20, y: j * 20, w });
-      cells.push({ x: j * 20, y: i * 20, w });
+    for (let i = 0; i < count; i += 1) {
+      for (let j = 0; j < count; j += 1) {
+        const w = mat[i][j];
+        if (w <= 0) continue;
+        cells.push({ i, j, w, wt: rawMat[i][j] });
+      }
+    }
+
+    function bindNodeSelect(node, evt) {
+      if (!onNodeSelect) return;
+      evt.stopPropagation();
+      const id = matrixNodeId(node);
+      const neighbors = neighborMap.get(id) || new Set();
+      onNodeSelect({
+        id,
+        label: String(node.label || node.username || node.id),
+        username: String(node.username || ""),
+        rank: String(node.rank || node.tier || ""),
+        influence_score: n(node && node.influence_score, 0),
+        degree: n(node && node.degree, 0),
+        neighbor_count: neighbors.size,
+        last_activity: String(node.last_activity || node.last_active || node.last_seen || ""),
+      });
+    }
+
+    appendProgressive(
+      root,
+      epoch,
+      cellG,
+      cells,
+      200,
+      (c) => {
+        const { i, j, w, wt } = c;
+        const r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        const x = marginL + j * cell;
+        const y = marginT + i * cell;
+        r.setAttribute("x", String(x + 0.5));
+        r.setAttribute("y", String(y + 0.5));
+        r.setAttribute("width", String(cell - 1));
+        r.setAttribute("height", String(cell - 1));
+        r.setAttribute("rx", "2");
+        r.setAttribute("fill", `rgba(233,69,96,${w})`);
+        const st = matrixCellStrokeStyle(i, j);
+        r.setAttribute("stroke", st.stroke);
+        r.setAttribute("stroke-width", st.width);
+        r.style.cursor = onNodeSelect ? "pointer" : "default";
+        const ni = nodes[i];
+        const nj = nodes[j];
+        r.addEventListener("mouseenter", () => {
+          const a = matrixShortLabel(ni);
+          const b = matrixShortLabel(nj);
+          const wn = n(wt, 0);
+          tooltip.textContent =
+            i === j
+              ? `${a} (самосвязь · вес ${wn.toFixed(1)})`
+              : `${a} ↔ ${b} · вес ${wn.toFixed(1)}`;
+          tooltip.style.display = "block";
+        });
+        r.addEventListener("mousemove", (evt) => {
+          const rect = root.getBoundingClientRect();
+          tooltip.style.left = `${evt.clientX - rect.left + 12}px`;
+          tooltip.style.top = `${evt.clientY - rect.top + 12}px`;
+        });
+        r.addEventListener("mouseleave", () => {
+          tooltip.style.display = "none";
+        });
+        r.addEventListener("click", (evt) => {
+          if (!onNodeSelect || !ni) return;
+          evt.stopPropagation();
+          _matrixFocusByRoot.set(root, { type: "pair", i, j });
+          if (i === j) {
+            bindNodeSelect(ni, evt);
+            return;
+          }
+          const idI = matrixNodeId(ni);
+          const idJ = matrixNodeId(nj);
+          const edge = edgeBetweenIds(idI, idJ);
+          let msgsRowToCol = 0;
+          let msgsColToRow = 0;
+          if (edge) {
+            if (n(edge.source, 0) === idI && n(edge.target, 0) === idJ) {
+              msgsRowToCol = n(edge.message_count_a_to_b, 0);
+              msgsColToRow = n(edge.message_count_b_to_a, 0);
+            } else {
+              msgsRowToCol = n(edge.message_count_b_to_a, 0);
+              msgsColToRow = n(edge.message_count_a_to_b, 0);
+            }
+          }
+          const neighbors = neighborMap.get(idI) || new Set();
+          onNodeSelect({
+            id: idI,
+            label: String(ni.label || ni.username || idI),
+            username: String(ni.username || ""),
+            rank: String(ni.rank || ni.tier || ""),
+            influence_score: n(ni.influence_score, 0),
+            degree: n(ni.degree, 0),
+            neighbor_count: neighbors.size,
+            last_activity: String(ni.last_activity || ni.last_active || ni.last_seen || ""),
+            matrixPair: {
+              peerId: idJ,
+              peerLabel: String(nj.label || nj.username || idJ),
+              weightMatrix: n(wt, 0),
+              weightPeriod: edge ? n(edge.weight_period, 0) : n(wt, 0),
+              weightTotal: edge ? n(edge.weight, 0) : n(wt, 0),
+              msgsRowToCol,
+              msgsColToRow,
+              bridgeScore: edge ? n(edge.bridge_score, 0) : 0,
+              crossCommunity: edge ? Number(edge.community_id) === -1 : false,
+            },
+          });
+        });
+        cellG.appendChild(r);
+      },
+      () => {
+        nodes.forEach((node, idx) => {
+          const ly = marginT + idx * cell + cell * 0.72;
+          const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+          g.style.cursor = onNodeSelect ? "pointer" : "default";
+          const hit = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+          hit.setAttribute("x", "4");
+          hit.setAttribute("y", String(marginT + idx * cell));
+          hit.setAttribute("width", String(marginL - 8));
+          hit.setAttribute("height", String(cell));
+          hit.setAttribute("fill", "transparent");
+          hit.addEventListener("click", (evt) => {
+            _matrixFocusByRoot.set(root, { type: "row", idx });
+            bindNodeSelect(node, evt);
+          });
+          g.appendChild(hit);
+          const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          t.setAttribute("x", String(marginL - 6));
+          t.setAttribute("y", String(ly));
+          t.setAttribute("text-anchor", "end");
+          t.setAttribute("fill", rowLabelBold(idx) ? "#0f172a" : "#475569");
+          t.setAttribute("font-size", "10");
+          t.setAttribute("font-weight", rowLabelBold(idx) ? "700" : "500");
+          t.setAttribute("pointer-events", "none");
+          t.textContent = matrixShortLabel(node);
+          g.appendChild(t);
+          axisG.appendChild(g);
+        });
+        nodes.forEach((node, j) => {
+          const cx = marginL + j * cell + cell / 2;
+          const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+          g.style.cursor = onNodeSelect ? "pointer" : "default";
+          const hit = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+          hit.setAttribute("x", String(marginL + j * cell));
+          hit.setAttribute("y", "4");
+          hit.setAttribute("width", String(cell));
+          hit.setAttribute("height", String(marginT - 8));
+          hit.setAttribute("fill", "transparent");
+          hit.addEventListener("click", (evt) => {
+            _matrixFocusByRoot.set(root, { type: "col", idx: j });
+            bindNodeSelect(node, evt);
+          });
+          g.appendChild(hit);
+          const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          t.setAttribute("x", String(cx));
+          t.setAttribute("y", String(marginT - 10));
+          t.setAttribute("text-anchor", "start");
+          t.setAttribute("fill", colLabelBold(j) ? "#0f172a" : "#475569");
+          t.setAttribute("font-size", "10");
+          t.setAttribute("font-weight", colLabelBold(j) ? "700" : "500");
+          t.setAttribute("transform", `rotate(-58 ${cx} ${marginT - 10})`);
+          t.setAttribute("pointer-events", "none");
+          t.textContent = matrixShortLabel(node);
+          g.appendChild(t);
+          axisG.appendChild(g);
+        });
+      }
+    );
+
+    wrap.appendChild(svg);
+    root.appendChild(wrap);
+
+    svg.addEventListener("click", (evt) => {
+      if (evt.target === svg && onNodeSelect) {
+        _matrixFocusByRoot.delete(root);
+        onNodeSelect(null);
+      }
     });
-    appendProgressive(root, epoch, svg, cells, 400, (c) => {
-      const r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-      r.setAttribute("x", String(c.x));
-      r.setAttribute("y", String(c.y));
-      r.setAttribute("width", "18");
-      r.setAttribute("height", "18");
-      r.setAttribute("fill", `rgba(233,69,96,${c.w})`);
-      svg.appendChild(r);
+    wrap.addEventListener("click", (evt) => {
+      if (evt.target === wrap && onNodeSelect) {
+        _matrixFocusByRoot.delete(root);
+        onNodeSelect(null);
+      }
     });
   }
 

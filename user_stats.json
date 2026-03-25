@@ -62,7 +62,11 @@
       "question_of_day_enabled": false,
       "question_of_day_last_asked": "",
       "question_of_day_destination": "chat",
-      "images_archive": []
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "822343631": {
       "user_id": 822343631,
@@ -861,7 +865,11 @@
           "is_political": true
         }
       ],
-      "yesterday_quotes": []
+      "yesterday_quotes": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "332544125": {
       "user_id": 332544125,
@@ -970,7 +978,11 @@
       "question_of_day_enabled": false,
       "question_of_day_last_asked": "",
       "question_of_day_destination": "chat",
-      "images_archive": []
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "1485084701": {
       "user_id": 1485084701,
@@ -1338,7 +1350,11 @@
       "question_of_day_enabled": false,
       "question_of_day_last_asked": "",
       "question_of_day_destination": "chat",
-      "images_archive": []
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "378214459": {
       "user_id": 378214459,
@@ -1666,7 +1682,11 @@
       "question_of_day_enabled": false,
       "question_of_day_last_asked": "",
       "question_of_day_destination": "chat",
-      "images_archive": []
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "1324049597": {
       "user_id": 1324049597,
@@ -1709,7 +1729,11 @@
       "question_of_day_enabled": false,
       "question_of_day_last_asked": "",
       "question_of_day_destination": "chat",
-      "images_archive": []
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "430831653": {
       "user_id": 430831653,
@@ -2831,7 +2855,11 @@
       ],
       "yesterday_quotes": [
         "привет"
-      ]
+      ],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "7990455626": {
       "user_id": 7990455626,
@@ -3248,7 +3276,11 @@
       "question_of_day_enabled": false,
       "question_of_day_last_asked": "2026-03-03",
       "question_of_day_destination": "chat",
-      "images_archive": []
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "126199953": {
       "user_id": 126199953,
@@ -3358,7 +3390,11 @@
           "reaction_emoji": "🤮",
           "is_political": false
         }
-      ]
+      ],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "401943908": {
       "user_id": 401943908,
@@ -3592,7 +3628,11 @@
       "question_of_day_enabled": false,
       "question_of_day_last_asked": "",
       "question_of_day_destination": "chat",
-      "images_archive": []
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "453712228": {
       "user_id": 453712228,
@@ -3850,7 +3890,11 @@
       "question_of_day_enabled": false,
       "question_of_day_last_asked": "",
       "question_of_day_destination": "chat",
-      "images_archive": []
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "481864720": {
       "user_id": 481864720,
@@ -4282,7 +4326,11 @@
           "reaction_emoji": "😁",
           "is_political": false
         }
-      ]
+      ],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "352344191": {
       "user_id": 352344191,
@@ -4479,7 +4527,11 @@
           "reaction_emoji": "😁",
           "is_political": false
         }
-      ]
+      ],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "138512382": {
       "user_id": 138512382,
@@ -4520,7 +4572,11 @@
       "question_of_day_enabled": false,
       "question_of_day_last_asked": "",
       "question_of_day_destination": "chat",
-      "images_archive": []
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "1135294277": {
       "user_id": 1135294277,
@@ -4672,7 +4728,11 @@
           "reaction_emoji": "👍",
           "is_political": true
         }
-      ]
+      ],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "756561099": {
       "user_id": 756561099,
@@ -4790,7 +4850,11 @@
       "question_of_day_enabled": false,
       "question_of_day_last_asked": "",
       "question_of_day_destination": "chat",
-      "images_archive": []
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "593401860": {
       "user_id": 593401860,
@@ -4855,7 +4919,11 @@
       "question_of_day_enabled": false,
       "question_of_day_last_asked": "",
       "question_of_day_destination": "chat",
-      "images_archive": []
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "8573785901": {
       "user_id": 8573785901,
@@ -5109,7 +5177,11 @@
       "question_of_day_enabled": false,
       "question_of_day_last_asked": "",
       "question_of_day_destination": "chat",
-      "images_archive": []
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "825489210": {
       "user_id": 825489210,
@@ -5154,7 +5226,11 @@
       "question_of_day_enabled": false,
       "question_of_day_last_asked": "",
       "question_of_day_destination": "chat",
-      "images_archive": []
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "5478809041": {
       "user_id": 5478809041,
@@ -5347,7 +5423,11 @@
       "question_of_day_enabled": false,
       "question_of_day_last_asked": "2026-03-03",
       "question_of_day_destination": "chat",
-      "images_archive": []
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "168368958": {
       "user_id": 168368958,
@@ -5380,7 +5460,11 @@
       "question_of_day_enabled": false,
       "question_of_day_last_asked": "",
       "question_of_day_destination": "chat",
-      "images_archive": []
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     },
     "725456588": {
       "user_id": 725456588,
@@ -5437,7 +5521,215 @@
       "question_of_day_enabled": false,
       "question_of_day_last_asked": "",
       "question_of_day_destination": "chat",
-      "images_archive": []
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
+    },
+    "359858187": {
+      "user_id": 359858187,
+      "display_name": "359858187",
+      "rank": "unknown",
+      "portrait": "",
+      "portrait_updated_date": "",
+      "stats": {
+        "political_messages": 0,
+        "positive_sentiment": 0,
+        "negative_sentiment": 0,
+        "neutral_sentiment": 0,
+        "total_messages": 0,
+        "warnings_received": 0
+      },
+      "daily_buffer": [],
+      "yesterday_quotes": [],
+      "messages_to_bot_buffer": [],
+      "tone_to_bot": "",
+      "tone_override": "",
+      "tone_history": [],
+      "emotion_score": null,
+      "emotion_positivity": null,
+      "emotion_aggression": null,
+      "messages_archive": [],
+      "messages_by_chat": {},
+      "question_of_day_enabled": false,
+      "question_of_day_last_asked": "",
+      "question_of_day_destination": "chat",
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
+    },
+    "5647591314": {
+      "user_id": 5647591314,
+      "display_name": "5647591314",
+      "rank": "unknown",
+      "portrait": "",
+      "portrait_updated_date": "",
+      "stats": {
+        "political_messages": 0,
+        "positive_sentiment": 0,
+        "negative_sentiment": 0,
+        "neutral_sentiment": 0,
+        "total_messages": 0,
+        "warnings_received": 0
+      },
+      "daily_buffer": [],
+      "yesterday_quotes": [],
+      "messages_to_bot_buffer": [],
+      "tone_to_bot": "",
+      "tone_override": "",
+      "tone_history": [],
+      "emotion_score": null,
+      "emotion_positivity": null,
+      "emotion_aggression": null,
+      "messages_archive": [],
+      "messages_by_chat": {},
+      "question_of_day_enabled": false,
+      "question_of_day_last_asked": "",
+      "question_of_day_destination": "chat",
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
+    },
+    "268994480": {
+      "user_id": 268994480,
+      "display_name": "268994480",
+      "rank": "unknown",
+      "portrait": "",
+      "portrait_updated_date": "",
+      "stats": {
+        "political_messages": 0,
+        "positive_sentiment": 0,
+        "negative_sentiment": 0,
+        "neutral_sentiment": 0,
+        "total_messages": 0,
+        "warnings_received": 0
+      },
+      "daily_buffer": [],
+      "yesterday_quotes": [],
+      "messages_to_bot_buffer": [],
+      "tone_to_bot": "",
+      "tone_override": "",
+      "tone_history": [],
+      "emotion_score": null,
+      "emotion_positivity": null,
+      "emotion_aggression": null,
+      "messages_archive": [],
+      "messages_by_chat": {},
+      "question_of_day_enabled": false,
+      "question_of_day_last_asked": "",
+      "question_of_day_destination": "chat",
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
+    },
+    "1867670335": {
+      "user_id": 1867670335,
+      "display_name": "1867670335",
+      "rank": "unknown",
+      "portrait": "",
+      "portrait_updated_date": "",
+      "stats": {
+        "political_messages": 0,
+        "positive_sentiment": 0,
+        "negative_sentiment": 0,
+        "neutral_sentiment": 0,
+        "total_messages": 0,
+        "warnings_received": 0
+      },
+      "daily_buffer": [],
+      "yesterday_quotes": [],
+      "messages_to_bot_buffer": [],
+      "tone_to_bot": "",
+      "tone_override": "",
+      "tone_history": [],
+      "emotion_score": null,
+      "emotion_positivity": null,
+      "emotion_aggression": null,
+      "messages_archive": [],
+      "messages_by_chat": {},
+      "question_of_day_enabled": false,
+      "question_of_day_last_asked": "",
+      "question_of_day_destination": "chat",
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
+    },
+    "331549806": {
+      "user_id": 331549806,
+      "display_name": "331549806",
+      "rank": "unknown",
+      "portrait": "",
+      "portrait_updated_date": "",
+      "stats": {
+        "political_messages": 0,
+        "positive_sentiment": 0,
+        "negative_sentiment": 0,
+        "neutral_sentiment": 0,
+        "total_messages": 0,
+        "warnings_received": 0
+      },
+      "daily_buffer": [],
+      "yesterday_quotes": [],
+      "messages_to_bot_buffer": [],
+      "tone_to_bot": "",
+      "tone_override": "",
+      "tone_history": [],
+      "emotion_score": null,
+      "emotion_positivity": null,
+      "emotion_aggression": null,
+      "messages_archive": [],
+      "messages_by_chat": {},
+      "question_of_day_enabled": false,
+      "question_of_day_last_asked": "",
+      "question_of_day_destination": "chat",
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
+    },
+    "401741940": {
+      "user_id": 401741940,
+      "display_name": "401741940",
+      "rank": "unknown",
+      "portrait": "",
+      "portrait_updated_date": "",
+      "stats": {
+        "political_messages": 0,
+        "positive_sentiment": 0,
+        "negative_sentiment": 0,
+        "neutral_sentiment": 0,
+        "total_messages": 0,
+        "warnings_received": 0
+      },
+      "daily_buffer": [],
+      "yesterday_quotes": [],
+      "messages_to_bot_buffer": [],
+      "tone_to_bot": "",
+      "tone_override": "",
+      "tone_history": [],
+      "emotion_score": null,
+      "emotion_positivity": null,
+      "emotion_aggression": null,
+      "messages_archive": [],
+      "messages_by_chat": {},
+      "question_of_day_enabled": false,
+      "question_of_day_last_asked": "",
+      "question_of_day_destination": "chat",
+      "images_archive": [],
+      "close_attention_enabled": false,
+      "close_attention_views": [],
+      "factcheck_enabled": false,
+      "portrait_image_updated_date": ""
     }
   },
   "chats": {

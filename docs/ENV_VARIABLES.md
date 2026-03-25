@@ -23,7 +23,7 @@
 | `ADMIN_SECRET_KEY` | Секрет сессий Flask и fallback для подписи ссылок |
 | `ADMIN_PASSWORD` | Опционально: пароль админки (неинтерактивный деплой) |
 | `PARTICIPANT_SECRET` | Опционально: отдельный секрет для ссылок участника |
-| `PARTICIPANT_BASE_URL`, `ADMIN_BASE_URL` | Базовый URL для ссылок (`bot.py`, `admin_app.py`) |
+| `PARTICIPANT_BASE_URL`, `ADMIN_BASE_URL`, `PUBLIC_BASE_URL` | Публичный origin для ссылок `/me` (`config/participant_base_url.py`). Без этого в боте подставляется `http://127.0.0.1:5000`. |
 | `USER_HASH_SALT` | Опционально: соль хеширования пользователей (`data_privacy`) |
 | `SECRETS_VALIDATE` | `0`/`false` — отключить валидацию секретов при старте (только отладка) |
 

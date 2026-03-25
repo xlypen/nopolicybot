@@ -38,6 +38,7 @@ try:
 except ImportError:
     pass
 
+from config.participant_base_url import get_participant_base_url
 from config.validate_secrets import validate_secrets
 from ai_analyzer import (
     _ALLOWED_REACTION_EMOJI,
@@ -1811,7 +1812,7 @@ def _participant_me_link(user_id: int) -> str:
     payload_b64 = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
     sig_b64 = base64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
     token = f"{payload_b64}.{sig_b64}"
-    base = (os.getenv("PARTICIPANT_BASE_URL") or os.getenv("ADMIN_BASE_URL") or "").strip().rstrip("/")
+    base = get_participant_base_url()
     if not base:
         base = "http://127.0.0.1:5000"
     return f"{base}/me?token={token}"
@@ -2120,6 +2121,11 @@ async def main() -> None:
         _chat_last_praise_date,
         _dm_silence_until,
     )
+    if not get_participant_base_url():
+        logger.warning(
+            "PARTICIPANT_BASE_URL / ADMIN_BASE_URL / PUBLIC_BASE_URL не заданы — "
+            "команда /me будет выдавать ссылку на localhost. Укажите в .env, например PARTICIPANT_BASE_URL=https://ваш-домен",
+        )
     logger.info("Бот запущен. ИИ: %s", os.getenv("OPENAI_BASE_URL", "(не задан)"))
     _debug_log("SESSION_START", detail=f"ИИ={os.getenv('OPENAI_BASE_URL', '—')}")
     _spawn_task(_event_loop_heartbeat_task())

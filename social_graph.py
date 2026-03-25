@@ -876,6 +876,15 @@ def get_connections(chat_id: int | None = None) -> list[dict]:
     chat_id=None — все чаты (объединённо).
     """
     try:
+        from services.graph_api import get_connection_rows_from_db_sync
+
+        db_rows = get_connection_rows_from_db_sync(chat_id)
+        if db_rows:
+            return db_rows
+    except Exception as e:
+        logger.debug("get_connections primary ORM DB: %s", e)
+
+    try:
         from services.storage_cutover import (
             storage_db_reads_enabled,
             storage_json_fallback_enabled,
@@ -1290,3 +1299,129 @@ def get_chats_with_connections() -> list[dict]:
             seen.add(ckey)
             result.append(chats_map[ckey])
     return sorted(result, key=lambda x: x["chat_id"])
+
+
+def build_chat_revive_prompt_context(chat_id: int, *, max_body_chars: int = 4200) -> dict:
+    """
+    Текстовый контекст для генерации «оживляющего» вопроса в чат:
+    сначала реплики за сегодня из основной БД (таблица messages, затем dialogue_log в ORM),
+    иначе сводки связей по графу.
+    """
+    from datetime import date
+
+    from utils.labels import TOPIC_RU as topic_ru
+    from utils.labels import TONE_RU as tone_ru
+
+    from services.revive_chat_source import load_today_dialogue_log_blob, load_today_messages_from_main_db
+
+    cid = int(chat_id)
+    msgs: list[dict] = list(load_today_messages_from_main_db(cid) or [])
+    dialogue_source = "messages_db"
+    if not msgs:
+        msgs = list(load_today_dialogue_log_blob(cid) or [])
+        dialogue_source = "dialogue_log_db" if msgs else ""
+
+    had_live = bool(msgs)
+    lines: list[str] = []
+    for m in msgs:
+        name = str(m.get("sender_name") or m.get("sender_id") or "?").strip()[:80]
+        text = str(m.get("text") or "").strip().replace("\n", " ")
+        text = _soft_trim(text, 420)
+        if text:
+            lines.append(f"{name}: {text}")
+
+    body = "\n".join(lines).strip()
+    source = dialogue_source or "graph_summaries"
+
+    def _latest_summary(r: dict, max_len: int = 220) -> str:
+        by_date = list(r.get("summary_by_date") or [])
+        if by_date:
+            s = str((by_date[-1].get("summary") or "")).strip()
+        else:
+            ln = [x.strip() for x in str(r.get("summary", "") or "").splitlines() if x.strip()]
+            s = ln[-1] if ln else ""
+            if s.startswith("[") and "] " in s:
+                s = s.split("] ", 1)[1].strip()
+        s = " ".join(s.split()).strip()
+        return _soft_trim(s, max_len) if s else ""
+
+    if not body:
+        source = "graph_summaries"
+        try:
+            from user_stats import get_user_display_names
+
+            names = get_user_display_names()
+        except Exception:
+            names = {}
+
+        def _nm(uid) -> str:
+            u = str(int(uid or 0))
+            return str(names.get(u) or u)
+
+        rows = [
+            r
+            for r in get_connections_for_digest(cid)
+            if int(r.get("message_count_30d", 0) or 0) > 0
+        ]
+        metric_key = "message_count_24h"
+        if not any(int(r.get(metric_key, 0) or 0) > 0 for r in rows):
+            metric_key = "message_count_7d"
+        if not any(int(r.get(metric_key, 0) or 0) > 0 for r in rows):
+            metric_key = "message_count_30d"
+
+        def _act(r: dict) -> int:
+            return int(r.get(metric_key, 0) or 0)
+
+        blines: list[str] = []
+        for r in sorted(rows, key=_act, reverse=True)[:14]:
+            s = _latest_summary(r, 260)
+            if not s:
+                continue
+            ua = _nm(r.get("user_a"))
+            ub = _nm(r.get("user_b"))
+            blines.append(f"{ua} ↔ {ub}: {s}")
+        body = "\n".join(blines).strip()
+
+    if not body:
+        body = "За сегодня в логе сообщений нет, сводок по парам тоже мало — придумай лёгкий нейтральный вопрос для группы."
+
+    body = _soft_trim(body, max_body_chars)
+
+    rows_meta = get_connections_for_digest(cid)
+    tone_counts: dict[str, int] = {}
+    topic_counts: dict[str, int] = {}
+    for r in rows_meta:
+        t = str(r.get("tone", "neutral") or "neutral")
+        tone_counts[t] = tone_counts.get(t, 0) + 1
+        for tp in r.get("topics") or []:
+            topic_counts[str(tp)] = topic_counts.get(str(tp), 0) + 1
+    dom_tone = max(tone_counts, key=tone_counts.get) if tone_counts else "neutral"
+    top_topics = sorted(topic_counts.items(), key=lambda kv: kv[1], reverse=True)[:6]
+    topic_hint = ", ".join(topic_ru.get(k, k) for k, _ in top_topics)
+
+    health_line = ""
+    try:
+        from services.marketing_metrics import get_chat_health
+
+        h = get_chat_health(cid, days=7)
+        health_line = (
+            f"Пульс чата (7 дн.): {h.get('health_status', '?')}, "
+            f"сообщений: {h.get('messages', 0)}, участников: {h.get('participants', 0)}, "
+            f"средняя «токсичность» (доля): {h.get('avg_toxicity', 0)}."
+        )
+    except Exception as e:
+        logger.debug("build_chat_revive_prompt_context health: %s", e)
+
+    meta = (
+        f"Доминирующий тон по разметке: {tone_ru.get(dom_tone, dom_tone)}. "
+        f"Темы: {topic_hint or 'не выделены'}. "
+        f"{health_line}"
+    )
+
+    return {
+        "body": body,
+        "meta": meta,
+        "had_live_dialogue": had_live,
+        "message_count_today": len(msgs),
+        "context_source": source,
+    }

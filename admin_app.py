@@ -30,6 +30,7 @@ from flask_cors import CORS
 
 from utils.fastapi_proxy import proxy_response, proxy_to_fastapi
 from dotenv import load_dotenv
+from config.participant_base_url import get_participant_base_url
 from config.validate_secrets import validate_secrets
 from routes.social_graph_routes import register_social_graph_routes
 import bot_settings
@@ -339,7 +340,7 @@ def _participant_verify(token: str) -> tuple[int | None, str | None]:
 
 def _participant_me_url(user_id: int, base_url: str | None = None) -> str:
     """Возвращает полный URL страницы «Мой профиль» для участника. base_url — от request.host_url или env."""
-    base = (base_url or os.getenv("PARTICIPANT_BASE_URL") or os.getenv("ADMIN_BASE_URL") or "").strip().rstrip("/")
+    base = (base_url or get_participant_base_url() or "").strip().rstrip("/")
     if not base:
         try:
             base = request.host_url.rstrip("/")
@@ -810,24 +811,85 @@ def participant_me():
     if err or not user_id:
         return render_template("participant_me.html", error=err or "Неверная ссылка", user_id=None), 403
     data = _load_users()
-    u = data.get("users", {}).get(str(user_id))
+    from services.participant_me_source import build_participant_user_for_me
+
+    u = build_participant_user_for_me(int(user_id), data)
     if not u:
         return render_template("participant_me.html", error="Профиль не найден", user_id=None), 404
-    from user_stats import get_user
-    u = get_user(int(user_id), u.get("display_name", ""))
     my_connections, me_chat_ids = _collect_user_connections(user_id=user_id, chat_id=None, limit=50)
+    from user_stats import get_user_display_names
+    from services.participant_similarity import build_participant_similarity_peers
     from utils.labels import TONE_RU, TOPIC_RU
     from services.portrait_image import PORTRAIT_IMAGES_DIR
     portrait_path = PORTRAIT_IMAGES_DIR / f"{user_id}.png"
     portrait_exists = portrait_path.exists()
     me_url_refresh = _participant_me_url(user_id, request.host_url.rstrip("/"))
+    try:
+        similarity_peers = build_participant_similarity_peers(
+            int(user_id),
+            me_chat_ids,
+            my_connections,
+            get_user_display_names(),
+            str(u.get("rank") or "unknown"),
+        )
+    except Exception as e:
+        logger.warning("build_participant_similarity_peers failed uid=%s: %s", user_id, e)
+        similarity_peers = {
+            "ok": False,
+            "source": None,
+            "most": None,
+            "least": None,
+            "single_peer": False,
+            "empty_reason": "Не удалось рассчитать сходство. Попробуйте обновить страницу позже.",
+        }
+    effective_tone = _get_effective_tone(u)
+    from services.graph_api import build_graph_payload
+    from services.participant_me_dashboard import build_me_dashboard
+
+    try:
+        graph_for_page = build_graph_payload(None, period="7d", ego_user=int(user_id))
+    except Exception as e:
+        logger.warning("build_graph_payload for /me: %s", e)
+        graph_for_page = {"nodes": [], "edges": [], "meta": {}}
+    try:
+        me_dash = build_me_dashboard(
+            int(user_id),
+            token,
+            u,
+            effective_tone,
+            my_connections,
+            similarity_peers,
+            portrait_exists,
+            graph_for_page,
+        )
+    except Exception as e:
+        logger.warning("build_me_dashboard: %s", e)
+        me_dash = {
+            "token_expires_date": None,
+            "token_expires_seconds": None,
+            "msgs_7d": 0,
+            "msgs_30d": 0,
+            "political_signals_7d": None,
+            "top_topics": [],
+            "top_tones": [],
+            "personality_drift": None,
+            "quote": None,
+            "bridges": [],
+            "qod_enabled": False,
+            "qod_destination": "chat",
+            "qod_destination_ru": "в чат",
+            "qod_last_asked": "—",
+            "badges": [],
+            "summary_plain": "",
+        }
+    support_contact_line = (os.getenv("ME_PAGE_SUPPORT_TEXT") or os.getenv("SUPPORT_CONTACT_TEXT") or "").strip()
     return render_template(
         "participant_me.html",
         error=None,
         user_id=str(user_id),
         u=u,
         rank_labels=RANK_LABELS,
-        effective_tone=_get_effective_tone(u),
+        effective_tone=effective_tone,
         my_connections=my_connections,
         tone_ru=TONE_RU,
         topic_ru=TOPIC_RU,
@@ -835,6 +897,9 @@ def participant_me():
         me_url=me_url_refresh,
         me_chat_ids=me_chat_ids,
         me_token=token,
+        similarity_peers=similarity_peers,
+        me_dash=me_dash,
+        support_contact_line=support_contact_line,
     )
 
 
@@ -847,7 +912,14 @@ def _collect_user_connections(user_id: int, chat_id: int | None, limit: int = 50
         r for r in connections_all
         if int(r.get("user_a", 0) or 0) == int(user_id) or int(r.get("user_b", 0) or 0) == int(user_id)
     ]
-    my_connections = sorted(my_connections, key=lambda r: int(r.get("message_count_7d", 0) or 0), reverse=True)[:max(1, int(limit))]
+    my_connections = sorted(
+        my_connections,
+        key=lambda r: (
+            int(r.get("message_count_7d", 0) or 0),
+            str(r.get("last_updated") or ""),
+        ),
+        reverse=True,
+    )[: max(1, int(limit))]
     my_chat_ids = sorted(
         {
             int(r.get("chat_id", 0) or 0)
@@ -1810,6 +1882,80 @@ def api_chat_topic_recommendation():
             ok, err, _ = _send_telegram_message(cid, rec)
             sent = ok
         return jsonify({"ok": True, "recommendation": rec, "sent": sent, "send_error": err})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/chat/revive-preview", methods=["POST"])
+@login_required
+def api_chat_revive_preview():
+    """Генерация вопроса «оживить чат» по сегодняшнему логу и сводкам (превью в админке)."""
+    try:
+        data = request.get_json() or {}
+        chat_id = data.get("chat_id")
+        if chat_id is None or str(chat_id).strip().lower() == "all":
+            return jsonify({"ok": False, "error": "Выберите конкретный чат"}), 400
+        try:
+            cid = int(chat_id)
+        except (ValueError, TypeError):
+            return jsonify({"ok": False, "error": "Некорректный chat_id"}), 400
+        from user_stats import get_chats
+
+        known = {int(c["chat_id"]) for c in get_chats()}
+        if cid not in known:
+            return jsonify({"ok": False, "error": "Чат не найден в списке"}), 400
+
+        import social_graph
+        from ai_analyzer import generate_chat_revive_question
+
+        ctx = social_graph.build_chat_revive_prompt_context(cid)
+        title = next((c.get("title") or str(cid) for c in get_chats() if int(c["chat_id"]) == cid), str(cid))
+        question = generate_chat_revive_question(
+            chat_title=str(title),
+            meta=str(ctx.get("meta") or ""),
+            body=str(ctx.get("body") or ""),
+        )
+        return jsonify(
+            {
+                "ok": True,
+                "question": question,
+                "had_live_dialogue": bool(ctx.get("had_live_dialogue")),
+                "message_count_today": int(ctx.get("message_count_today") or 0),
+                "context_source": str(ctx.get("context_source") or ""),
+            }
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/chat/revive-send", methods=["POST"])
+@login_required
+def api_chat_revive_send():
+    """Отправка согласованного вопроса в выбранный чат от имени бота."""
+    try:
+        data = request.get_json() or {}
+        chat_id = data.get("chat_id")
+        question = (data.get("question") or "").strip()
+        if chat_id is None or str(chat_id).strip().lower() == "all":
+            return jsonify({"ok": False, "error": "Выберите конкретный чат"}), 400
+        if not question:
+            return jsonify({"ok": False, "error": "Пустой текст вопроса"}), 400
+        if len(question) > 1200:
+            return jsonify({"ok": False, "error": "Текст слишком длинный"}), 400
+        try:
+            cid = int(chat_id)
+        except (ValueError, TypeError):
+            return jsonify({"ok": False, "error": "Некорректный chat_id"}), 400
+        from user_stats import get_chats
+
+        known = {int(c["chat_id"]) for c in get_chats()}
+        if cid not in known:
+            return jsonify({"ok": False, "error": "Чат не найден в списке"}), 400
+
+        ok, err, _msg_id = _send_telegram_message(cid, question)
+        if ok:
+            return jsonify({"ok": True, "message": "Отправлено в чат."})
+        return jsonify({"ok": False, "error": err or "Ошибка отправки"}), 500
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -2780,9 +2926,12 @@ def api_me_graph_compat():
     ego = int(ego_raw) if ego_raw.isdigit() else None
     if token_user_id is not None:
         ego = int(token_user_id)
-    payload = build_graph_payload(None, period="7d", ego_user=ego)
+    chat_filter, chat_err = _parse_chat_id_arg("chat_id")
+    if chat_err:
+        return jsonify({"ok": False, "error": chat_err}), 400
+    payload = build_graph_payload(chat_filter, period="7d", ego_user=ego)
     version = _graph_build_version(payload)
-    scope = _graph_snapshot_scope(None, "7d", ego, None)
+    scope = _graph_snapshot_scope(chat_filter, "7d", ego, None)
     _graph_history_set(scope, version, payload, ttl_sec=360)
     return jsonify({"ok": True, "graph": payload, "graph_version": version})
 
@@ -2796,11 +2945,14 @@ def api_me_graph_delta():
     if err or not user_id:
         return jsonify({"ok": False, "error": err or "Неверная ссылка"}), 403
     since_version = (request.args.get("since") or "").strip()
+    chat_filter, chat_err = _parse_chat_id_arg("chat_id")
+    if chat_err:
+        return jsonify({"ok": False, "error": chat_err}), 400
 
     ego = int(user_id)
-    current = build_graph_payload(None, period="7d", ego_user=ego)
+    current = build_graph_payload(chat_filter, period="7d", ego_user=ego)
     current_version = _graph_build_version(current)
-    scope = _graph_snapshot_scope(None, "7d", ego, None)
+    scope = _graph_snapshot_scope(chat_filter, "7d", ego, None)
     history = _graph_history_get(scope)
     latest = history.get("latest") if isinstance(history, dict) else None
     prev = history.get("prev") if isinstance(history, dict) else None
@@ -2840,9 +2992,70 @@ def api_me_graph_version():
     user_id, err = _participant_verify(token)
     if err or not user_id:
         return jsonify({"ok": False, "error": err or "Неверная ссылка"}), 403
+    chat_filter, chat_err = _parse_chat_id_arg("chat_id")
+    if chat_err:
+        return jsonify({"ok": False, "error": chat_err}), 400
     import social_graph
 
-    return jsonify({"ok": True, "version": f"{social_graph.get_graph_version()}|u{int(user_id)}"})
+    cid = "all" if chat_filter is None else str(int(chat_filter))
+    return jsonify({"ok": True, "version": f"{social_graph.get_graph_version()}|u{int(user_id)}|c{cid}"})
+
+
+@app.route("/api/me/refresh-portrait", methods=["POST"])
+def api_me_refresh_portrait():
+    """Обновление глубокого портрета участника по токену /me (как portrait-from-storage, без Bearer)."""
+    from ai_analyzer import build_deep_portrait_from_messages
+    from api.routers import portrait as portrait_router
+    from services.participant_me_source import merge_portrait_into_main_db_user_profile, messages_for_deep_portrait
+    from user_stats import get_user, set_deep_portrait
+
+    body = request.get_json(silent=True) or {}
+    token = (body.get("token") or request.args.get("token") or "").strip()
+    user_id, err = _participant_verify(token)
+    if err or not user_id:
+        return jsonify({"ok": False, "error": err or "Неверная ссылка"}), 403
+
+    chat_raw = body.get("chat_id", "all")
+    chat_id_int = None
+    if chat_raw not in (None, "", "all"):
+        crs = str(chat_raw).strip()
+        if crs.lstrip("-").isdigit():
+            chat_id_int = int(crs)
+
+    uid_int = int(user_id)
+    uid_str = str(uid_int)
+    if uid_str in portrait_router._portrait_building:
+        return jsonify({"ok": False, "error": "Портрет уже создаётся. Подождите."}), 429
+
+    portrait_router._portrait_building.add(uid_str)
+    try:
+        messages = messages_for_deep_portrait(uid_int, chat_id_int)
+        if not messages:
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": "Нет сообщений для анализа. Напишите в чате или подождите, пока бот сохранит историю.",
+                }
+            ), 400
+        u = get_user(uid_int, "")
+        display_name = str(u.get("display_name") or user_id)
+        portrait, rank = build_deep_portrait_from_messages(messages, display_name)
+        set_deep_portrait(uid_int, portrait, rank)
+        merge_portrait_into_main_db_user_profile(uid_int, portrait, rank)
+        preview = (portrait[:500] + "…") if len(portrait) > 500 else portrait
+        return jsonify(
+            {
+                "ok": True,
+                "messages_count": len(messages),
+                "portrait_preview": preview,
+                "rank": rank,
+            }
+        )
+    except Exception as e:
+        logger.exception("api_me_refresh_portrait: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        portrait_router._portrait_building.discard(uid_str)
 
 
 @app.route("/api/log-tail")

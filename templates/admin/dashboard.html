@@ -74,7 +74,18 @@
         Живые обновления
       </label>
       <button class="btn" id="loadGraphBtn">Загрузить</button>
+      <button type="button" class="btn btn-secondary" id="reviveChatBtn" title="Сгенерировать вопрос по сегодняшней беседе">Оживить чат</button>
       <span id="graphLiveStatus" class="live-status live-status-neutral">Live: инициализация</span>
+    </div>
+    <div id="reviveChatPanel" style="display:none;margin-top:10px;padding:12px;border:1px solid var(--border-card);border-radius:10px;background:var(--bg-tertiary);max-width:min(920px,100%);">
+      <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">Превью вопроса (в чат ещё не ушёл):</div>
+      <div id="reviveChatPreviewText" style="font-size:14px;line-height:1.45;margin-bottom:10px;color:var(--text-primary);white-space:pre-wrap;"></div>
+      <div id="reviveChatMeta" style="font-size:11px;color:var(--text-secondary);margin-bottom:10px;"></div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+        <button type="button" class="btn btn-secondary btn-sm" id="reviveChatRegenBtn">Перегенерировать</button>
+        <button type="button" class="btn btn-sm" id="reviveChatSendBtn">Отправить в чат</button>
+        <button type="button" class="btn btn-secondary btn-sm" id="reviveChatCloseBtn">Скрыть</button>
+      </div>
     </div>
   </div>
 </div>
@@ -312,6 +323,7 @@ let _labGraphState = {nodes: [], edges: [], meta: {}};
 let _labLoadedOnce = false;
 let _selectedGraphNodeId = null;
 let _selectedGraphNodeSnapshot = null;
+let _reviveChatDraft = '';
 const _chatModeJsonEl = document.getElementById('chatModeDescriptionsJson');
 const CHAT_MODE_DESCRIPTIONS = JSON.parse((_chatModeJsonEl && _chatModeJsonEl.textContent) || '{}');
 
@@ -409,6 +421,37 @@ function graphNodeById(nodeId) {
   return null;
 }
 
+function graphMatrixPairSummaryHtml(primaryName, peerName, mp) {
+  const wp = Number(mp && mp.weightPeriod);
+  const wt = Number(mp && mp.weightTotal);
+  const wmx = Number(mp && mp.weightMatrix);
+  const a = Number(mp && mp.msgsRowToCol);
+  const b = Number(mp && mp.msgsColToRow);
+  const lines = [];
+  if (Number.isFinite(wp) && wp > 0) {
+    lines.push(`Активность пары за период графа (вес ребра): <strong>${wp.toFixed(1)}</strong>.`);
+  } else if (Number.isFinite(wmx) && wmx > 0) {
+    lines.push(`Сила связи в матрице: <strong>${wmx.toFixed(1)}</strong>.`);
+  }
+  if (Number.isFinite(wt) && wt > 0 && Math.abs(wt - wp) > 0.5) {
+    lines.push(`Суммарный вес связи (всего): ${wt.toFixed(1)}.`);
+  }
+  if (a > 0 || b > 0) {
+    lines.push(
+      `Сообщений (оценка по направлениям): <strong>${esc(primaryName)}</strong> → <strong>${esc(peerName)}</strong>: ${a}; обратно: ${b}.`
+    );
+  }
+  if (mp && mp.crossCommunity) {
+    lines.push('Связь между разными сообществами (мост).');
+  } else if (mp && Number(mp.bridgeScore) >= 0.45) {
+    lines.push('Повышенный «мостовой» индекс у ребра.');
+  }
+  if (!lines.length) {
+    lines.push('Детальная статистика по этой паре в данных графа не размечена.');
+  }
+  return lines.map((h) => `<div class="graph-node-panel-row">${h}</div>`).join('');
+}
+
 function graphNodeDegree(nodeId) {
   const target = Number(nodeId || 0);
   if (!Number.isFinite(target) || target === 0) {
@@ -451,8 +494,37 @@ function renderGraphNodePanel(snapshot) {
   const degree = Number(node.degree || graphNodeDegree(uid));
   const neighbors = Number(node.neighbor_count || degree || 0);
   const lastActivity = String(node.last_activity || node.last_active || node.last_seen || 'нет данных');
-  panel.innerHTML = `
+  const mp = node.matrixPair && typeof node.matrixPair === 'object' ? node.matrixPair : null;
+  const peerIdNum = mp != null ? Number(mp.peerId) : NaN;
+  const peerId =
+    Number.isFinite(peerIdNum) && peerIdNum > 0 ? peerIdNum : 0;
+  const peerSnap = peerId ? graphNodeById(peerId) : null;
+  let peerName = mp && String(mp.peerLabel || '').trim();
+  if (!peerName && peerSnap) {
+    peerName = String(peerSnap.label || peerSnap.username || peerId);
+  }
+  if (!peerName || peerName === String(peerId)) {
+    peerName = peerId ? `Участник (ID: ${peerId})` : '';
+  }
+  const pairBlock =
+    mp && peerId > 0
+      ? `
+    <div class="graph-node-panel-title">Пара в матрице</div>
+    <div class="graph-node-pair-links" style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:10px;line-height:1.35;">
+      <a href="${userProfileUrl(uid, chat)}" style="font-weight:700;">${esc(name)}</a>
+      <span style="color:var(--text-secondary);">↔</span>
+      <a href="${userProfileUrl(peerId, chat)}" style="font-weight:700;">${esc(peerName)}</a>
+    </div>
+    <div class="graph-node-pair-summary" style="margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--border-input,rgba(148,163,184,0.35));">
+      ${graphMatrixPairSummaryHtml(name, peerName, mp)}
+    </div>
+    <div class="graph-node-panel-title" style="font-size:14px;margin-bottom:6px;">Строка матрицы: ${esc(name)}</div>
+  `
+      : `
     <div class="graph-node-panel-title">${esc(name)}</div>
+  `;
+  panel.innerHTML = `
+    ${pairBlock}
     <div class="graph-node-panel-row"><strong>ID:</strong> ${esc(uid)}</div>
     <div class="graph-node-panel-row"><strong>Ранг:</strong> ${esc(rank)}</div>
     <div class="graph-node-panel-row"><strong>Индекс влияния:</strong> ${fmt(influence, 3)}</div>
@@ -461,6 +533,7 @@ function renderGraphNodePanel(snapshot) {
     <div class="graph-node-panel-row"><strong>Последняя активность:</strong> ${esc(lastActivity)}</div>
     <div class="graph-node-panel-actions">
       <a class="btn btn-secondary btn-sm" href="${userProfileUrl(uid, chat)}">Открыть профиль</a>
+      ${mp && peerId > 0 ? `<a class="btn btn-secondary btn-sm" href="${userProfileUrl(peerId, chat)}">Профиль второго</a>` : ''}
       <button class="btn btn-secondary btn-sm" type="button" id="clearGraphSelectionBtn">Сбросить выделение</button>
     </div>
   `;
@@ -485,7 +558,14 @@ function handleGraphNodeSelect(payload) {
     renderGraphFromState();
     return;
   }
-  if (Number(_selectedGraphNodeId || 0) === selectedId) {
+  const prevId = Number(_selectedGraphNodeId || 0);
+  const prevPeer =
+    _selectedGraphNodeSnapshot && _selectedGraphNodeSnapshot.matrixPair
+      ? Number(_selectedGraphNodeSnapshot.matrixPair.peerId || 0)
+      : 0;
+  const newPeer =
+    node && node.matrixPair ? Number(node.matrixPair.peerId || 0) : 0;
+  if (prevId === selectedId && prevPeer === newPeer) {
     _selectedGraphNodeId = null;
     _selectedGraphNodeSnapshot = null;
     renderGraphNodePanel(null);
@@ -494,7 +574,13 @@ function handleGraphNodeSelect(payload) {
   }
   const fresh = graphNodeById(selectedId) || {};
   _selectedGraphNodeId = selectedId;
-  _selectedGraphNodeSnapshot = { ...fresh, ...node, id: selectedId };
+  const snap = { ...fresh, ...node, id: selectedId };
+  if (node && node.matrixPair && typeof node.matrixPair === 'object') {
+    snap.matrixPair = { ...node.matrixPair };
+  } else {
+    delete snap.matrixPair;
+  }
+  _selectedGraphNodeSnapshot = snap;
   renderGraphNodePanel(_selectedGraphNodeSnapshot);
   renderGraphFromState();
 }
@@ -805,6 +891,11 @@ async function loadAndRender() {
     const fresh = graphNodeById(_selectedGraphNodeId);
     if (fresh) {
       _selectedGraphNodeSnapshot = { ...fresh, ...(_selectedGraphNodeSnapshot || {}) };
+      const mp = _selectedGraphNodeSnapshot && _selectedGraphNodeSnapshot.matrixPair;
+      const pid = mp && Number(mp.peerId);
+      if (pid && !graphNodeById(pid)) {
+        delete _selectedGraphNodeSnapshot.matrixPair;
+      }
       renderGraphNodePanel(_selectedGraphNodeSnapshot);
     }
   }
@@ -896,6 +987,18 @@ async function fetchAndApplyDelta() {
     applyGraphDelta(body.delta || {}, body.graph_version || '');
     updateGraphMetaLine(_graphState);
     renderGraphFromState();
+    if (_selectedGraphNodeId) {
+      const fresh = graphNodeById(_selectedGraphNodeId);
+      if (fresh && _selectedGraphNodeSnapshot) {
+        _selectedGraphNodeSnapshot = { ...fresh, ..._selectedGraphNodeSnapshot };
+        const mp = _selectedGraphNodeSnapshot.matrixPair;
+        const pid = mp && Number(mp.peerId);
+        if (pid && !graphNodeById(pid)) {
+          delete _selectedGraphNodeSnapshot.matrixPair;
+        }
+        renderGraphNodePanel(_selectedGraphNodeSnapshot);
+      }
+    }
     await loadInsights(chat, { forceRefresh: false });
   })();
   try {
@@ -1792,6 +1895,98 @@ document.getElementById('loadGraphBtn').addEventListener('click', () => {
   });
 });
 
+document.getElementById('reviveChatBtn').addEventListener('click', () => {
+  runReviveChatPreview(false).catch((e) => showToast(e.message || String(e), 'error'));
+});
+document.getElementById('reviveChatRegenBtn').addEventListener('click', () => {
+  runReviveChatPreview(true).catch((e) => showToast(e.message || String(e), 'error'));
+});
+document.getElementById('reviveChatSendBtn').addEventListener('click', () => {
+  sendReviveChatQuestion().catch((e) => showToast(e.message || String(e), 'error'));
+});
+document.getElementById('reviveChatCloseBtn').addEventListener('click', () => {
+  const panel = document.getElementById('reviveChatPanel');
+  if (panel) panel.style.display = 'none';
+  _reviveChatDraft = '';
+});
+
+async function runReviveChatPreview(isRegen) {
+  const chat = selectedChatIdForOps();
+  const panel = document.getElementById('reviveChatPanel');
+  const preview = document.getElementById('reviveChatPreviewText');
+  const metaEl = document.getElementById('reviveChatMeta');
+  const btn = document.getElementById('reviveChatBtn');
+  const regen = document.getElementById('reviveChatRegenBtn');
+  const send = document.getElementById('reviveChatSendBtn');
+  if (!chat) {
+    showToast('Выберите конкретный чат (не «Все чаты»).', 'warn');
+    return;
+  }
+  if (btn) btn.disabled = true;
+  if (regen) regen.disabled = true;
+  if (send) send.disabled = true;
+  if (panel) panel.style.display = 'block';
+  if (preview) preview.textContent = isRegen ? 'Перегенерирую…' : 'Генерирую вопрос…';
+  if (metaEl) metaEl.textContent = '';
+  try {
+    const body = await requestJson('/api/chat/revive-preview', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ chat_id: chat }),
+    });
+    _reviveChatDraft = String(body.question || '').trim();
+    if (preview) preview.textContent = _reviveChatDraft || '—';
+    const parts = [];
+    if (body.had_live_dialogue) {
+      parts.push(`В логе за сегодня: ${body.message_count_today} сообщ.`);
+    } else {
+      parts.push('За сегодня в логе мало данных — опираемся на сводки связей.');
+    }
+    if (body.context_source) {
+      parts.push(`Контекст: ${body.context_source}.`);
+    }
+    if (metaEl) metaEl.textContent = parts.join(' ');
+    showToast(isRegen ? 'Вопрос обновлён.' : 'Вопрос сгенерирован.', 'success');
+  } catch (e) {
+    _reviveChatDraft = '';
+    if (preview) preview.textContent = '';
+    if (metaEl) metaEl.textContent = '';
+    throw e;
+  } finally {
+    if (btn) btn.disabled = false;
+    if (regen) regen.disabled = false;
+    if (send) send.disabled = false;
+  }
+}
+
+async function sendReviveChatQuestion() {
+  const chat = selectedChatIdForOps();
+  const send = document.getElementById('reviveChatSendBtn');
+  const q = (_reviveChatDraft || '').trim();
+  if (!chat) {
+    showToast('Выберите конкретный чат.', 'warn');
+    return;
+  }
+  if (!q) {
+    showToast('Сначала сгенерируйте вопрос.', 'warn');
+    return;
+  }
+  if (send) send.disabled = true;
+  try {
+    await requestJson('/api/chat/revive-send', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ chat_id: chat, question: q }),
+    });
+    showToast('Вопрос отправлен в чат.', 'success');
+    const panel = document.getElementById('reviveChatPanel');
+    if (panel) panel.style.display = 'none';
+    _reviveChatDraft = '';
+  } finally {
+    if (send) send.disabled = false;
+  }
+}
+
 function collectChatIdsForSelection() {
   const chatSel = document.getElementById('chatSel');
   if (!chatSel) {
@@ -1933,6 +2128,9 @@ document.getElementById('chatSel').addEventListener('change', () => {
   _selectedGraphNodeId = null;
   _selectedGraphNodeSnapshot = null;
   renderGraphNodePanel(null);
+  const revivePanel = document.getElementById('reviveChatPanel');
+  if (revivePanel) revivePanel.style.display = 'none';
+  _reviveChatDraft = '';
   _graphVersion = '';
   loadAndRender().catch(() => {});
   restartRealtime();

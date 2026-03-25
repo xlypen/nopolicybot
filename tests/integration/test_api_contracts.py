@@ -826,7 +826,34 @@ def test_api_me_graph_version_contract(monkeypatch):
         assert resp.status_code == 200
         body = resp.get_json()
         assert body["ok"] is True
-        assert body["version"] == "v-test|u123"
+        assert body["version"].startswith("v-test|u123|c")
+
+
+def test_api_me_refresh_portrait_contract(monkeypatch):
+    monkeypatch.setattr(admin_app, "_participant_verify", lambda token: (123, None) if token else (None, "Нет токена"))
+    import services.participant_me_source as pms
+
+    monkeypatch.setattr(
+        pms,
+        "messages_for_deep_portrait",
+        lambda uid, cid: [{"text": "hello", "date": "2025-01-01"}],
+    )
+    monkeypatch.setattr(pms, "merge_portrait_into_main_db_user_profile", lambda *a, **k: None)
+
+    def _fake_build(msgs, name):
+        return ("## Психологический портрет\n\nТест", "neutral")
+
+    monkeypatch.setattr("ai_analyzer.build_deep_portrait_from_messages", _fake_build)
+    monkeypatch.setattr("user_stats.set_deep_portrait", lambda uid, p, r: True)
+    with admin_app.app.test_client() as client:
+        bad = client.post("/api/me/refresh-portrait", json={})
+        assert bad.status_code == 403
+        resp = client.post("/api/me/refresh-portrait", json={"token": "t"})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["messages_count"] == 1
+        assert "portrait_preview" in body
 
 
 def test_api_me_graph_delta_contract(monkeypatch):

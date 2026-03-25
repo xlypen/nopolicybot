@@ -146,6 +146,7 @@ def test_dashboard_load(session: requests.Session, results: TestResult) -> Tuple
             ("modeSel", "Mode selector missing"),
             ("labApplyFilters", "Apply & Render button missing"),
             ("labPredictConflicts", "Predict button missing"),
+            ("reviveChatBtn", "Revive chat button missing"),
         ]
         
         for element, error_msg in required_elements:

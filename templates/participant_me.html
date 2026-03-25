@@ -73,6 +73,90 @@
   border-radius: 10px;
   overflow: auto;
 }
+.me-portrait-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0.5rem 0 0.35rem;
+}
+.me-portrait-status { font-size: 0.85rem; color: var(--text-muted); min-height: 1.2em; }
+.me-connections-details {
+  margin-top: 1.25rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+}
+.me-connections-details > summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 1rem;
+  list-style: none;
+}
+.me-connections-details > summary::-webkit-details-marker { display: none; }
+.me-connections-details > summary::before {
+  content: "▸ ";
+  display: inline-block;
+  transition: transform 0.15s ease;
+  color: var(--text-muted);
+}
+.me-connections-details[open] > summary::before { transform: rotate(90deg); }
+.me-connections-inner { margin-top: 0.65rem; }
+.me-similarity-block {
+  margin-top: 1rem;
+  padding: 0.85rem 1rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-left: 4px solid #e94560;
+  border-radius: 10px;
+}
+.me-quick-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.75rem 0 1rem;
+  padding: 0.35rem 0;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--bg-primary, #fff);
+  border-bottom: 1px solid var(--border-light);
+}
+.me-quick-nav a {
+  font-size: 0.82rem;
+  padding: 0.35rem 0.65rem;
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  color: var(--text-primary);
+  text-decoration: none;
+}
+.me-quick-nav a:hover { border-color: #e94560; color: #e94560; }
+.me-dash-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.me-section-card {
+  margin-top: 1rem;
+  padding: 0.85rem 1rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+}
+.me-section-card h2 { font-size: 1rem; margin: 0 0 0.5rem 0; }
+.me-chip-row { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.35rem 0; }
+.me-chip {
+  font-size: 0.78rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 6px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-card);
+}
+.me-pill-list { margin: 0.25rem 0 0 1rem; padding: 0; font-size: 0.88rem; color: var(--text-muted); }
+.me-pill-list li { margin: 0.2rem 0; }
 </style>
 {% endblock %}
 {% block body %}
@@ -84,7 +168,7 @@
   <h1>Мой профиль</h1>
   <div class="participant-header">
     {% if portrait_exists %}
-    <img src="{{ url_for('participant_me_portrait') }}?token={{ request.args.get('token', '') }}" alt="Портрет" class="participant-portrait">
+    <img id="me-portrait-img" src="{{ url_for('participant_me_portrait') }}?token={{ request.args.get('token', '') }}" alt="Портрет" class="participant-portrait">
     {% endif %}
     <div>
       <p><strong>{{ u.get('display_name', user_id) }}</strong></p>
@@ -96,38 +180,186 @@
       </div>
     </div>
   </div>
-  {% if u.get('portrait') %}
-  <div style="margin-top: 1rem;">
-    <h2 style="font-size: 1rem;">Психологический портрет</h2>
-    <div style="white-space: pre-wrap; line-height: 1.5; font-size: 0.9rem;">{{ u.get('portrait', '') }}</div>
-  </div>
-  {% endif %}
 
-  <h2 style="font-size: 1rem; margin-top: 1.5rem;">Мои связи в чатах</h2>
-  <p class="text-muted" style="font-size: 0.9rem;">С кем вы чаще всего общаетесь, темы и тон диалогов.</p>
-  {% if my_connections %}
-  <ul class="connections-list">
-  {% for r in my_connections %}
-    <li>
-      <span class="peer-name">{{ r.get('peer_name', '—') }}</span>
-      <div class="meta">
-        Тон: {{ tone_ru.get(r.get('tone'), r.get('tone')) }} ·
-        Темы: {{ (r.get('topics') or [])|join(', ') or '—' }} ·
-        Сообщений (7 дн.): {{ r.get('message_count_7d', 0) }}
-      </div>
-      {% if r.get('summary') %}
-      <div style="font-size: 0.85rem; margin-top: 0.35rem; color: var(--text-muted);">{{ r.get('summary')[:200] }}{% if r.get('summary')|length > 200 %}…{% endif %}</div>
+  <nav class="me-quick-nav" aria-label="Разделы страницы">
+    <a href="#me-overview">Обзор</a>
+    <a href="#me-similarity">Сходство</a>
+    <a href="#me-activity">Активность</a>
+    <a href="#me-personality">Личность</a>
+    <a href="#me-qod">Вопрос дня</a>
+    <a href="#me-portrait">Портрет</a>
+    <a href="#me-bridges">Мосты</a>
+    <a href="#me-connections">Связи</a>
+    <a href="#me-graph">Граф</a>
+    <a href="#me-privacy">Данные</a>
+  </nav>
+
+  <div class="me-section-card" id="me-overview">
+    <h2>Обзор</h2>
+    {% if me_dash.token_expires_date %}
+    <p class="text-muted" style="font-size: 0.88rem; margin: 0 0 0.35rem 0;">Ссылка на эту страницу действует примерно до <strong>{{ me_dash.token_expires_date }}</strong> (UTC). После этого запросите новую командой <strong>/me</strong> у бота.</p>
+    {% endif %}
+    {% if me_dash.badges %}
+    <div class="me-chip-row" aria-label="Достижения">
+      {% for b in me_dash.badges %}
+      <span class="me-chip">{{ b }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <div class="me-dash-grid">
+      <div class="participant-stat">Сообщ. за 7 дн.<br><strong>{{ me_dash.msgs_7d }}</strong></div>
+      <div class="participant-stat">Сообщ. за 30 дн.<br><strong>{{ me_dash.msgs_30d }}</strong></div>
+      {% if me_dash.political_signals_7d is not none %}
+      <div class="participant-stat">Полит. сигналы (7 дн.)<br><strong>{{ me_dash.political_signals_7d }}</strong></div>
       {% endif %}
-    </li>
-  {% endfor %}
-  </ul>
-  {% else %}
-  <p class="text-muted">Пока нет данных о связях. Они обновляются по мере общения в чате.</p>
-  {% endif %}
-  <div class="me-graph-wrap">
+    </div>
+    {% if me_dash.quote %}
+    <p style="font-size: 0.88rem; margin: 0.65rem 0 0 0; font-style: italic; color: var(--text-muted);">«{{ me_dash.quote }}»</p>
+    <p class="text-muted" style="font-size: 0.75rem; margin: 0.2rem 0 0 0;">Случайная короткая цитата из ваших сохранённых сообщений (не для публикации).</p>
+    {% endif %}
+    <div style="margin-top: 0.65rem;">
+      <button type="button" class="btn btn-secondary" id="meCopySummaryBtn">Скопировать краткое резюме</button>
+      <span class="text-muted" style="font-size: 0.8rem; margin-left: 0.5rem;" id="meCopySummaryHint"></span>
+    </div>
+    <script type="application/json" id="me-summary-data">{{ me_dash.summary_plain | tojson }}</script>
+  </div>
+
+  <div class="me-similarity-block" id="me-similarity">
+    <h2 style="font-size: 1rem; margin: 0 0 0.5rem 0;">С кем вы ближе и дальше в чате</h2>
+    {% if similarity_peers is defined and similarity_peers and similarity_peers.get('ok') %}
+      {% if similarity_peers.source == 'heuristic' %}
+      <p class="text-muted" style="font-size: 0.82rem; margin: 0 0 0.5rem 0;">Оценка по рангу полит. взглядов и силе связи в графе. Точнее — после расчёта профилей личности (OCEAN, P-1) у участников.</p>
+      {% else %}
+      <p class="text-muted" style="font-size: 0.82rem; margin: 0 0 0.5rem 0;">Сравнение по профилю «большой пятерки» (OCEAN) в каждом чате, где есть расчёты для вас и собеседника.</p>
+      {% endif %}
+      {% set m = similarity_peers.most %}
+      {% if m %}
+      <p style="margin: 0.35rem 0; font-size: 0.92rem;"><strong>Наиболее похожи</strong>: {{ m.peer_name }} · чат {{ m.chat_id }} · индекс сходства ≈ {{ (m.score * 100)|round|int }}%</p>
+      <p class="text-muted" style="font-size: 0.8rem; margin: 0 0 0.35rem 1rem;">{{ m.hint }}</p>
+      {% endif %}
+      {% set l = similarity_peers.least %}
+      {% if l %}
+      <p style="margin: 0.35rem 0; font-size: 0.92rem;"><strong>Наименее похожи</strong>: {{ l.peer_name }} · чат {{ l.chat_id }} · индекс сходства ≈ {{ (l.score * 100)|round|int }}%</p>
+      <p class="text-muted" style="font-size: 0.8rem; margin: 0 0 0.35rem 1rem;">{{ l.hint }}</p>
+      {% elif similarity_peers.single_peer %}
+      <p class="text-muted" style="font-size: 0.85rem; margin: 0.35rem 0 0 0;">Чтобы показать «наименее похожего», нужен ещё хотя бы один участник с подходящими данными в ваших чатах.</p>
+      {% endif %}
+    {% else %}
+      <p class="text-muted" style="font-size: 0.9rem; margin: 0;">{% if similarity_peers is defined and similarity_peers %}{{ similarity_peers.get('empty_reason', 'Нет данных для сравнения.') }}{% else %}Нет данных для сравнения. Обновите страницу (Ctrl+Shift+R) или зайдите позже.{% endif %}</p>
+    {% endif %}
+    <details style="margin-top: 0.65rem;">
+      <summary class="text-muted" style="cursor: pointer; font-size: 0.85rem;">Что означает индекс сходства?</summary>
+      <p class="text-muted" style="font-size: 0.82rem; margin: 0.4rem 0 0 0;">Это не «насколько вы друзья», а насколько близки <strong>модельные оценки черт</strong> (OCEAN) или, в упрощённом режиме, ранг и активность в графе. Индекс 80% не гарантирует совпадение взглядов на жизнь — только сходство в численном профиле, посчитанном ботом.</p>
+    </details>
+  </div>
+
+  <div class="me-section-card" id="me-activity">
+    <h2>Активность и темы в диалогах</h2>
+    <p class="text-muted" style="font-size: 0.85rem; margin: 0 0 0.5rem 0;">Счётчики сообщений — из основной базы; темы и тоны — по связям графа (вес по активности за 7 дней).</p>
+    {% if me_dash.top_tones %}
+    <p style="font-size: 0.88rem; margin: 0.25rem 0;"><strong>Тоны</strong> в парах:</p>
+    <ul class="me-pill-list">
+      {% for tone, cnt in me_dash.top_tones %}
+      <li>{{ tone_ru.get(tone, tone) }} — вес {{ cnt }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% if me_dash.top_topics %}
+    <p style="font-size: 0.88rem; margin: 0.5rem 0 0.25rem 0;"><strong>Темы</strong> в связях:</p>
+    <ul class="me-pill-list">
+      {% for topic, cnt in me_dash.top_topics %}
+      <li>{{ topic_ru.get(topic, topic) }} — {{ cnt }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% if not me_dash.top_tones and not me_dash.top_topics %}
+    <p class="text-muted" style="font-size: 0.88rem;">Пока мало размеченных тем/тонов в связях.</p>
+    {% endif %}
+  </div>
+
+  <div class="me-section-card" id="me-personality">
+    <h2>Профиль личности (P-1)</h2>
+    {% if me_dash.personality_drift %}
+    <p style="font-size: 0.9rem; margin: 0;">{{ me_dash.personality_drift }}</p>
+    {% else %}
+    <p class="text-muted" style="font-size: 0.88rem; margin: 0;">Нужно как минимум два сохранённых расчёта P-1, чтобы показать сдвиг. Профили строятся в админке/пайплайне анализа личности.</p>
+    {% endif %}
+  </div>
+
+  <div class="me-section-card" id="me-qod">
+    <h2>Вопрос дня</h2>
+    <p style="font-size: 0.9rem; margin: 0;">Статус: {% if me_dash.qod_enabled %}<strong>включён</strong>{% else %}<strong>выключен</strong>{% endif %} · куда: <strong>{{ me_dash.qod_destination_ru }}</strong></p>
+    <p class="text-muted" style="font-size: 0.85rem; margin: 0.35rem 0 0 0;">Последний раз (дата в данных бота): {{ me_dash.qod_last_asked }}</p>
+    <p class="text-muted" style="font-size: 0.78rem; margin: 0.35rem 0 0 0;">Изменить можно через настройки бота в чате или у администратора.</p>
+  </div>
+
+  <div class="me-section-card" id="me-portrait">
+    <h2>Психологический портрет</h2>
+    <div class="me-portrait-actions">
+      <button type="button" class="btn btn-secondary" id="meRefreshPortraitBtn">Обновить психологический портрет</button>
+      <span class="me-portrait-status" id="mePortraitStatus" aria-live="polite"></span>
+    </div>
+    <div id="me-portrait-body" style="white-space: pre-wrap; line-height: 1.5; font-size: 0.9rem; margin-top: 0.5rem;">
+      {% if u.get('portrait') %}
+      {{ u.get('portrait', '') }}
+      {% else %}
+      <span class="text-muted">Текстовый портрет ещё не построен. Нажмите кнопку выше — бот проанализирует ваши сообщения в чатах (нужна история в базе).</span>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="me-section-card" id="me-bridges">
+    <h2>«Мосты» в графе</h2>
+    <p class="text-muted" style="font-size: 0.85rem; margin: 0 0 0.5rem 0;">Участники рядом с вами, через которых чаще проходит связность сообщества (по расчёту графа).</p>
+    {% if me_dash.bridges %}
+    <ul class="me-pill-list" style="list-style: disc;">
+      {% for br in me_dash.bridges %}
+      <li><strong>{{ br.peer_name }}</strong> (id {{ br.peer_id }}) · bridge {{ br.bridge_score }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="text-muted" style="font-size: 0.88rem;">Пока нет выделенных мостов в вашем ego-графе за 7 дней.</p>
+    {% endif %}
+  </div>
+
+  <details class="me-connections-details" id="me-connections">
+    <summary>Мои связи в чатах{% if my_connections %} ({{ my_connections|length }}){% endif %}</summary>
+    <div class="me-connections-inner">
+      <p class="text-muted" style="font-size: 0.9rem; margin-top: 0;">С кем вы чаще всего общаетесь, темы и тон — по актуальным данным графа (за 7 дней и суммарно).</p>
+      {% if my_connections %}
+      <ul class="connections-list">
+      {% for r in my_connections %}
+        <li>
+          <span class="peer-name">{{ r.get('peer_name', '—') }}</span>
+          <span class="text-muted" style="font-size: 0.8rem;"> · чат {{ r.get('chat_id', '—') }}</span>
+          <div class="meta">
+            Тон: {{ tone_ru.get(r.get('tone'), r.get('tone')) }} ·
+            Темы: {{ (r.get('topics') or [])|join(', ') or '—' }} ·
+            Сообщений (7 дн.): {{ r.get('message_count_7d', 0) }}
+            {% if r.get('message_count_30d') %} · (30 дн.): {{ r.get('message_count_30d', 0) }}{% endif %}
+          </div>
+          {% if r.get('summary') %}
+          <div style="font-size: 0.85rem; margin-top: 0.35rem; color: var(--text-muted);">{{ r.get('summary')[:200] }}{% if r.get('summary')|length > 200 %}…{% endif %}</div>
+          {% endif %}
+        </li>
+      {% endfor %}
+      </ul>
+      {% else %}
+      <p class="text-muted">Пока нет данных о связях. Они появляются по мере общения в чате.</p>
+      {% endif %}
+    </div>
+  </details>
+  <div class="me-graph-wrap" id="me-graph">
     <div class="me-graph-head">
       <h2 style="font-size: 1rem; margin: 0;">Мой граф связей (live)</h2>
       <div class="me-graph-controls">
+        <label for="me-graph-chat" class="text-muted" style="font-size: 0.85rem;">Чат</label>
+        <select id="me-graph-chat" title="Фильтр графа по чату">
+          <option value="all">Все чаты</option>
+          {% for cid in me_chat_ids %}
+          <option value="{{ cid }}">{{ cid }}</option>
+          {% endfor %}
+        </select>
         <label for="me-graph-mode" class="text-muted" style="font-size: 0.85rem;">Режим</label>
         <select id="me-graph-mode">
           <option value="force">force</option>
@@ -140,6 +372,18 @@
       </div>
     </div>
     <div id="me-graph-root" class="me-graph-root"></div>
+  </div>
+
+  <div class="me-section-card" id="me-privacy">
+    <h2>Какие данные здесь и чего нет</h2>
+    <ul class="me-pill-list" style="list-style: disc; color: var(--text-primary);">
+      <li>Показаны <strong>агрегаты</strong> и модельные оценки, а не полные логи чатов других людей.</li>
+      <li>Цитата из архива — только <strong>ваши</strong> сохранённые сообщения, случайный короткий фрагмент.</li>
+      <li>Ссылка с токеном даёт доступ к этой странице — <strong>не пересылайте</strong> её посторонним.</li>
+    </ul>
+    {% if support_contact_line %}
+    <p style="font-size: 0.88rem; margin: 0.65rem 0 0 0;">{{ support_contact_line }}</p>
+    {% endif %}
   </div>
 
   <div class="me-bookmark">
@@ -258,11 +502,17 @@
     graphVersion = String(version || graphVersion || '');
   }
 
+  function graphChatQueryParams(q){
+    var cs = document.getElementById('me-graph-chat');
+    if(cs && cs.value && cs.value !== 'all'){ q.set('chat_id', String(cs.value)); }
+  }
+
   async function fetchAndApplyDelta(){
     try{
       var q = new URLSearchParams();
       q.set('token', String(meToken || ''));
       if(graphVersion){ q.set('since', String(graphVersion)); }
+      graphChatQueryParams(q);
       var resp = await fetch('/api/me/graph-delta?' + q.toString(), { cache: 'no-store' });
       var body = await resp.json();
       if(!body || !body.ok){
@@ -284,10 +534,10 @@
   async function loadGraph(reason){
     setStatus(reason === 'live' ? 'Live обновление…' : 'Загрузка графа…');
     try{
-      var resp = await fetch(
-        '/api/me/graph?user_id=' + encodeURIComponent(String(userId)) + '&token=' + encodeURIComponent(String(meToken || '')),
-        { cache: 'no-store' }
-      );
+      var graphUrl = '/api/me/graph?user_id=' + encodeURIComponent(String(userId)) + '&token=' + encodeURIComponent(String(meToken || ''));
+      var cs = document.getElementById('me-graph-chat');
+      if(cs && cs.value && cs.value !== 'all') graphUrl += '&chat_id=' + encodeURIComponent(String(cs.value));
+      var resp = await fetch(graphUrl, { cache: 'no-store' });
       var body = await resp.json();
       graphData = (body && body.graph) || {nodes:[], edges:[], meta:{}};
       graphVersion = String((body && body.graph_version) || graphVersion || '');
@@ -303,9 +553,18 @@
       setStatus('Live недоступен', true);
       return;
     }
+    if(wsClient && wsClient.stop){ wsClient.stop(); }
+    var cs = document.getElementById('me-graph-chat');
+    var ids = chatIds;
+    if(cs && cs.value && cs.value !== 'all'){
+      var one = Number(cs.value);
+      ids = (Number.isFinite(one) && one !== 0) ? [one] : chatIds;
+    }
+    var pollUrl = '/api/me/graph-version?token=' + encodeURIComponent(String(meToken || ''));
+    if(cs && cs.value && cs.value !== 'all') pollUrl += '&chat_id=' + encodeURIComponent(String(cs.value));
     wsClient = window.createGraphRealtimeClient({
-      chatIds: chatIds,
-      pollUrl: '/api/me/graph-version?token=' + encodeURIComponent(String(meToken || '')),
+      chatIds: ids,
+      pollUrl: pollUrl,
       pollIntervalMs: 5000,
       throttleMs: 900,
       onStatus: function(s){
@@ -324,6 +583,77 @@
   if(modeSel){
     modeSel.addEventListener('change', renderGraph);
   }
+
+  var graphChatSel = document.getElementById('me-graph-chat');
+  if(graphChatSel){
+    graphChatSel.addEventListener('change', function(){
+      graphVersion = '';
+      startRealtime();
+      loadGraph('chat-filter');
+    });
+  }
+
+  var copySummaryBtn = document.getElementById('meCopySummaryBtn');
+  var copySummaryHint = document.getElementById('meCopySummaryHint');
+  if(copySummaryBtn){
+    copySummaryBtn.addEventListener('click', async function(){
+      var raw = document.getElementById('me-summary-data');
+      var text = '';
+      try{ text = raw ? JSON.parse(raw.textContent || '""') : ''; }catch(_e){ text = ''; }
+      if(!String(text || '').trim()){
+        if(copySummaryHint) copySummaryHint.textContent = 'Нечего копировать';
+        return;
+      }
+      try{
+        await navigator.clipboard.writeText(String(text));
+        if(copySummaryHint){
+          copySummaryHint.textContent = 'Скопировано в буфер';
+          setTimeout(function(){ copySummaryHint.textContent = ''; }, 2800);
+        }
+      }catch(_e){
+        if(copySummaryHint) copySummaryHint.textContent = 'Браузер запретил буфер — выделите текст вручную';
+      }
+    });
+  }
+
+  var portraitBtn = document.getElementById('meRefreshPortraitBtn');
+  var portraitStatus = document.getElementById('mePortraitStatus');
+  if(portraitBtn){
+    portraitBtn.addEventListener('click', async function(){
+      if(!meToken){ return; }
+      portraitBtn.disabled = true;
+      if(portraitStatus){ portraitStatus.textContent = 'Генерируем портрет… это может занять до минуты.'; }
+      try{
+        var resp = await fetch('/api/me/refresh-portrait', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: meToken, chat_id: 'all' }),
+          cache: 'no-store'
+        });
+        var body = await resp.json();
+        if(!body || !body.ok){
+          if(portraitStatus){
+            portraitStatus.textContent = (body && body.error) ? String(body.error) : 'Ошибка запроса';
+            portraitStatus.style.color = '#e94560';
+          }
+          portraitBtn.disabled = false;
+          return;
+        }
+        if(portraitStatus){
+          portraitStatus.textContent = 'Готово (сообщений: ' + (body.messages_count || '—') + '). Обновляем страницу…';
+          portraitStatus.style.color = 'var(--text-muted)';
+        }
+        window.location.reload();
+      }catch(e){
+        if(portraitStatus){
+          portraitStatus.textContent = 'Сеть или сервер недоступны';
+          portraitStatus.style.color = '#e94560';
+        }
+        portraitBtn.disabled = false;
+      }
+    });
+  }
+
   loadGraph('init');
   startRealtime();
   window.addEventListener('beforeunload', function(){

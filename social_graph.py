@@ -6,11 +6,14 @@
 
 import json
 import logging
+import os
 import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+from services.db_primary import db_primary_is_postgres
 
 DATA_DIR = Path(__file__).resolve().parent
 GRAPH_JSON = DATA_DIR / "social_graph.json"
@@ -18,6 +21,143 @@ DIALOGUE_LOG_DAYS = 14  # храним сырые диалоги за после
 LAST_PROCESSED_KEY = "last_processed_date"  # дата последней обработки (YYYY-MM-DD)
 PAIR_SUMMARY_MAX_LEN = 1400
 CONNECTION_SUMMARY_MAX_LEN = 6000
+
+
+def _pg_get_processed_dates() -> dict[str, list[str]]:
+    """processed_dates из Postgres (таблица processed_dates)."""
+    try:
+        from sqlalchemy import text
+
+        from db.sync_engine import sync_session_scope
+
+        result: dict[str, list[str]] = {}
+        with sync_session_scope() as session:
+            rows = session.execute(text("SELECT chat_id, processed_date FROM processed_dates")).fetchall()
+        for row in rows:
+            cid, d = row[0], row[1]
+            ckey = str(int(cid)) if cid is not None else ""
+            if not ckey or not d:
+                continue
+            result.setdefault(ckey, []).append(str(d))
+        return result
+    except Exception as e:
+        logger.debug("_pg_get_processed_dates: %s", e)
+        return {}
+
+
+def _pg_get_unprocessed_days(processed_dates: dict[str, list[str]]) -> list[tuple[str, str]]:
+    """Необработанные (chat_id, day) из messages в Postgres."""
+    try:
+        from sqlalchemy import text
+
+        from db.sync_engine import sync_session_scope
+
+        today = date.today().isoformat()
+        with sync_session_scope() as session:
+            rows = session.execute(
+                text(
+                    """
+                    SELECT DISTINCT CAST(chat_id AS TEXT) AS ckey,
+                                    to_char(DATE(sent_at), 'YYYY-MM-DD') AS d
+                    FROM messages
+                    WHERE sent_at IS NOT NULL
+                      AND DATE(sent_at) < CAST(:today AS DATE)
+                    """
+                ),
+                {"today": today},
+            ).fetchall()
+    except Exception as e:
+        logger.warning("_pg_get_unprocessed_days: %s", e)
+        return []
+    out: list[tuple[str, str]] = []
+    for ckey, d in rows:
+        if not d:
+            continue
+        ds = str(d)
+        if ds not in set(processed_dates.get(ckey, [])):
+            out.append((ckey, ds))
+    return out
+
+
+def _pg_mark_date_processed(chat_id: int, day: str) -> None:
+    try:
+        from sqlalchemy import text
+
+        from db.sync_engine import sync_session_scope
+
+        with sync_session_scope() as session:
+            session.execute(
+                text(
+                    """
+                    INSERT INTO processed_dates (chat_id, processed_date)
+                    VALUES (:chat_id, :day)
+                    ON CONFLICT DO NOTHING
+                    """
+                ),
+                {"chat_id": int(chat_id), "day": day},
+            )
+    except Exception as e:
+        logger.debug("_pg_mark_date_processed: %s", e)
+
+
+def _pg_get_dialogue_messages(chat_id: int, day: str) -> list[dict]:
+    """Сообщения за день в формате лога диалогов (для саммари пар)."""
+    try:
+        from sqlalchemy import text
+
+        from db.sync_engine import sync_session_scope
+
+        with sync_session_scope() as session:
+            rows = session.execute(
+                text(
+                    """
+                    SELECT m.user_id, m.text, m.replied_to,
+                           COALESCE(NULLIF(TRIM(u.username), ''), NULLIF(TRIM(u.first_name), ''), CAST(m.user_id AS TEXT))
+                    FROM messages m
+                    LEFT JOIN users u ON u.id = m.user_id
+                    WHERE m.chat_id = :cid AND DATE(m.sent_at) = CAST(:day AS DATE)
+                    ORDER BY m.sent_at
+                    """
+                ),
+                {"cid": int(chat_id), "day": day},
+            ).fetchall()
+    except Exception as e:
+        logger.warning("_pg_get_dialogue_messages: %s", e)
+        return []
+    msgs: list[dict] = []
+    for r in rows:
+        uid, txt, rep, disp = r[0], r[1], r[2], r[3]
+        msgs.append(
+            {
+                "sender_id": int(uid) if uid else 0,
+                "text": (txt or "")[:300],
+                "reply_to_user_id": int(rep) if rep is not None else None,
+                "sender_name": (disp or str(uid or ""))[:50],
+            }
+        )
+    return msgs
+
+
+def _pg_get_db_chat_ids_with_today_messages(today: str) -> set[str]:
+    try:
+        from sqlalchemy import text
+
+        from db.sync_engine import sync_session_scope
+
+        with sync_session_scope() as session:
+            rows = session.execute(
+                text(
+                    """
+                    SELECT DISTINCT CAST(chat_id AS TEXT)
+                    FROM messages
+                    WHERE DATE(sent_at) = CAST(:today AS DATE)
+                    """
+                ),
+                {"today": today},
+            ).fetchall()
+        return {r[0] for r in rows if r and r[0]}
+    except Exception:
+        return set()
 
 
 def _load() -> dict:
@@ -418,6 +558,8 @@ def _get_unprocessed_dates(data: dict) -> list[tuple[str, str]]:
 
 def _get_processed_dates_from_db() -> dict[str, list[str]]:
     """Прочитанные из БД обработанные даты: {chat_id_str: [date, ...]}."""
+    if db_primary_is_postgres():
+        return _pg_get_processed_dates()
     import sqlite3
     db_path = DATA_DIR / "data" / "bot.db"
     if not db_path.exists():
@@ -440,6 +582,9 @@ def _get_processed_dates_from_db() -> dict[str, list[str]]:
 
 def _mark_date_processed_in_db(chat_id: int, day: str) -> None:
     """Пометить дату как обработанную в БД."""
+    if db_primary_is_postgres():
+        _pg_mark_date_processed(chat_id, day)
+        return
     import sqlite3
     db_path = DATA_DIR / "data" / "bot.db"
     if not db_path.exists():
@@ -458,6 +603,8 @@ def _mark_date_processed_in_db(chat_id: int, day: str) -> None:
 
 def _get_unprocessed_dates_from_db(processed_dates: dict[str, list[str]]) -> list[tuple[str, str]]:
     """Необработанные даты из таблицы messages (БД)."""
+    if db_primary_is_postgres():
+        return _pg_get_unprocessed_days(processed_dates)
     import sqlite3
     today = date.today().isoformat()
     db_path = DATA_DIR / "data" / "bot.db"
@@ -484,6 +631,8 @@ def _get_unprocessed_dates_from_db(processed_dates: dict[str, list[str]]) -> lis
 
 def _get_db_chat_ids_with_today_messages(today: str) -> set[str]:
     """Chat IDs that have messages on a given date in the DB."""
+    if db_primary_is_postgres():
+        return _pg_get_db_chat_ids_with_today_messages(today)
     import sqlite3
     db_path = DATA_DIR / "data" / "bot.db"
     if not db_path.exists():
@@ -616,7 +765,7 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
             processed = 0
             for chat_id in st.get_all_dialogue_chat_ids():
                 dates = st.get_distinct_dialogue_dates(chat_id, before_date=today)
-                processed_set = st.get_processed_dates_for_chat(chat_id)
+                processed_set = set(st.get_processed_dates_for_chat(chat_id))
                 for day in dates:
                     if day in processed_set:
                         continue
@@ -625,6 +774,9 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
                         if msgs:
                             _process_day_messages(st, chat_id, day, msgs, names)
                         st.set_processed_date(chat_id, day)
+                        processed_set.add(day)
+                        if db_primary_is_postgres():
+                            _pg_mark_date_processed(chat_id, day)
                         processed += 1
                     except Exception as e:
                         logger.warning("Ошибка обработки дня %s чата %s: %s", day, chat_id, e)
@@ -647,6 +799,12 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
         for d in dates:
             if d not in processed_dates[ckey]:
                 processed_dates[ckey].append(d)
+    if db_primary_is_postgres():
+        for ckey, ds in _pg_get_processed_dates().items():
+            processed_dates.setdefault(ckey, [])
+            for d in ds:
+                if d not in processed_dates[ckey]:
+                    processed_dates[ckey].append(d)
     pending_json = _get_unprocessed_dates(data)
     pending_db = _get_unprocessed_dates_from_db(processed_dates)
     seen = set()
@@ -666,12 +824,16 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
                 msgs = st_local.get_dialogue_messages(int(ckey), day)
             if not msgs:
                 msgs = data.get("dialogue_log", {}).get(ckey, {}).get(day, [])
+            if not msgs and db_primary_is_postgres() and ckey.lstrip("-").isdigit():
+                msgs = _pg_get_dialogue_messages(int(ckey), day)
             if not msgs:
                 data.setdefault("processed_dates", {})
                 if ckey not in data["processed_dates"]:
                     data["processed_dates"][ckey] = []
                 if day not in data["processed_dates"][ckey]:
                     data["processed_dates"][ckey].append(day)
+                if db_primary_is_postgres() and ckey.lstrip("-").isdigit():
+                    _pg_mark_date_processed(int(ckey), day)
                 processed_count += 1
                 continue
             pairs: dict[str, list[dict]] = {}
@@ -705,7 +867,9 @@ def process_pending_days(user_display_names: dict[str, str] | None = None) -> in
                 data["processed_dates"][ckey] = []
             if day not in data["processed_dates"][ckey]:
                 data["processed_dates"][ckey].append(day)
-                if st_local and ckey.lstrip("-").isdigit():
+                if db_primary_is_postgres() and ckey.lstrip("-").isdigit():
+                    _pg_mark_date_processed(int(ckey), day)
+                elif st_local and ckey.lstrip("-").isdigit():
                     st_local.set_processed_date(int(ckey), day)
                 cutoff = (date.today() - timedelta(days=60)).isoformat()
                 data["processed_dates"][ckey] = [

@@ -155,6 +155,9 @@ def detect_topics_llm(messages: list[dict]) -> dict[str, list[dict]]:
 
 def _group_messages_by_topic(messages: list[dict]) -> dict[str, list[dict]]:
     """Group messages by primary topic. Uses LLM when available, keywords otherwise."""
+    topics_llm = (os.getenv("PERSONALITY_CONTEXT_TOPICS_LLM") or "1").strip().lower()
+    if topics_llm in ("0", "false", "no", "off"):
+        return _group_messages_by_topic_keyword(messages)
     if _llm_available():
         try:
             return detect_topics_llm(messages)

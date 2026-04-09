@@ -1,6 +1,6 @@
 """
 Storage abstraction layer. IStorage interface for user_stats, social_graph, bot_settings.
-Single DB: data/bot.db.
+Реализации: PostgreSQL (PgStorage) при DATABASE_URL на Postgres, иначе data/bot.db (SqliteStorage).
 """
 
 from __future__ import annotations

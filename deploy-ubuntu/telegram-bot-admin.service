@@ -11,7 +11,7 @@ ExecStart=/opt/telegram-political-monitor-bot/venv/bin/gunicorn \
     -k gevent \
     --worker-connections 30 \
     -b 127.0.0.1:5000 \
-    --timeout 120 \
+    --timeout 600 \
     --keep-alive 5 \
     --max-requests 1000 \
     --max-requests-jitter 100 \

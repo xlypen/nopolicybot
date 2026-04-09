@@ -2,19 +2,22 @@
 
 import os
 
-# Primary ensemble for full OCEAN profile
+# Ансамбль по умолчанию — платные слоты OpenRouter (без :free), чтобы при наличии баланса
+# сборка OCEAN не упиралась в лимиты/доступность free. Только бесплатный режим —
+# задайте PERSONALITY_ENSEMBLE_MODELS с суффиксом :free.
 ENSEMBLE_PRIMARY = [
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "arcee-ai/trinity-large-preview:free",
-    "stepfun/step-3.5-flash:free",
+    "meta-llama/llama-3.3-70b-instruct",
+    "openai/gpt-4o-mini",
+    "deepseek/deepseek-chat",
 ]
 
-# Fallback when primary models unavailable
+# Резервный порядок (для будущих вызовов / документации)
 FALLBACK_ORDER = [
+    "meta-llama/llama-3.3-70b-instruct",
+    "openai/gpt-4o-mini",
+    "deepseek/deepseek-chat",
     "meta-llama/llama-3.3-70b-instruct:free",
     "stepfun/step-3.5-flash:free",
-    "arcee-ai/trinity-large-preview:free",
-    "arcee-ai/trinity-mini:free",
 ]
 
 # Override from env (comma-separated)

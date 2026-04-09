@@ -1,6 +1,7 @@
 """Ensemble of models for personality profile (P-3)."""
 
 import logging
+import os
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from statistics import mean, stdev
@@ -110,14 +111,26 @@ def build_ensemble_profile(
     chat_description: str = "Telegram chat",
     models: list[str] | None = None,
     min_models: int = 2,
+    diagnostics: list[str] | None = None,
 ) -> PersonalityProfile | None:
     """
     Build profile via ensemble of N models. Aggregates OCEAN (mean), computes agreement_score.
     Returns PersonalityProfile with ensemble_stats, or None if fewer than min_models succeed.
+    If diagnostics is a list, append human-readable failure/success notes (for API/UI).
     """
+    def note(msg: str) -> None:
+        if diagnostics is not None:
+            diagnostics.append(msg)
+
     models = models or get_ensemble_models()
+    if (os.getenv("PERSONALITY_SINGLE_MODEL_BUILD") or "").strip().lower() in ("1", "true", "yes"):
+        models = models[:1]
+        note("PERSONALITY_SINGLE_MODEL_BUILD=1 — одна модель (меньше запросов к OpenRouter)")
+
     if not models:
-        return None
+        fb = (os.getenv("OPENAI_MODEL") or os.getenv("PERSONALITY_FALLBACK_MODEL") or "gpt-4o-mini").strip()
+        note(f"PERSONALITY_ENSEMBLE_MODELS пусто — одна модель: {fb}")
+        models = [fb]
 
     profiles: list[PersonalityProfile] = []
     models_used: list[str] = []
@@ -131,6 +144,7 @@ def build_ensemble_profile(
             chat_description=chat_description,
             model=model,
             max_retries=1,
+            skip_context_enrich=True,
         )
         return (model, p)
 
@@ -141,6 +155,8 @@ def build_ensemble_profile(
             if profile:
                 profiles.append(profile)
                 models_used.append(model)
+            else:
+                note(f"модель {model}: нет ответа или ошибка разбора")
 
     if len(profiles) < min_models:
         logger.warning("Ensemble: only %d/%d models succeeded, need %d", len(profiles), len(models), min_models)
@@ -149,9 +165,36 @@ def build_ensemble_profile(
             base.ensemble_stats = EnsembleStats(
                 models_used=models_used,
                 agreement_score=0.0,
-                low_agreement_dimensions=OCEAN_KEYS,
+                low_agreement_dimensions=list(OCEAN_KEYS),
             )
-            return base
+            return enrich_profile_with_context(base, messages)
+        fallback = (os.getenv("PERSONALITY_FALLBACK_MODEL") or os.getenv("OPENAI_MODEL") or "").strip()
+        if fallback:
+            note(f"ансамбль не дал профилей, повтор с {fallback} (до 3 попыток разбора ответа)")
+            solo = build_structured_profile_from_messages(
+                messages=messages,
+                user_id=user_id,
+                username=username,
+                period_days=period_days,
+                chat_description=chat_description,
+                model=fallback,
+                max_retries=2,
+                skip_context_enrich=True,
+            )
+            if solo:
+                note("портрет собран запасной моделью")
+                solo.ensemble_stats = EnsembleStats(
+                    models_used=[fallback],
+                    agreement_score=0.0,
+                    low_agreement_dimensions=list(OCEAN_KEYS),
+                )
+                return enrich_profile_with_context(solo, messages)
+            note("запасная модель не вернула профиль — проверьте ключ, лимиты и имя модели")
+        else:
+            note(
+                "все модели ансамбля не сработали; задайте OPENAI_MODEL или PERSONALITY_FALLBACK_MODEL "
+                "или PERSONALITY_ENSEMBLE_MODELS с рабочими именами (OpenRouter / провайдер)"
+            )
         return None
 
     ocean, stds, low_agreement = _aggregate_ocean(profiles)

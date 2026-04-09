@@ -34,6 +34,8 @@
 <label><input type="checkbox" name="analyze_voice" value="1" {% if settings.get('analyze_voice', True) %}checked{% endif %}><span>Вкл.</span></label></div>
 <div class="setting-row"><div class="setting-label">Реакции на фото<span class="hint">Ставить подходящие по контексту эмодзи на фото</span></div>
 <label><input type="checkbox" name="reactions_on_photos" value="1" {% if settings.get('reactions_on_photos', True) %}checked{% endif %}><span>Вкл.</span></label></div>
+<div class="setting-row"><div class="setting-label">Текстовая реакция на фото<span class="hint">Короткий живой отклик на снимок (как у человека), плюс к эмодзи — в группе отдельным сообщением, в личке в начале ответа</span></div>
+<label><input type="checkbox" name="photo_impression_reply" value="1" {% if settings.get('photo_impression_reply', True) %}checked{% endif %}><span>Вкл.</span></label></div>
 <div class="setting-row"><div class="setting-label">Сообщений до первого замечания<span class="hint">С 1-го по (N−1)-е — только лайки. С N-го — текст замечания (1–20)</span></div>
 <input type="number" name="msgs_before_react" value="{{ settings.get('msgs_before_react', 5) }}" min="1" max="20"></div>
 <div class="setting-row"><div class="setting-label">Умеренный: при отсутствии политики</div>

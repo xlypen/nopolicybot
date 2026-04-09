@@ -3,7 +3,12 @@
 import json
 from unittest.mock import MagicMock, patch
 
-from services.personality.builder import _extract_json, _format_messages, build_structured_profile_from_messages
+from services.personality.builder import (
+    _extract_json,
+    _format_messages,
+    _sanitize_profile_dict,
+    build_structured_profile_from_messages,
+)
 from services.personality.schema import PersonalityProfile
 
 
@@ -60,7 +65,8 @@ def test_build_structured_profile_mocked():
     fake_text = json.dumps(fake_response)
 
     with patch("services.personality.builder.chat_complete_with_fallback", return_value=(fake_text, "test-model")), \
-         patch("services.personality.builder.prefer_free_mode", return_value=False):
+         patch("services.personality.builder.prefer_free_mode", return_value=False), \
+         patch("services.personality.builder.enrich_profile_with_context", side_effect=lambda p, _m: p):
         msgs = [{"text": "Test message", "date": "2025-01-01"} for _ in range(10)]
         profile = build_structured_profile_from_messages(msgs, user_id="42", username="test", period_days=30)
 
@@ -73,3 +79,24 @@ def test_build_structured_profile_mocked():
 
 def test_build_returns_none_for_empty_messages():
     assert build_structured_profile_from_messages([], user_id="42") is None
+
+
+def test_sanitize_profile_dict_clamps_and_enums():
+    raw = {
+        "ocean": {"openness": 72, "conscientiousness": 0.5, "extraversion": 0.5, "agreeableness": 0.5, "neuroticism": 0.5},
+        "dark_triad": {
+            "narcissism": {"label": "High", "score": 0.88},
+            "machiavellianism": {"label": "weird", "score": 0.5},
+            "psychopathy": {"label": "low", "score": 0.1},
+        },
+        "communication": {"style": "neutral", "conflict_tendency": 1.2, "influence_seeking": 0.5, "emotional_expressiveness": 0.5, "topic_consistency": 0.5},
+        "emotional_profile": {"valence": 0.5, "arousal": 0.5, "dominant_emotions": ["x"]},
+        "topics": {"primary": ["a"], "secondary": [], "avoided": []},
+    }
+    data = _sanitize_profile_dict(raw)
+    p = PersonalityProfile.model_validate(data)
+    assert p.ocean.openness == 0.72
+    assert p.dark_triad.narcissism.label == "high"
+    assert p.dark_triad.narcissism.score == 0.88
+    assert p.communication.style == "assertive"
+    assert p.communication.conflict_tendency == 1.0

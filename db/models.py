@@ -153,6 +153,23 @@ class DialogueLog(Base):
     data_json = Column(JSON, nullable=False, default=list)
 
 
+class DialogueMessage(Base):
+    """Построчный лог диалогов для social_graph (единая схема с SQLite dialogue_messages)."""
+    __tablename__ = "dialogue_messages"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chat_id = Column(BigInteger, nullable=False)
+    date = Column(String(10), nullable=False)
+    sender_id = Column(BigInteger, nullable=False)
+    sender_name = Column(Text, nullable=False, default="")
+    text = Column(Text, nullable=False)
+    reply_to_user_id = Column(BigInteger, nullable=True)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+    __table_args__ = (
+        Index("idx_dlg_chat_date", "chat_id", "date"),
+        Index("idx_dlg_chat_sender", "chat_id", "sender_id"),
+    )
+
+
 class StorageSettings(Base):
     """Global bot settings. Replaces bot_settings.json. Single row id=1."""
     __tablename__ = "storage_settings"

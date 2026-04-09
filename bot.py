@@ -41,7 +41,6 @@ except ImportError:
 from config.participant_base_url import get_participant_base_url
 from config.validate_secrets import validate_secrets
 from ai_analyzer import (
-    _ALLOWED_REACTION_EMOJI,
     analyze_messages,
     analyze_image,
     analyze_close_attention,
@@ -69,7 +68,11 @@ import bot_explainability
 from handlers.chat_moderation import append_social_dialogue
 import voice_transcribe
 from handlers.direct_reply import build_reply_context_with_images
-from services.reactions import pick_allowed_emoji, set_photo_reaction
+from services.reactions import (
+    TELEGRAM_REACTION_EMOJI as _ALLOWED_REACTION_EMOJI,
+    pick_allowed_emoji,
+    set_photo_reaction,
+)
 from services.schedulers import restart_checker, social_graph_daily_task
 from services.schedulers import (
     social_graph_realtime_task,
@@ -306,16 +309,31 @@ def _apply_reset_political_count(chat_id: int) -> bool:
         return False
 
 
+# Фразы вырезаются из текста перед поиском ключевых слов (идиомы, где подстрока даёт ложное срабатывание).
+POLITICAL_KEYWORD_SCAN_MASKS = (
+    "газ полный",
+    "полный газ",
+    "в полный газ",
+    "на полную газ",
+    "газ в пол",
+    "газу дай",
+    "дай газу",
+    "нажать на газ",
+    "жми на газ",
+)
+
 POLITICAL_KEYWORDS = [
     # Политика и власть
     "политик", "выборы", "партия", "власти", "правительство", "депутат", "президент", "министр",
-    "оппозиц", "режим", "диктатор", "революц", "кандидат", "голосова", "референдум", "закон",
+    "оппозиц", "режим", "диктатор", "революц", "кандидат", "голосова", "референдум",
+    # «закон» убран: цепляет любые правовые новости без политики; остаются выборы, власть, санкции и т.д.
     # Война и конфликты
     "война", "войн", "фронт", "потери", "санкции", "нато", "вторжение", "оккупац", "мобилизац",
     "призыв", "сводк", "боев", "солдат", "спецоперац", "конфликт", "переговор",
     # Экономика и сравнения
     "экономик", "ввп", "госзаказ", "лоббизм", "инфляц", "бюджет", "налог", "курс валют",
-    "экспорт", "импорт", "бирж", "нефть", "газ", "слабее", "сильнее", "богаче", "беднее",
+    # «газ» убран: ловил «газ полный» и бытовой газ; геополитика/труба — «газпром», санкции, экспорт и т.д.
+    "экспорт", "импорт", "бирж", "нефть", "слабее", "сильнее", "богаче", "беднее",
     "развит", "размер экономики", "gdp", "номинал",
     # Страны и регионы
     "росси", "рф", "сша", "америк", "украин", "белорус", "молдов", "казахстан", "грузи",
@@ -324,12 +342,15 @@ POLITICAL_KEYWORDS = [
     "словакия", "словения", "хорватия", "сербия", "черногория", "македония", "албания",
     "германи", "germany", "франци", "france", "итали", "италия", "испани", "spain",
     "великобритани", "нидерланд", "бельги", "австри", "швейцари", "финлянди",
-    "швеци", "норвеги", "дат", "кита", "china", "япони", "japan", "инди", "india",
+    "швеци", "норвеги", "дат",
+    # «кита» ловило «китаянок» и т.п.; страна/политика — «китай», «китаец», плюс china в списке
+    "китай", "китаец", "china", "япони", "japan", "инди", "india",
     "коре", "korea", "бразили", "brazil", "мексик", "mexico", "аргентин", "чили",
     "иран", "ирак", "iraq", "сири", "syria", "израил", "israel", "палестин",
     "саудов", "оаэ", "египет", "турци", "turkey", "канад", "canada", "австрали",
-    "индонези", "таиланд", "вьетнам", "филиппин", "пакистан", "бангладеш", "сингапур",
-    "гонконг", "тайвань", "афганистан", "afghanistan",
+    "индонези", "таиланд", "вьетнам", "филиппин", "пакистан", "бангладеш",
+    # Гонконг/Сингапур/Тайвань — часто туризм и бытовые новости; политика по смыслу поймает ИИ + горячие слова
+    "афганистан", "afghanistan",
     # Лидеры
     "путин", "зеленский", "зеленски", "zelensky", "макрон", "macron", "трамп", "trump",
     "байден", "biden", "меркель", "merkel", "шольц", "scholz", "мелон", "meloni",
@@ -438,8 +459,19 @@ _ME_CACHE: tuple[object, float] | None = None
 _ME_CACHE_TTL_SEC = 120
 
 
-def _is_directed_at_bot_in_group(message: Message, me) -> bool:
-    """Группа/супергруппа: @username в тексте/подписи или entity text_mention на id бота (если нет username)."""
+async def _get_me_cached(bot: Bot):
+    """Кэшированный bot.get_me() — тот же TTL, что в IsDirectedAtBotFilter."""
+    global _ME_CACHE
+    now = time.monotonic()
+    if _ME_CACHE is not None and now < _ME_CACHE[1]:
+        return _ME_CACHE[0]
+    me = await bot.get_me()
+    _ME_CACHE = (me, now + _ME_CACHE_TTL_SEC)
+    return me
+
+
+def _bot_mentioned_in_message_body(message: Message, me) -> bool:
+    """Явное @username или text_mention в тексте/подписи (без учёта «ответа на сообщение бота»)."""
     bot_id = int(getattr(me, "id", 0) or 0)
     username = getattr(me, "username", None)
     uname = str(username).strip().lower() if username else ""
@@ -463,6 +495,11 @@ def _is_directed_at_bot_in_group(message: Message, me) -> bool:
         except Exception:
             continue
     return False
+
+
+def _is_directed_at_bot_in_group(message: Message, me) -> bool:
+    """Группа/супергруппа: @username в тексте/подписи или entity text_mention на id бота (если нет username)."""
+    return _bot_mentioned_in_message_body(message, me)
 
 
 class IsDirectedAtBotFilter(BaseFilter):
@@ -576,10 +613,17 @@ FRIENDLY_KEYWORDS = [
 ]
 
 
+def _text_for_political_keyword_scan(text: str) -> str:
+    t = text.lower().strip()
+    for phrase in POLITICAL_KEYWORD_SCAN_MASKS:
+        t = t.replace(phrase, " ")
+    return t
+
+
 def contains_political_keyword(text: str) -> bool:
     if not text:
         return False
-    t = text.lower().strip()
+    t = _text_for_political_keyword_scan(text)
     return any(kw in t for kw in POLITICAL_KEYWORDS)
 
 
@@ -1114,6 +1158,35 @@ async def _run_batch_analysis(
             )
 
 
+async def _reply_photo_impression(
+    message: Message,
+    raw_impression: str,
+    *,
+    first_name: str,
+    user_name: str,
+) -> None:
+    """Живая текстовая реакция на фото — ответом на сообщение (как оценка человека)."""
+    raw = (raw_impression or "").strip()
+    if not raw:
+        return
+    try:
+        await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
+    except Exception:
+        pass
+    await asyncio.sleep(random.uniform(0.4, 1.2))
+    clean = strip_leading_name(raw, first_name, user_name)
+    clean = capitalize_sentences(clean)
+    if clean and clean[0].isupper():
+        clean = clean[0].lower() + clean[1:]
+    html = reply_text_to_html(clean)
+    if not html:
+        return
+    try:
+        await message.reply(html, parse_mode="HTML")
+    except Exception as e:
+        logger.warning("Ответ с реакцией на фото не отправлен: %s", e)
+
+
 async def check_and_reply(message: Message) -> None:
     if not message.from_user:
         return
@@ -1250,8 +1323,8 @@ async def check_and_reply(message: Message) -> None:
     reply_topic = reply_topic_detect.get("trigger_topic")
     reply_has_keyword = bool(reply_topic)
 
-    # Анализ изображения по содержанию (категория, описание, политика)
-    image_result: tuple[bool, str, str, str, str, str] | None = None
+    # Анализ изображения по содержанию (категория, описание, политика, живая реакция)
+    image_result: tuple | None = None
     if has_photo and bot_settings.get("analyze_images"):
         try:
             file = await message.bot.get_file(message.photo[-1].file_id)
@@ -1290,6 +1363,22 @@ async def check_and_reply(message: Message) -> None:
                         )
                     )
                     logger.info("[чат %s] Запланирована реакция на фото: %s", chat_id, emoji)
+                if (
+                    image_result
+                    and len(image_result) >= 9
+                    and (image_result[8] or "").strip()
+                    and bot_settings.get("photo_impression_reply", True)
+                    and not is_analysis_screenshot
+                ):
+                    _spawn_task(
+                        _reply_photo_impression(
+                            message,
+                            image_result[8],
+                            first_name=first_name,
+                            user_name=user_name,
+                        )
+                    )
+                    logger.info("[чат %s] Запланирован текстовый отклик на фото", chat_id)
         except APIStatusError as e:
             if e.status_code == 402:
                 logger.warning("Анализ изображения: ИИ недоступен (402 — недостаточно кредитов OpenRouter)")
@@ -1586,6 +1675,7 @@ async def on_message_to_bot(message: Message) -> None:
 
     context = get_recent_context(chat_id)
     try:
+        photo_impression = ""
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(
             None,
@@ -1594,8 +1684,9 @@ async def on_message_to_bot(message: Message) -> None:
         # Ответ на «вопрос дня»: только для текстовых ответов
         qod_status, qod_user_id, qod_question = _qod_tracking_find(message) if text else (None, None, "")
         if qod_status == "other":
-            # В группе: ответил не адресат вопроса дня — молчим. В личке только один человек:
-            # «other» бывает из-за битого/устаревшего by_reply — нельзя оставлять пользователя без ответа.
+            # В группе: ответил не адресат вопроса дня — по умолчанию молчим (не перехватываем чужой тред).
+            # Если в том же сообщении явно тегнули бота (@username / text_mention) — это отдельное обращение,
+            # отвечаем как на обычное сообщение боту (иначе пользователь видит «игнор» при @NoPolicyBot).
             if chat_type == "private":
                 logger.info(
                     "[личка %s] вопрос дня: трекинг «не адресат» — игнор, обычный ответ",
@@ -1603,9 +1694,23 @@ async def on_message_to_bot(message: Message) -> None:
                 )
                 _debug_log("QOD_OTHER_PRIVATE_FALLTHROUGH", chat_id=chat_id, user=first_name, detail="личка")
             else:
-                logger.info("Чат %s: на вопрос дня ответил не адресат (%s) — пропуск", chat_id, first_name)
-                _debug_log("QOD_OTHER", chat_id=chat_id, user=first_name, detail="ответил не адресат")
-                return
+                me = await _get_me_cached(message.bot)
+                if _bot_mentioned_in_message_body(message, me):
+                    logger.info(
+                        "Чат %s: QOD «не адресат», но явное @ бота — обычный ответ (%s)",
+                        chat_id,
+                        first_name,
+                    )
+                    _debug_log(
+                        "QOD_OTHER_MENTION_FALLTHROUGH",
+                        chat_id=chat_id,
+                        user=first_name,
+                        detail="есть @бот в тексте",
+                    )
+                else:
+                    logger.info("Чат %s: на вопрос дня ответил не адресат (%s) — пропуск", chat_id, first_name)
+                    _debug_log("QOD_OTHER", chat_id=chat_id, user=first_name, detail="ответил не адресат")
+                    return
         if qod_status == "addressee" and qod_user_id and qod_question:
             should_engage = await loop.run_in_executor(
                 None,
@@ -1671,6 +1776,21 @@ async def on_message_to_bot(message: Message) -> None:
                             reaction_emoji=res[6] if len(res) >= 7 else "",
                             is_political=bool(res[0]),
                         )
+                    if len(res) >= 9:
+                        photo_impression = (res[8] or "").strip()
+                    if len(res) >= 7 and bot_settings.get("reactions_on_photos") and not is_analysis_screenshot:
+                        emoji_dm = res[6]
+                        _spawn_task(
+                            set_photo_reaction(
+                                message.bot,
+                                chat_id,
+                                message.message_id,
+                                emoji_dm,
+                                allowed=_ALLOWED_REACTION_EMOJI,
+                                logger=logger,
+                                debug_log=_debug_log,
+                            )
+                        )
                 else:
                     is_political, sentiment, message_type, is_substantive = False, "neutral", "other", False
             except APIStatusError as e:
@@ -1734,6 +1854,17 @@ async def on_message_to_bot(message: Message) -> None:
         if reply_clean and reply_clean[0].isupper():
             reply_clean = reply_clean[0].lower() + reply_clean[1:]
         body_html = reply_text_to_html(reply_clean) if reply_clean else ""
+        imp_html = ""
+        if photo_impression and bot_settings.get("photo_impression_reply", True):
+            imp_clean = strip_leading_name(photo_impression, first_name, user_name)
+            imp_clean = capitalize_sentences(imp_clean)
+            if imp_clean and imp_clean[0].isupper():
+                imp_clean = imp_clean[0].lower() + imp_clean[1:]
+            imp_html = reply_text_to_html(imp_clean)
+        if imp_html and body_html:
+            body_html = imp_html + "<br><br>" + body_html
+        elif imp_html:
+            body_html = imp_html
         await message.reply(body_html or "понял.", parse_mode="HTML")
         logger.info("Чат %s: ответ пользователю %s", chat_id, first_name)
         reply_type = "kind" if is_positive else ("technical" if message_type == "technical_question" else ("substantive" if is_substantive else "rude"))

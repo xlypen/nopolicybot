@@ -19,6 +19,8 @@ def proxy_to_fastapi(
     path: str,
     method: str | None = None,
     data: bytes | None = None,
+    *,
+    timeout_sec: float | None = None,
 ) -> tuple[dict | bytes, int]:
     """
     Проксировать запрос на FastAPI с внутренним Bearer токеном.
@@ -29,7 +31,7 @@ def proxy_to_fastapi(
     """
     token = str(os.getenv("ADMIN_TOKEN", "")).strip()
     if not token:
-        return {"ok": False, "error": "ADMIN_TOKEN not configured"}, 503
+        return {"ok": False, "error": "ADMIN_TOKEN не задан в окружении сервиса админки"}, 502
 
     base = _get_fastapi_base()
     url = f"{base}{path}"
@@ -44,8 +46,11 @@ def proxy_to_fastapi(
     req.add_header("Content-Type", request.content_type or "application/json")
     req.add_header("Accept", "application/json")
 
+    default_timeout = float((os.getenv("FASTAPI_PROXY_TIMEOUT_SEC") or "300").strip() or "300")
+    t = float(timeout_sec) if timeout_sec is not None else default_timeout
+
     try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
+        with urllib.request.urlopen(req, timeout=max(30.0, t)) as resp:
             body = resp.read()
             try:
                 return json.loads(body.decode("utf-8")), resp.status

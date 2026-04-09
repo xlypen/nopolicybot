@@ -181,7 +181,7 @@ def gemini_analyze_image(image_bytes: bytes, prompt_text: str, *, mime: str = "i
         ]
         payload = {
             "contents": [{"role": "user", "parts": parts}],
-            "generationConfig": {"maxOutputTokens": 500, "temperature": 0.2},
+            "generationConfig": {"maxOutputTokens": 640, "temperature": 0.45},
         }
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
         req = urllib.request.Request(

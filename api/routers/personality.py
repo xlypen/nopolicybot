@@ -267,6 +267,7 @@ async def post_build_profile(
     u = await asyncio.to_thread(get_user, uid)
     username = str(u.get("display_name") or uid)
 
+    diagnostics: list[str] = []
     profile = await asyncio.to_thread(
         build_ensemble_profile,
         messages=messages,
@@ -274,13 +275,27 @@ async def post_build_profile(
         username=username,
         period_days=30,
         chat_description="Telegram chat",
+        diagnostics=diagnostics,
     )
     if not profile:
-        return {"ok": False, "error": "Profile build failed"}
+        detail = "; ".join(diagnostics) if diagnostics else ""
+        return {
+            "ok": False,
+            "error": "Profile build failed",
+            "detail": detail or "Проверьте OPENAI_API_KEY, лимиты и PERSONALITY_ENSEMBLE_MODELS / OPENAI_MODEL.",
+        }
 
     await save_profile(session, uid, chat_id, profile)
     await session.commit()
-    return {"ok": True, "messages_analyzed": len(messages), "profile": profile.model_dump(mode="json")}
+    return {
+        "ok": True,
+        "messages_analyzed": len(messages),
+        "profile": profile.model_dump(mode="json"),
+        "billing_note": (
+            "OpenRouter списывает токены за каждый успешный ответ модели. "
+            "При ошибке в браузере после ответа провайдера списание уже могло произойти."
+        ),
+    }
 
 
 @router.get("/community/{chat_id}/clusters")

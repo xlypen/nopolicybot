@@ -20,6 +20,7 @@ DEFAULTS = {
     "analyze_images": True,
     "analyze_voice": True,
     "reactions_on_photos": True,
+    "photo_impression_reply": True,
     "msgs_before_react": 5,
     "style_moderate_react": "praise",
     "style_active_frequency": "every_other",
@@ -166,6 +167,28 @@ def _save(data: dict) -> None:
 
 def _get_chat_overrides_from_db(chat_id: int) -> dict:
     """Переопределения настроек чата из таблицы chat_settings (БД)."""
+    from services.db_primary import db_primary_is_postgres
+
+    if db_primary_is_postgres():
+        try:
+            from sqlalchemy import text
+
+            from db.sync_engine import sync_session_scope
+
+            with sync_session_scope() as session:
+                row = session.execute(
+                    text("SELECT settings FROM chat_settings WHERE chat_id = :cid"),
+                    {"cid": int(chat_id)},
+                ).fetchone()
+            if not row:
+                return {}
+            raw = row[0]
+            if isinstance(raw, dict):
+                return raw
+            return json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except Exception as e:
+            logger.debug("_get_chat_overrides_from_db (postgres): %s", e)
+            return {}
     if not DB_PATH.exists():
         return {}
     try:
@@ -210,6 +233,35 @@ def set_all(updates: dict) -> None:
 
 def _set_chat_overrides_in_db(chat_id: int, overrides: dict) -> None:
     """Записать переопределения чата в таблицу chat_settings (БД). Пустой dict — удалить строку."""
+    from services.db_primary import db_primary_is_postgres
+
+    if db_primary_is_postgres():
+        try:
+            from sqlalchemy import text
+
+            from db.sync_engine import sync_session_scope
+
+            with sync_session_scope() as session:
+                if not overrides:
+                    session.execute(
+                        text("DELETE FROM chat_settings WHERE chat_id = :cid"),
+                        {"cid": int(chat_id)},
+                    )
+                else:
+                    payload = json.dumps(overrides, ensure_ascii=False)
+                    session.execute(
+                        text(
+                            """
+                            INSERT INTO chat_settings (chat_id, settings)
+                            VALUES (:cid, CAST(:payload AS jsonb))
+                            ON CONFLICT (chat_id) DO UPDATE SET settings = EXCLUDED.settings
+                            """
+                        ),
+                        {"cid": int(chat_id), "payload": payload},
+                    )
+        except Exception as e:
+            logger.debug("_set_chat_overrides_in_db (postgres): %s", e)
+        return
     if not DB_PATH.exists():
         return
     try:

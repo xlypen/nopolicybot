@@ -11,7 +11,8 @@ from ai.client import chat_complete_with_fallback, get_client, prefer_free_mode
 from openai import APIError, RateLimitError
 
 from services.personality.contextual import enrich_profile_with_context
-from services.personality.schema import PersonalityProfile
+from services.personality.schema import OCEAN_KEYS, PersonalityProfile
+from pydantic import ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,100 @@ def _extract_json(text: str) -> str:
     return text
 
 
+def _clamp01(x, default: float = 0.5) -> float:
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return default
+    if v != v:  # NaN
+        return default
+    if v < 0.0:
+        return 0.0
+    if v <= 1.0:
+        return v
+    if v > 100.0:
+        return 1.0
+    # 1 < v <= 100: проценты (напр. 72) или слегка вышедшее за 1.0 (1.2)
+    if v >= 10.0:
+        return min(1.0, v / 100.0)
+    return min(1.0, v)
+
+
+_COMM_STYLES = frozenset({"assertive", "passive", "aggressive", "passive-aggressive"})
+_DT_LABELS = frozenset({"low", "medium", "high"})
+
+
+def _sanitize_profile_dict(data: dict) -> dict:
+    """Coerce LLM JSON into schema-friendly shapes (ranges, enums)."""
+    out = dict(data)
+    oc = out.get("ocean")
+    if isinstance(oc, dict):
+        for k in OCEAN_KEYS:
+            if k in oc:
+                oc[k] = _clamp01(oc[k], 0.5)
+        out["ocean"] = oc
+
+    dt = out.get("dark_triad")
+    if isinstance(dt, dict):
+        for key in ("narcissism", "machiavellianism", "psychopathy"):
+            t = dt.get(key)
+            if not isinstance(t, dict):
+                continue
+            sc = _clamp01(t.get("score", 0.2), 0.2)
+            lb = str(t.get("label", "low")).strip().lower()
+            if lb not in _DT_LABELS:
+                lb = "low" if sc < 0.34 else "high" if sc > 0.66 else "medium"
+            t = dict(t)
+            t["score"] = sc
+            t["label"] = lb
+            dt[key] = t
+        out["dark_triad"] = dt
+
+    comm = out.get("communication")
+    if isinstance(comm, dict):
+        st = str(comm.get("style", "assertive")).strip().lower()
+        if st not in _COMM_STYLES:
+            st = "assertive"
+        comm = dict(comm)
+        comm["style"] = st
+        for fld in ("conflict_tendency", "influence_seeking", "emotional_expressiveness", "topic_consistency"):
+            if fld in comm:
+                comm[fld] = _clamp01(comm[fld], 0.5)
+        out["communication"] = comm
+
+    emo = out.get("emotional_profile")
+    if isinstance(emo, dict):
+        emo = dict(emo)
+        if "valence" in emo:
+            emo["valence"] = _clamp01(emo["valence"], 0.5)
+        if "arousal" in emo:
+            emo["arousal"] = _clamp01(emo["arousal"], 0.5)
+        de = emo.get("dominant_emotions")
+        if de is None:
+            emo["dominant_emotions"] = []
+        elif isinstance(de, list):
+            emo["dominant_emotions"] = [str(x).strip() for x in de if str(x).strip()][:10]
+        else:
+            emo["dominant_emotions"] = []
+        out["emotional_profile"] = emo
+
+    top = out.get("topics")
+    if isinstance(top, dict):
+        top = dict(top)
+        for k in ("primary", "secondary", "avoided"):
+            v = top.get(k)
+            if not isinstance(v, list):
+                top[k] = []
+            else:
+                top[k] = [str(x).strip() for x in v if str(x).strip()][:20]
+        out["topics"] = top
+
+    if "confidence" in out:
+        out["confidence"] = _clamp01(out["confidence"], 0.5)
+
+    return out
+
+
 def _format_messages(messages: list[dict], max_chars: int = 60000) -> str:
     """Format messages for prompt. messages: [{text, date}] or [{text, date, chat_id}]."""
     lines = []
@@ -86,10 +181,14 @@ def build_structured_profile_from_messages(
     chat_description: str = "Telegram chat",
     model: str | None = None,
     max_retries: int = 2,
+    *,
+    skip_context_enrich: bool = False,
 ) -> PersonalityProfile | None:
     """
     Build structured personality profile from messages.
     Returns PersonalityProfile or None on failure.
+    skip_context_enrich=True — не вызывать enrich_profile_with_context (дорогие батчи LLM по темам);
+    вызывайте enrich один раз на итоговом профиле (ансамбль).
     """
     if not messages:
         return None
@@ -147,7 +246,22 @@ def build_structured_profile_from_messages(
             data["messages_analyzed"] = len(messages)
             data.setdefault("confidence", min(0.9, 0.5 + len(messages) / 500 * 0.2))
 
-            profile = PersonalityProfile.model_validate(data)
+            data = _sanitize_profile_dict(data)
+            try:
+                profile = PersonalityProfile.model_validate(data)
+            except ValidationError as ve:
+                last_error = f"Validation: {ve}"
+                if attempt < max_retries:
+                    msgs[-1]["content"] += (
+                        f"\n\n[RETRY] JSON failed schema validation: {ve}. "
+                        "Fix ocean 0..1, communication.style assertive|passive|aggressive|passive-aggressive, "
+                        "dark_triad labels low|medium|high. Return ONLY valid JSON."
+                    )
+                    continue
+                logger.warning("Personality profile validation failed: %s", ve)
+                return None
+            if skip_context_enrich:
+                return profile
             return enrich_profile_with_context(profile, messages)
 
         except json.JSONDecodeError as e:

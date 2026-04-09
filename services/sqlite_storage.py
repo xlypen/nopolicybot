@@ -614,28 +614,44 @@ class SqliteStorage:
             pass
 
 
-def get_storage() -> SqliteStorage | None:
-    """Return SqliteStorage instance when DB storage is enabled, else None."""
+def _make_storage():
+    """PostgreSQL — PgStorage; иначе локальный data/bot.db (SqliteStorage)."""
+    from services.db_primary import db_primary_is_postgres
+
+    if db_primary_is_postgres():
+        from services.pg_storage import PgStorage
+
+        return PgStorage()
+    return SqliteStorage()
+
+
+def get_storage():
+    """Активное хранилище (Postgres или SQLite) при включённом чтении из БД."""
     from services.storage_cutover import storage_db_reads_enabled
+
     if not storage_db_reads_enabled():
         return None
     global _storage_instance
     if _storage_instance is None:
-        _storage_instance = SqliteStorage()
+        _storage_instance = _make_storage()
     return _storage_instance
 
 
-_storage_instance: SqliteStorage | None = None
+_storage_instance = None
 
 
-def init_storage() -> SqliteStorage | None:
-    """Initialize storage and ensure tables exist. Call at bot startup."""
+def init_storage():
+    """Инициализация и создание таблиц. Вызывать при старте бота/API."""
     global _storage_instance
     from services.storage_cutover import storage_db_reads_enabled
+
     if not storage_db_reads_enabled():
         return None
-    _storage_instance = SqliteStorage()
-    conn = _storage_instance._conn()
-    _ensure_tables(conn)
-    conn.commit()
+    _storage_instance = _make_storage()
+    if isinstance(_storage_instance, SqliteStorage):
+        conn = _storage_instance._conn()
+        _ensure_tables(conn)
+        conn.commit()
+    else:
+        _storage_instance.ensure_tables()
     return _storage_instance

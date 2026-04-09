@@ -479,6 +479,40 @@ def _load_users() -> dict:
 
 def _get_dashboard_counts_from_db() -> dict | None:
     """Актуальные счётчики из БД для панели: users, messages, political, warnings."""
+    try:
+        from services.db_primary import db_primary_is_postgres
+
+        if db_primary_is_postgres():
+            from sqlalchemy import text
+
+            from db.sync_engine import sync_session_scope
+
+            with sync_session_scope() as session:
+                users_row = session.execute(
+                    text(
+                        "SELECT COUNT(DISTINCT user_id) FROM messages WHERE user_id IS NOT NULL"
+                    )
+                ).fetchone()
+                messages_row = session.execute(text("SELECT COUNT(*) FROM messages")).fetchone()
+                try:
+                    pol_warn = session.execute(
+                        text(
+                            "SELECT COALESCE(SUM(political_messages),0), COALESCE(SUM(warnings_received),0) FROM users"
+                        )
+                    ).fetchone()
+                    total_political = int(pol_warn[0] or 0)
+                    total_warnings = int(pol_warn[1] or 0)
+                except Exception:
+                    total_political = 0
+                    total_warnings = 0
+            return {
+                "users": int(users_row[0] or 0),
+                "messages": int(messages_row[0] or 0),
+                "political": total_political,
+                "warnings": total_warnings,
+            }
+    except Exception:
+        pass
     if not BOT_DB_PATH.exists():
         return None
     try:
@@ -689,7 +723,13 @@ def api_v2_metrics_proxy(subpath: str):
 def api_v2_personality_proxy(subpath: str):
     """Прокси personality API в FastAPI v2."""
     data = request.get_data() if request.method == "POST" and request.is_json else None
-    body, status = proxy_to_fastapi(f"/api/v2/personality/{subpath}", method=request.method, data=data)
+    long_timeout = 600.0 if subpath.rstrip("/") == "build" and request.method == "POST" else None
+    body, status = proxy_to_fastapi(
+        f"/api/v2/personality/{subpath}",
+        method=request.method,
+        data=data,
+        timeout_sec=long_timeout,
+    )
     return proxy_response(body, status)
 
 
@@ -1252,6 +1292,7 @@ def settings():
         "analyze_images",
         "analyze_voice",
         "reactions_on_photos",
+        "photo_impression_reply",
         "msgs_before_react",
         "style_moderate_react",
         "style_active_frequency",

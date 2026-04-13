@@ -1,17 +1,50 @@
-{% extends "base.html" %}
+{% extends "admin/base.html" %}
 {% block title %}Настройки бота — Админ{% endblock %}
-{% block head_extra %}
-<style>
-.save-bar{position:sticky;bottom:0;background:rgba(26,26,46,0.95);padding:0.75rem 0;backdrop-filter:blur(2px);z-index:6}
-</style>
-{% endblock %}
 {% block body %}
-<div class="mb-2"><a href="{{ url_for('admin') }}">← Назад к списку</a></div>
-<form method="post" action="{{ url_for('settings') }}">
-<div class="mb-1">
-<input id="settings-search" type="text" placeholder="Поиск по настройкам..." style="width:100%;max-width:480px;padding:0.55rem 0.7rem;">
+<div class="hero hero--compact settings-page-hero">
+  <div class="header">
+    <h1>Настройки бота</h1>
+  </div>
+  <p class="hero-lead">Поведение модерации, реакций, личных сообщений и технических параметров. Изменения сохраняются кнопкой внизу страницы.</p>
+  <p class="settings-page-links">
+    <a href="{{ url_for('admin_modern') }}">Панель мониторинга</a><span class="sep">·</span><a href="{{ url_for('admin_legacy') }}">Классический список пользователей</a><span class="sep">·</span><a href="#admin-password">Пароль админки</a>
+  </p>
 </div>
-<div class="settings-tabs" style="position:sticky;top:0;background:var(--bg-body);z-index:5;padding-bottom:0.5rem;border-bottom:1px solid var(--bg-input);">
+
+<div id="admin-password" class="card card--password">
+<h2>Пароль входа в админку</h2>
+{% if settings_notice %}
+<p class="notice-banner {% if settings_notice[0] == 'ok' %}notice-banner--ok{% else %}notice-banner--err{% endif %}">{{ settings_notice[1] }}</p>
+{% endif %}
+{% if password_via_env %}
+<p class="text-sm text-muted mb-0">Сейчас пароль берётся из переменной окружения <code>ADMIN_PASSWORD</code>. Смените значение в <code>.env</code> (или в настройках деплоя) и перезапустите процесс админки.</p>
+{% else %}
+<form method="post" action="{{ url_for('change_admin_password') }}" autocomplete="off">
+<div class="setting-row" style="flex-wrap:wrap;gap:0.75rem;">
+<div style="min-width:200px;flex:1;">
+<label class="text-sm text-muted" for="current_password">Текущий пароль</label>
+<input id="current_password" name="current_password" type="password" required autocomplete="current-password" class="settings-input">
+</div>
+<div style="min-width:200px;flex:1;">
+<label class="text-sm text-muted" for="new_password">Новый пароль</label>
+<input id="new_password" name="new_password" type="password" required minlength="6" autocomplete="new-password" class="settings-input">
+</div>
+<div style="min-width:200px;flex:1;">
+<label class="text-sm text-muted" for="new_password_confirm">Подтверждение</label>
+<input id="new_password_confirm" name="new_password_confirm" type="password" required minlength="6" autocomplete="new-password" class="settings-input">
+</div>
+</div>
+<p class="text-sm text-muted" style="margin:0.5rem 0 0.75rem;">Минимум 6 символов. Сохраняется в <code>data/admin_password.txt</code> (хеш).</p>
+<button type="submit" class="btn">Сменить пароль</button>
+</form>
+{% endif %}
+</div>
+
+<form method="post" action="{{ url_for('settings') }}" class="settings-form-main">
+<div class="settings-search-wrap mb-1">
+<input id="settings-search" type="search" placeholder="Поиск по настройкам..." autocomplete="off" aria-label="Поиск по настройкам">
+</div>
+<div class="settings-tabs settings-tabs-strip">
 <button type="button" class="section-tab active" data-section="moderation">Модерация</button>
 <button type="button" class="section-tab" data-section="reactions">Реакции</button>
 <button type="button" class="section-tab" data-section="question">Вопрос дня</button>
@@ -23,7 +56,7 @@
 <div id="moderation" class="settings-panel">
 <div class="card"><h2>Модерация политики</h2>
 <p class="text-sm text-muted mb-1">Когда бот начнёт писать замечания в чате.</p>
-<div class="setting-row" style="background:#1a2a4a;border-radius:8px;padding:1rem;margin-bottom:0.5rem;border:2px solid var(--bg-accent);">
+<div class="setting-row setting-row--highlight">
 <div><strong>Ставить лайки (эмодзи) на полит. сообщения 1–4</strong><span class="hint">ВКЛЮЧИ ЭТО, чтобы бот ставил эмодзи на первые 4 сообщения. Текст замечания — с 5-го.</span></div>
 <label><input type="checkbox" name="reactions_political_1_5" value="1" {% if settings.get('reactions_political_1_5') %}checked{% endif %}><span>Вкл.</span></label></div>
 <div class="setting-row"><div class="setting-label">Модерация включена<span class="hint">Включить/выключить замечания бота за политические темы в чате</span></div>
@@ -225,7 +258,7 @@
 {% endif %}
 </div>
 
-<div class="save-bar"><button type="submit" class="btn">Сохранить настройки</button></div>
+<div class="settings-save-bar"><button type="submit" class="btn">Сохранить настройки</button></div>
 </form>
 {% endblock %}
 {% block scripts %}

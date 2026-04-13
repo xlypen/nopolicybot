@@ -396,20 +396,12 @@ async def delete_topic_policies(body: dict = Body(default_factory=dict), _auth=D
 
 @router.get("/classification-axes")
 async def get_classification_axes(_auth=Depends(require_auth)):
-    from services.classification_axes import load_axes_config
-
-    return {"ok": True, **load_axes_config()}
+    return {"ok": False, "error": "classification axes disabled — feature not in use"}
 
 
 @router.put("/classification-axes")
 async def put_classification_axes(body: dict = Body(default_factory=dict), _auth=Depends(require_auth)):
-    from services.classification_axes import load_axes_config, save_axes_config, validate_axes_payload
-
-    err = validate_axes_payload(body)
-    if err:
-        return {"ok": False, "error": err}
-    save_axes_config(body)
-    return {"ok": True, **load_axes_config()}
+    return {"ok": False, "error": "classification axes disabled — feature not in use"}
 
 
 @router.get("/classification-metrics")
@@ -417,52 +409,14 @@ async def get_classification_metrics(
     chat_id: str = Query(default="all"),
     _auth=Depends(require_auth),
 ):
-    from services.classification_axes import load_axes_config, parse_categories
-    from user_stats import get_users_in_chat
-
-    raw = (chat_id or "all").strip().lower()
-    cid: int | None = None
-    if raw != "all":
-        if not raw.lstrip("-").isdigit():
-            return {"ok": False, "error": "invalid chat_id"}
-        cid = int(raw)
-    chat_members: set[str] | None = None
-    if cid is not None:
-        chat_members = {str(int(x)) for x in (await asyncio.to_thread(get_users_in_chat, cid) or [])}
-
-    users = _load_users_db_aware()
-    axes_out: list[dict] = []
-    for ax in load_axes_config().get("axes") or []:
-        if not isinstance(ax, dict) or not ax.get("enabled", True):
-            continue
-        aid = str(ax.get("id") or "").strip().lower()
-        title = str(ax.get("title") or aid)
-        labels = parse_categories(str(ax.get("categories") or ""))
-        counts: dict[str, int] = {}
-        for k in labels:
-            counts[k] = 0
-        if "unknown" not in {x.lower() for x in labels}:
-            counts["unknown"] = 0
-        for uid, row in users.items():
-            ustr = str(uid or "").strip()
-            if chat_members is not None and ustr not in chat_members:
-                continue
-            u = row or {}
-            val = ""
-            clf = u.get("classifications") or {}
-            if isinstance(clf, dict) and aid in clf and isinstance(clf[aid], dict):
-                val = str(clf[aid].get("value") or "").strip()
-            if not val and ax.get("sync_with_rank") and aid == "political":
-                val = str(u.get("rank") or "unknown").strip().lower()
-            if not val:
-                val = "unknown"
-            counts[val] = counts.get(val, 0) + 1
-        axes_out.append({"id": aid, "title": title, "counts": counts, "categories": labels})
-    return {"ok": True, "chat_id": raw, "axes": axes_out}
+    return {"ok": False, "error": "classification axes disabled — feature not in use"}
 
 
 @router.post("/classification-run")
 async def post_classification_run(body: dict = Body(default_factory=dict), _auth=Depends(require_auth)):
+    return {"ok": False, "error": "classification axes disabled — feature not in use"}
+
+    # --- disabled code below ---
     from ai_analyzer import classify_user_on_axis
     from services.classification_axes import get_axis_by_id, parse_categories, user_needs_axis_run
     from user_stats import get_user, get_user_messages_archive, get_users_in_chat, set_user_axis_classification

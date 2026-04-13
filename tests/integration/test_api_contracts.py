@@ -897,3 +897,75 @@ def test_api_monitoring_alerts_contract(monkeypatch):
         body = resp.get_json()
         assert body["ok"] is True
         assert "alerts" in body
+
+
+def test_change_admin_password_rejects_wrong_current(monkeypatch, tmp_path):
+    monkeypatch.setattr(admin_app, "_ADMIN_PASSWORD_ENV", "")
+    pw_file = tmp_path / "admin_password.txt"
+    pw_file.write_text("oldsecret", encoding="utf-8")
+    monkeypatch.setattr(admin_app, "ADMIN_PASSWORD_FILE", pw_file)
+    _disable_auth(monkeypatch)
+    with admin_app.app.test_client() as client:
+        client.post(
+            "/settings/change-password",
+            data={
+                "current_password": "wrong",
+                "new_password": "newsecret12",
+                "new_password_confirm": "newsecret12",
+            },
+        )
+        r2 = client.get("/settings")
+        assert r2.status_code == 200
+        assert "Неверный текущий пароль" in r2.get_data(as_text=True)
+
+
+def test_change_admin_password_success_updates_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(admin_app, "_ADMIN_PASSWORD_ENV", "")
+    pw_file = tmp_path / "admin_password.txt"
+    pw_file.write_text("oldsecret", encoding="utf-8")
+    monkeypatch.setattr(admin_app, "ADMIN_PASSWORD_FILE", pw_file)
+    _disable_auth(monkeypatch)
+    with admin_app.app.test_client() as client:
+        resp = client.post(
+            "/settings/change-password",
+            data={
+                "current_password": "oldsecret",
+                "new_password": "newsecret12",
+                "new_password_confirm": "newsecret12",
+            },
+        )
+        assert resp.status_code == 302
+        stored = pw_file.read_text(encoding="utf-8").strip()
+        if admin_app._bcrypt and stored.startswith("$2"):
+            assert admin_app._bcrypt.checkpw(b"newsecret12", stored.encode("utf-8"))
+        else:
+            assert stored == "newsecret12"
+        r2 = client.get("/settings")
+        assert "Пароль обновлён" in r2.get_data(as_text=True)
+
+
+def test_change_admin_password_blocked_when_env_password(monkeypatch):
+    monkeypatch.setattr(admin_app, "_ADMIN_PASSWORD_ENV", "envpassword12")
+    _disable_auth(monkeypatch)
+    with admin_app.app.test_client() as client:
+        client.post(
+            "/settings/change-password",
+            data={
+                "current_password": "envpassword12",
+                "new_password": "otherpass12",
+                "new_password_confirm": "otherpass12",
+            },
+        )
+        r2 = client.get("/settings")
+        assert "ADMIN_PASSWORD" in r2.get_data(as_text=True)
+
+
+def test_settings_page_includes_password_section(monkeypatch):
+    monkeypatch.setattr(admin_app, "_ADMIN_PASSWORD_ENV", "")
+    _disable_auth(monkeypatch)
+    with admin_app.app.test_client() as client:
+        resp = client.get("/settings")
+        assert resp.status_code == 200
+        html = resp.get_data(as_text=True)
+        assert 'id="admin-password"' in html
+        assert "Сменить пароль" in html

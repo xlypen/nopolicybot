@@ -47,7 +47,7 @@
     </div>
   </div>
   <div class="row" style="align-items:center;gap:1rem;flex-wrap:wrap;">
-    <span class="meta-line">ID: {{ user_id }} · Ранг: {{ rank_labels.get(u.get('rank'), u.get('rank')) }} · Тон: {{ effective_tone }}</span>
+    <span class="meta-line">ID: {{ user_id }} · {{ rank_axis_label }}: {{ rank_labels.get(u.get('rank'), u.get('rank')) }} · Тон: {{ effective_tone }}</span>
   </div>
 </div>
 

@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}Nopolicybot Admin{% endblock %}</title>
   <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}?v=5">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/dark-mode.css') }}?v=5">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}?v=7">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/dark-mode.css') }}?v=7">
   <script>
     (function(){
       var stored = localStorage.getItem('darkMode');
@@ -22,17 +22,26 @@
   {% block head_extra %}{% endblock %}
 </head>
 <body class="admin-shell">
-  <nav id="adminNav" style="height:48px;display:flex;align-items:center;width:100%;font-family:inherit;">
-    <div style="max-width:1400px;margin:0 auto;width:100%;padding:0 24px;display:flex;align-items:center;gap:24px;">
-      <a href="/admin-modern" style="color:#fff;text-decoration:none;font-weight:600;font-size:14px;">Dashboard</a>
-      <a href="/admin/personality/clusters" style="color:#fff;text-decoration:none;font-weight:500;font-size:14px;">Кластеры</a>
-      <a href="/admin/personality/compare" style="color:#fff;text-decoration:none;font-weight:500;font-size:14px;">Сравнение</a>
-      <a href="/settings" style="color:#fff;text-decoration:none;font-weight:500;font-size:14px;">Настройки</a>
-      <a href="/logout" style="color:#fff;text-decoration:none;font-weight:500;font-size:14px;margin-left:auto;">Выйти</a>
-      <button id="darkModeToggle" type="button" style="background:none;border:1px solid rgba(255,255,255,0.3);color:#fff;padding:4px 10px;border-radius:6px;cursor:pointer;font-size:0.85rem;line-height:1;">T</button>
+  <a class="admin-skip-link" href="#admin-main">К основному содержимому</a>
+  <header class="admin-topbar" role="banner">
+    <div class="admin-topbar-inner">
+      <a class="admin-brand" href="{{ url_for('admin_modern') }}">Nopolicybot</a>
+      <nav class="admin-nav" aria-label="Разделы админки">
+        {% set ep = request.endpoint or '' %}
+        <a class="admin-nav-link {% if ep in ('admin', 'admin_modern') %}is-active{% endif %}" href="{{ url_for('admin_modern') }}">Панель</a>
+        <a class="admin-nav-link {% if ep == 'admin_personality_clusters' %}is-active{% endif %}" href="{{ url_for('admin_personality_clusters') }}">Кластеры</a>
+        <a class="admin-nav-link {% if ep == 'admin_personality_compare' %}is-active{% endif %}" href="{{ url_for('admin_personality_compare') }}">Сравнение</a>
+        <a class="admin-nav-link {% if ep == 'admin_legacy' %}is-active{% endif %}" href="{{ url_for('admin_legacy') }}">Классика</a>
+        <a class="admin-nav-link {% if ep == 'settings' %}is-active{% endif %}" href="{{ url_for('settings') }}">Настройки</a>
+        <a class="admin-nav-link {% if ep == 'admin_classifications' %}is-active{% endif %}" href="{{ url_for('admin_classifications') }}">Оси</a>
+      </nav>
+      <div class="admin-topbar-actions">
+        <button id="darkModeToggle" type="button" class="admin-theme-btn" title="Сменить тему" aria-label="Сменить тему оформления">☀️</button>
+        <a class="admin-nav-link admin-nav-link--logout" href="{{ url_for('logout') }}">Выйти</a>
+      </div>
     </div>
-  </nav>
-  <div class="admin-wrap">
+  </header>
+  <div class="admin-wrap" id="admin-main" tabindex="-1">
     {% block breadcrumbs %}{% endblock %}
     {% block body %}{% endblock %}
   </div>
@@ -40,11 +49,11 @@
   <script>
   (function(){
     var btn = document.getElementById('darkModeToggle');
+    if (!btn) return;
     function applyTheme() {
       var isDark = document.documentElement.classList.contains('dark-mode');
       btn.textContent = isDark ? '\u2600\uFE0F' : '\uD83C\uDF19';
-      var nav = document.getElementById('adminNav');
-      if (nav) nav.style.background = isDark ? '#151929' : '#6366F1';
+      btn.setAttribute('aria-pressed', isDark ? 'true' : 'false');
     }
     applyTheme();
     btn.addEventListener('click', function() {

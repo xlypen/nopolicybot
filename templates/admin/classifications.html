@@ -1,0 +1,75 @@
+{% extends "admin/base.html" %}
+{% block title %}Оси классификации — Nopolicybot{% endblock %}
+{% block body %}
+<div class="hero hero--compact">
+  <div class="header">
+    <h1>Оси классификации</h1>
+    <div class="actions">
+      <a class="btn btn-secondary" href="{{ url_for('admin_modern') }}">← Дашборд</a>
+    </div>
+  </div>
+  <p class="hero-lead">Каждая ось — название, инструкция для ИИ и список меток (по одной на строку). Бот подставляет сообщения из архива; ответ сохраняется в профиле пользователя (<code>classifications</code>). Для оси <code>political</code> с «синхронизацией с rank» значение дублируется в поле <code>rank</code>.</p>
+</div>
+
+<div class="card" style="max-width:920px;">
+  <div class="title">Конфигурация JSON</div>
+  <p class="text-xs text-muted" style="margin-top:0;">Файл на сервере: <code>data/classification_axes.json</code></p>
+  <textarea id="axesJson" rows="28" style="width:100%;font-family:var(--font-mono,monospace);font-size:12px;padding:10px;border-radius:8px;border:1px solid var(--border-card);background:var(--bg-tertiary);color:var(--text-primary);" spellcheck="false"></textarea>
+  <div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+    <button type="button" class="btn" id="axesLoadBtn">Загрузить с сервера</button>
+    <button type="button" class="btn btn-secondary" id="axesSaveBtn">Сохранить</button>
+    <span id="axesStatus" class="text-xs text-muted"></span>
+  </div>
+</div>
+
+<script>
+(function(){
+  const ta = document.getElementById('axesJson');
+  const st = document.getElementById('axesStatus');
+  function setStatus(msg, ok) {
+    if (st) {
+      st.textContent = msg || '';
+      st.style.color = ok === false ? '#ef4444' : (ok === true ? '#10b981' : '');
+    }
+  }
+  async function loadAxes() {
+    setStatus('Загрузка…', null);
+    const r = await fetch('/api/v2/admin/classification-axes', { credentials: 'same-origin' });
+    const body = await r.json();
+    if (!body || body.ok === false) throw new Error((body && body.error) || 'Ошибка');
+    ta.value = JSON.stringify({ axes: body.axes || [] }, null, 2);
+    setStatus('Загружено', true);
+  }
+  async function saveAxes() {
+    setStatus('Сохранение…', null);
+    let parsed;
+    try {
+      parsed = JSON.parse(ta.value || '{}');
+    } catch (e) {
+      setStatus('Невалидный JSON: ' + e.message, false);
+      return;
+    }
+    const r = await fetch('/api/v2/admin/classification-axes', {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(parsed),
+    });
+    const body = await r.json();
+    if (!body || body.ok === false) {
+      setStatus((body && body.error) || 'Ошибка сохранения', false);
+      return;
+    }
+    ta.value = JSON.stringify({ axes: body.axes || [] }, null, 2);
+    setStatus('Сохранено', true);
+  }
+  document.getElementById('axesLoadBtn').addEventListener('click', function() {
+    loadAxes().catch(function(e) { setStatus(e.message || String(e), false); });
+  });
+  document.getElementById('axesSaveBtn').addEventListener('click', function() {
+    saveAxes().catch(function(e) { setStatus(e.message || String(e), false); });
+  });
+  loadAxes().catch(function(e) { setStatus(e.message || String(e), false); });
+})();
+</script>
+{% endblock %}

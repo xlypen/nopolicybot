@@ -15,6 +15,7 @@
 <a href="{{ url_for('admin_modern') }}" class="btn btn-secondary">Modern Dashboard</a>
 <a href="{{ url_for('social_graph') }}" class="btn btn-secondary">Дерево связей</a>
 <a href="{{ url_for('settings') }}" class="btn btn-secondary">Настройки</a>
+<a href="{{ url_for('settings') }}#admin-password" class="btn btn-secondary">Пароль</a>
 <form method="post" action="{{ url_for('restart_bot') }}" style="display:inline;">
 <button type="submit" class="btn btn-secondary">Перезапустить бота</button>
 </form>
@@ -79,7 +80,7 @@ setTimeout(function(){document.getElementById('restart-msg').style.display='none
 <details class="card">
 <summary style="cursor:pointer;list-style:none;font-weight:700;">Общий анализ чата</summary>
 <div class="flex justify-between align-center flex-wrap mt-1">
-<span class="text-sm text-muted">Состав, активность, полит. контур, риски.</span>
+<span class="text-sm text-muted">Состав, активность, темы, риски; политика — один из контуров.</span>
 <div class="flex gap-sm align-center">
 <button type="button" class="btn btn-sm btn-secondary" id="btn-refresh-analysis">Обновить</button>
 <button type="button" class="btn btn-sm btn-secondary" id="btn-portrait-chat">Портрет чата</button>
@@ -93,12 +94,12 @@ setTimeout(function(){document.getElementById('restart-msg').style.display='none
 <div class="card"><h3>Пользователей</h3><span class="val">{{ total }}</span></div>
 <div class="card"><h3>Полит. сообщений</h3><span class="val">{{ total_pol }}</span></div>
 <div class="card"><h3>Замечаний выдано</h3><span class="val">{{ total_warn }}</span></div>
-{% for r,cnt in ranks.items() %}<div class="card"><h3>{{ rank_labels.get(r,r) }}</h3><span class="val">{{ cnt }}</span></div>{% endfor %}
+{% for r,cnt in ranks.items() %}<div class="card"><h3 title="{{ rank_axis_label }}">{{ rank_labels.get(r,r) }}</h3><span class="val">{{ cnt }}</span></div>{% endfor %}
 </div>
 <div class="table-wrap">
 <table>
 <thead>
-<tr><th>Имя</th><th>Ранг</th><th>Сообщ.</th><th>Полит.</th><th>+ / − / 0</th><th>Замечаний</th><th>Портрет</th><th>Действия</th></tr>
+<tr><th>Имя</th><th title="{{ rank_axis_label }}">Полит. позиция</th><th>Сообщ.</th><th>Полит.</th><th>+ / − / 0</th><th>Замечаний</th><th>Портрет</th><th>Действия</th></tr>
 </thead>
 <tbody>
 {% for uid,u in users %}

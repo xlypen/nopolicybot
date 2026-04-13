@@ -612,6 +612,15 @@ FRIENDLY_KEYWORDS = [
     "как дела", "как ты", "как сам", "чё как", "как жизнь",
 ]
 
+# Если в личке на фото сработал сухой fallback (ошибка ИИ / отключённые ветки) — не «не в настроении».
+_DM_PHOTO_INSTEAD_OF_GENERIC_FALLBACK = [
+    "фото вижу, а вот текстовая часть бота сейчас лагает — но кадр у тебя с характером.",
+    "картинка дошла, цензоры и лимиты — тоже. короче, визуал настойчивый, респект за смелость.",
+    "снимок принят, подробности опущу, настроение с кадра передалось.",
+    "ого, визуальный удар — детали не разбираю, но ты явно не про скучные будни.",
+    "фото говорит само за себя, я только моргнул и зафиксировал факт.",
+]
+
 
 def _text_for_political_keyword_scan(text: str) -> str:
     t = text.lower().strip()
@@ -633,6 +642,18 @@ def is_likely_friendly(text: str) -> bool:
         return False
     t = text.lower().strip()
     return any(kw in t for kw in FRIENDLY_KEYWORDS)
+
+
+def _dm_reply_text_if_photo_not_generic_fallback(has_photo: bool, reply_text: str) -> str:
+    """Не показывать на фото шаблон «не в настроении», если это чистый fallback настроек."""
+    if not has_photo:
+        return reply_text
+    fb = (bot_settings.get("reply_fallback_on_error") or "").strip()
+    if not fb:
+        return reply_text
+    if (reply_text or "").strip() != fb:
+        return reply_text
+    return random.choice(_DM_PHOTO_INSTEAD_OF_GENERIC_FALLBACK)
 
 
 def _safe_name(name: str) -> str:
@@ -1848,6 +1869,7 @@ async def on_message_to_bot(message: Message) -> None:
             _explain("dm", "rude_reply", chat_id=chat_id, user_id=user_id, detail=reply_input[:120])
         else:
             reply_text = bot_settings.get("reply_fallback_on_error") or "сейчас не в настроении, напиши потом."
+        reply_text = _dm_reply_text_if_photo_not_generic_fallback(has_photo, reply_text)
         # Убираем дубль имени/ника из начала ответа — в сообщении только тег (упоминание)
         reply_clean = strip_leading_name(reply_text, first_name, user_name)
         reply_clean = capitalize_sentences(reply_clean)
@@ -1878,6 +1900,7 @@ async def on_message_to_bot(message: Message) -> None:
             logger.exception("Ошибка API ИИ при ответе: %s", e)
         try:
             _reply = await _last_resort_gemini_reply(context, display_text, first_name, message.from_user.id)
+            _reply = _dm_reply_text_if_photo_not_generic_fallback(has_photo, _reply)
             await message.reply(_reply, parse_mode="HTML")
         except Exception as send_e:
             logger.exception("Не удалось отправить fallback-ответ в личку: %s", send_e)
@@ -1885,6 +1908,7 @@ async def on_message_to_bot(message: Message) -> None:
         logger.exception("Ошибка при генерации ответа: %s", e)
         try:
             _reply = await _last_resort_gemini_reply(context, display_text, first_name, message.from_user.id)
+            _reply = _dm_reply_text_if_photo_not_generic_fallback(has_photo, _reply)
             await message.reply(_reply, parse_mode="HTML")
         except Exception as send_e:
             logger.exception("Не удалось отправить fallback-ответ в личку: %s", send_e)
@@ -1910,7 +1934,7 @@ async def cmd_start(message: Message) -> None:
 
 
 async def cmd_ranks(message: Message) -> None:
-    """Команда /ranks — выводит ранги участников в чат."""
+    """Команда /ranks — выводит полит. позиции участников (ось rank) в чат."""
     if not bot_settings.get("cmd_ranks_enabled"):
         return
     text = user_stats.get_ranks_for_chat()
@@ -1926,7 +1950,7 @@ async def cmd_stats(message: Message) -> None:
     base_path = user_stats.USERS_JSON
     await message.reply(
         "Статистика записана в лог (консоль или файл, куда пишет бот).\n\n"
-        f"База участников (ранг, портрет, счётчики):\n<code>{base_path}</code>\n\n"
+        f"База участников (полит. позиция, портрет, счётчики):\n<code>{base_path}</code>\n\n"
         "Файл не обнуляется при перезапуске. Он заполняется, когда кто-то пишет боту или в чате появляются полит. сообщения (после этого добавляются записи и счётчики).",
         parse_mode="HTML",
     )

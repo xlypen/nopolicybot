@@ -1206,8 +1206,8 @@ def admin_legacy():
 @app.route("/admin/classifications")
 @login_required
 def admin_classifications():
-    """Редактор осей классификации (JSON → data/classification_axes.json через API)."""
-    return render_template("admin/classifications.html")
+    """Редактор осей классификации — временно отключено."""
+    return "Оси классификации временно отключены.", 503
 
 
 @app.route("/admin-modern")

@@ -187,7 +187,7 @@
     {% endif %}
     <div>
       <p><strong>{{ u.get('display_name', user_id) }}</strong></p>
-      <p>Ранг: {{ rank_labels.get(u.get('rank'), u.get('rank')) }}</p>
+      <p>{{ rank_axis_label }}: {{ rank_labels.get(u.get('rank'), u.get('rank')) }}</p>
       <p>Настроение: {{ effective_tone }}</p>
       <div class="participant-stats">
         <div class="participant-stat">Сообщений: {{ u.get('stats', {}).get('total_messages', 0) }}</div>
@@ -243,7 +243,7 @@
     <h2 style="font-size: 1rem; margin: 0 0 0.5rem 0;">С кем вы ближе и дальше в чате</h2>
     {% if similarity_peers is defined and similarity_peers and similarity_peers.get('ok') %}
       {% if similarity_peers.source == 'heuristic' %}
-      <p class="text-muted" style="font-size: 0.82rem; margin: 0 0 0.5rem 0;">Оценка по рангу полит. взглядов и силе связи в графе. Точнее — после расчёта профилей личности (OCEAN, P-1) у участников.</p>
+      <p class="text-muted" style="font-size: 0.82rem; margin: 0 0 0.5rem 0;">Оценка сходства по нескольким сигналам: политическая позиция (одна из осей), сила связи в графе; при наличии — профили личности (OCEAN, P-1).</p>
       {% else %}
       <p class="text-muted" style="font-size: 0.82rem; margin: 0 0 0.5rem 0;">Сравнение по профилю «большой пятерки» (OCEAN) в каждом чате, где есть расчёты для вас и собеседника.</p>
       {% endif %}
@@ -264,7 +264,7 @@
     {% endif %}
     <details style="margin-top: 0.65rem;">
       <summary class="text-muted" style="cursor: pointer; font-size: 0.85rem;">Что означает индекс сходства?</summary>
-      <p class="text-muted" style="font-size: 0.82rem; margin: 0.4rem 0 0 0;">Это не «насколько вы друзья», а насколько близки <strong>модельные оценки черт</strong> (OCEAN) или, в упрощённом режиме, ранг и активность в графе. Индекс 80% не гарантирует совпадение взглядов на жизнь — только сходство в численном профиле, посчитанном ботом.</p>
+      <p class="text-muted" style="font-size: 0.82rem; margin: 0.4rem 0 0 0;">Это не «насколько вы друзья», а насколько близки <strong>модельные оценки черт</strong> (OCEAN) или, в упрощённом режиме, полит. позиция и активность в графе. Индекс 80% не гарантирует совпадение взглядов на жизнь — только сходство в численном профиле, посчитанном ботом.</p>
     </details>
   </div>
 
@@ -549,7 +549,7 @@
     meGraphPanel.innerHTML =
       pairBlock +
       '<div class="graph-node-panel-row"><strong>ID:</strong> ' + esc(uid) + '</div>' +
-      '<div class="graph-node-panel-row"><strong>Ранг:</strong> ' + esc(rank) + '</div>' +
+      '<div class="graph-node-panel-row"><strong>Полит. позиция:</strong> ' + esc(rank) + '</div>' +
       '<div class="graph-node-panel-row"><strong>Индекс влияния:</strong> ' + fmt(influence, 3) + '</div>' +
       '<div class="graph-node-panel-row"><strong>Количество связей:</strong> ' + Number(degree) + '</div>' +
       '<div class="graph-node-panel-row"><strong>Соседи:</strong> ' + Number(neighbors) + '</div>' +

@@ -1,19 +1,62 @@
 {% extends "admin/base.html" %}
 {% block title %}Панель мониторинга — Nopolicybot{% endblock %}
 {% block body %}
-<div class="hero">
-  <div class="header" style="margin-bottom:6px;">
+<div class="hero hero--compact">
+  <div class="header">
     <h1>Панель мониторинга</h1>
-    <div class="actions">
-      <a class="btn btn-secondary" href="{{ url_for('admin_legacy') }}">Классическая админка</a>
-      <a class="btn btn-secondary" href="{{ url_for('admin_personality_clusters') }}">Кластеры личности</a>
-      <a class="btn btn-secondary" href="{{ url_for('settings') }}">Настройки</a>
-      <a class="btn btn-secondary" href="{{ url_for('logout') }}">Выйти</a>
-    </div>
   </div>
-  <div style="color:var(--text-secondary)">Единая панель: основные метрики, управление и граф сообщества.</div>
+  <p class="hero-lead">Сводка по базе, выбранный чат и граф связей — на одной странице. Разделы ниже можно открывать по якорям; смена чата влияет на граф, дайджест и виджеты аналитики.</p>
 </div>
 
+<nav class="admin-quick-nav" aria-label="По странице">
+  <a href="#section-overview">Обзор</a>
+  <a href="#section-workspace">Чат и действия</a>
+  <a href="#section-graph">Граф</a>
+  <a href="#section-insights">Аналитика</a>
+  <a href="{{ url_for('admin_classifications') }}">Оси классификации</a>
+</nav>
+
+<div class="admin-context-strip" id="section-context">
+  <div class="admin-context-heading">Сначала выберите чат</div>
+  <div class="row">
+    <label for="chatSel">Чат</label>
+    <select id="chatSel" aria-describedby="section-context">
+      <option value="all">Все чаты</option>
+      {% for c in chats %}
+      <option value="{{ c.chat_id }}">{{ c.title or c.chat_id }}</option>
+      {% endfor %}
+    </select>
+    <label for="modeSel">Вид графа</label>
+    <select id="modeSel">
+      <option value="force">Силовой</option>
+      <option value="radial">Радиальный</option>
+      <option value="community">Сообщества</option>
+      <option value="matrix">Матрица</option>
+      <option value="webgl">WebGL</option>
+      <option value="sankey">Сэнки</option>
+      <option value="hierarchy">Иерархия</option>
+      <option value="bubble">Пузырьки</option>
+      <option value="ego">Эго-сеть</option>
+    </select>
+    <label class="graph-live-check"><input type="checkbox" id="autoRefreshChk" checked> Живые обновления</label>
+    <button class="btn" id="loadGraphBtn" type="button">Загрузить граф</button>
+    <button type="button" class="btn btn-secondary" id="reviveChatBtn" title="Сгенерировать вопрос по сегодняшней беседе">Оживить чат</button>
+    <span id="graphLiveStatus" class="live-status live-status-neutral">Live: инициализация</span>
+  </div>
+  <div id="reviveChatPanel" class="revive-chat-panel" style="display:none;">
+    <div class="revive-chat-panel-hint">Превью вопроса (в чат ещё не ушёл):</div>
+    <div id="reviveChatPreviewText" class="revive-chat-panel-preview"></div>
+    <div id="reviveChatMeta" class="revive-chat-panel-meta"></div>
+    <div class="revive-chat-panel-actions">
+      <button type="button" class="btn btn-secondary btn-sm" id="reviveChatRegenBtn">Перегенерировать</button>
+      <button type="button" class="btn btn-sm" id="reviveChatSendBtn">Отправить в чат</button>
+      <button type="button" class="btn btn-secondary btn-sm" id="reviveChatCloseBtn">Скрыть</button>
+    </div>
+  </div>
+</div>
+
+<section id="section-overview" class="admin-section" aria-labelledby="heading-overview">
+  <h2 id="heading-overview" class="visually-hidden">Обзор</h2>
 <div class="cards">
   <div class="card"><h3>Пользователей</h3><span class="val">{{ metrics.users }}</span></div>
   <div class="card"><h3>Сообщений</h3><span class="val">{{ metrics.messages }}</span></div>
@@ -21,75 +64,14 @@
   <div class="card"><h3>Замечаний</h3><span class="val">{{ metrics.warnings }}</span></div>
 </div>
 
-<div class="grid">
-  <div class="card">
-    <div class="title">Ранги</div>
-    {% set loyal = metrics.ranks.loyal or 0 %}
-    {% set neutral = metrics.ranks.neutral or 0 %}
-    {% set opposition = metrics.ranks.opposition or 0 %}
-    {% set unknown = metrics.ranks.unknown or 0 %}
-    {% set total_ranked = loyal + neutral + opposition + unknown %}
-    {% set unknown_share = (unknown / total_ranked) if total_ranked > 0 else 0 %}
-    <ul>
-      <li>Лояльные: {{ loyal }}</li>
-      <li>Нейтральные: {{ neutral }}</li>
-      <li>Оппозиция: {{ opposition }}</li>
-      <li class="rank-unknown {% if unknown_share > 0.8 %}rank-unknown-critical{% elif unknown_share > 0.5 %}rank-unknown-warn{% endif %}">
-        Не классифицированы: {{ unknown }}
-      </li>
-    </ul>
-    {% if unknown_share > 0.5 %}
-    <div class="rank-warning {% if unknown_share > 0.8 %}rank-warning-critical{% endif %}">
-      {{ (unknown_share * 100) | round(0, 'common') | int }}% пользователей не классифицированы — запустите анализ.
-    </div>
-    {% endif %}
-    <div style="margin-top:10px;">
-      <button class="btn btn-secondary btn-sm" id="classifyUnknownBtn">Классифицировать</button>
-    </div>
-  </div>
-  <div class="card">
-    <div class="title">Выбор чата и режима</div>
-    <div class="row">
-      <label>Чат:</label>
-      <select id="chatSel">
-        <option value="all">Все чаты</option>
-        {% for c in chats %}
-        <option value="{{ c.chat_id }}">{{ c.title or c.chat_id }}</option>
-        {% endfor %}
-      </select>
-      <label>Режим:</label>
-      <select id="modeSel">
-        <option value="force">Силовой</option>
-        <option value="radial">Радиальный</option>
-        <option value="community">Сообщества</option>
-        <option value="matrix">Матрица</option>
-        <option value="webgl">WebGL</option>
-        <option value="sankey">Сэнки</option>
-        <option value="hierarchy">Иерархия</option>
-        <option value="bubble">Пузырьки</option>
-        <option value="ego">Эго-сеть</option>
-      </select>
-      <label style="display:flex;gap:6px;align-items:center;">
-        <input type="checkbox" id="autoRefreshChk" checked>
-        Живые обновления
-      </label>
-      <button class="btn" id="loadGraphBtn">Загрузить</button>
-      <button type="button" class="btn btn-secondary" id="reviveChatBtn" title="Сгенерировать вопрос по сегодняшней беседе">Оживить чат</button>
-      <span id="graphLiveStatus" class="live-status live-status-neutral">Live: инициализация</span>
-    </div>
-    <div id="reviveChatPanel" style="display:none;margin-top:10px;padding:12px;border:1px solid var(--border-card);border-radius:10px;background:var(--bg-tertiary);max-width:min(920px,100%);">
-      <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">Превью вопроса (в чат ещё не ушёл):</div>
-      <div id="reviveChatPreviewText" style="font-size:14px;line-height:1.45;margin-bottom:10px;color:var(--text-primary);white-space:pre-wrap;"></div>
-      <div id="reviveChatMeta" style="font-size:11px;color:var(--text-secondary);margin-bottom:10px;"></div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
-        <button type="button" class="btn btn-secondary btn-sm" id="reviveChatRegenBtn">Перегенерировать</button>
-        <button type="button" class="btn btn-sm" id="reviveChatSendBtn">Отправить в чат</button>
-        <button type="button" class="btn btn-secondary btn-sm" id="reviveChatCloseBtn">Скрыть</button>
-      </div>
-    </div>
-  </div>
+<div class="grid grid--ranks" id="classificationAxesMount">
+  <p class="text-xs text-muted" style="margin:0;">Загрузка осей классификации…</p>
 </div>
+<p class="text-xs text-muted" style="margin:0.35rem 0 0;"><a href="{{ url_for('admin_classifications') }}">Настроить оси и категории</a> · метки задаёте вы, классификацию выполняет ИИ по архиву сообщений.</p>
+</section>
 
+<section id="section-workspace" class="admin-section" aria-labelledby="heading-workspace">
+  <h2 id="heading-workspace" class="visually-hidden">Действия с чатом</h2>
 <div class="grid">
   <div class="card">
     <div class="title">Управление</div>
@@ -127,7 +109,10 @@
     <div id="opsAnalysisPreview" style="background:var(--bg-secondary);border:1px solid var(--border-card);border-radius:8px;padding:8px;color:var(--text-primary);font-size:13px;">Выберите чат и нажмите «Обновить анализ».</div>
   </div>
 </div>
+</section>
 
+<section id="section-graph" class="admin-section" aria-labelledby="heading-graph">
+  <h2 id="heading-graph" class="visually-hidden">Граф сообщества</h2>
 <div class="card">
   <div class="title graph-card-title">
     <span>Граф сообщества</span>
@@ -202,7 +187,10 @@
     </div>
   </div>
 </div>
+</section>
 
+<section id="section-insights" class="admin-section" aria-labelledby="heading-insights">
+  <h2 id="heading-insights" class="visually-hidden">Аналитика и система</h2>
 <div class="grid">
   <div class="card">
     <div class="title">Статус хранилища</div>
@@ -301,6 +289,7 @@
     <div id="analyticsPanelBody" style="color:var(--text-secondary);">Загрузка...</div>
   </div>
 </div>
+</section>
 <div id="toastHost" class="toast-host" aria-live="polite" aria-atomic="true"></div>
 {% endblock %}
 
@@ -526,7 +515,7 @@ function renderGraphNodePanel(snapshot) {
   panel.innerHTML = `
     ${pairBlock}
     <div class="graph-node-panel-row"><strong>ID:</strong> ${esc(uid)}</div>
-    <div class="graph-node-panel-row"><strong>Ранг:</strong> ${esc(rank)}</div>
+    <div class="graph-node-panel-row"><strong>Полит. позиция:</strong> ${esc(rank)}</div>
     <div class="graph-node-panel-row"><strong>Индекс влияния:</strong> ${fmt(influence, 3)}</div>
     <div class="graph-node-panel-row"><strong>Количество связей:</strong> ${Number(degree)}</div>
     <div class="graph-node-panel-row"><strong>Соседи:</strong> ${Number(neighbors)}</div>
@@ -905,6 +894,9 @@ async function loadAndRender() {
   } finally {
     await loadInsights(chat, { forceRefresh: true });
   }
+  try {
+    await loadClassificationAxes();
+  } catch (_e) {}
   })();
   try {
     await _loadPromise;
@@ -1865,27 +1857,147 @@ async function restartBotFromOps() {
   }
 }
 
-async function classifyUnknownUsers() {
-  const btn = document.getElementById('classifyUnknownBtn');
-  if (btn) btn.disabled = true;
+async function loadClassificationAxes() {
+  const mount = document.getElementById('classificationAxesMount');
+  if (!mount) return;
   const chatSel = document.getElementById('chatSel');
   const chat = String((chatSel && chatSel.value) || 'all');
+  mount.innerHTML = '<p class="text-xs text-muted" style="margin:0;">Загрузка осей…</p>';
   try {
-    const body = await requestJson('/api/v2/portrait/portrait-classify-unknown', {
+    const body = await requestJson(`/api/v2/admin/classification-metrics?chat_id=${encodeURIComponent(chat)}`);
+    const axes = Array.isArray(body.axes) ? body.axes : [];
+    if (!axes.length) {
+      mount.innerHTML = '<p class="text-xs text-muted">Нет осей. <a href="/admin/classifications">Добавить в настройках</a></p>';
+      return;
+    }
+    mount.innerHTML = '';
+    mount.className = 'grid grid--ranks';
+    for (const ax of axes) {
+      const counts = ax.counts || {};
+      const keys = Object.keys(counts);
+      const total = keys.reduce((s, k) => s + (Number(counts[k]) || 0), 0);
+      const unknown = Number(counts.unknown || 0);
+      const unknownShare = total > 0 ? unknown / total : 0;
+      const card = document.createElement('div');
+      card.className = 'card';
+      const title = document.createElement('div');
+      title.className = 'title';
+      title.textContent = ax.title || ax.id || 'Ось';
+      const hint = document.createElement('p');
+      hint.className = 'text-xs text-muted';
+      hint.style.margin = '0 0 0.75rem';
+      hint.style.lineHeight = '1.35';
+      hint.textContent = 'Счётчик «unknown» включает и тех, у кого ещё нет сохранённой метки по этой оси (не путать с вердиктом ИИ). После «Классифицировать» часть уйдёт в эксперт / осьминог и т.д., если в архиве достаточно сообщений.';
+      const ul = document.createElement('ul');
+      for (const k of keys.slice().sort()) {
+        const li = document.createElement('li');
+        li.textContent = `${k}: ${counts[k]}`;
+        if (k === 'unknown' && unknownShare > 0.5) {
+          li.className = 'rank-unknown ' + (unknownShare > 0.8 ? 'rank-unknown-critical' : 'rank-unknown-warn');
+        }
+        ul.appendChild(li);
+      }
+      card.appendChild(title);
+      card.appendChild(hint);
+      card.appendChild(ul);
+      if (unknownShare > 0.5 && total > 0) {
+        const w = document.createElement('div');
+        w.className = 'rank-warning' + (unknownShare > 0.8 ? ' rank-warning-critical' : '');
+        w.textContent = `${Math.round(unknownShare * 100)}% без метки по этой оси — запустите классификацию.`;
+        card.appendChild(w);
+      }
+      const wrap = document.createElement('div');
+      wrap.style.marginTop = '10px';
+      wrap.style.display = 'flex';
+      wrap.style.flexWrap = 'wrap';
+      wrap.style.gap = '8px';
+      wrap.style.alignItems = 'center';
+      const aid = String(ax.id || '');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-secondary btn-sm';
+      btn.textContent = 'Классифицировать';
+      btn.setAttribute('data-axis-id', aid);
+      btn.setAttribute('data-from-archive', '0');
+      btn.title = 'Только участники без сохранённой метки по этой оси (до 40 за проход).';
+      btn.addEventListener('click', () => runClassificationAxis(aid, false));
+      const btnArch = document.createElement('button');
+      btnArch.type = 'button';
+      btnArch.className = 'btn btn-secondary btn-sm';
+      btnArch.textContent = 'Из архива';
+      btnArch.setAttribute('data-axis-id', aid);
+      btnArch.setAttribute('data-from-archive', '1');
+      btnArch.title = 'По полному архиву сообщений в БД/JSON; пересчитывает метку даже если она уже была (до 80 за проход).';
+      btnArch.addEventListener('click', () => runClassificationAxis(aid, true));
+      wrap.appendChild(btn);
+      wrap.appendChild(btnArch);
+      card.appendChild(wrap);
+      mount.appendChild(card);
+    }
+  } catch (e) {
+    mount.innerHTML = '<p class="text-xs text-muted">Не удалось загрузить оси: ' + esc(String(e.message || e)) + '</p>';
+  }
+}
+
+async function runClassificationAxis(axisId, fromArchive) {
+  const chatSel = document.getElementById('chatSel');
+  const chat = String((chatSel && chatSel.value) || 'all');
+  const fromArch = !!fromArchive;
+  const axisButtons = [];
+  document.querySelectorAll('#classificationAxesMount button[data-axis-id]').forEach((el) => {
+    if (String(el.getAttribute('data-axis-id') || '') === String(axisId || '')) axisButtons.push(el);
+  });
+  axisButtons.forEach((b) => { b.disabled = true; });
+  const lim = fromArch ? 80 : 40;
+  showToast(
+    fromArch
+      ? `Прогон из архива: до ${lim} человек, полный пересчёт по сообщениям (может занять несколько минут)…`
+      : `Классификация только без метки: до ${lim} человек…`,
+    'info'
+  );
+  try {
+    const payload = {
+      axis_id: axisId,
+      chat_id: chat,
+      limit: lim,
+    };
+    if (fromArch) {
+      payload.from_archive = true;
+    } else {
+      payload.only_unknown = true;
+    }
+    const body = await requestJson('/api/v2/admin/classification-run', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ chat_id: chat }),
+      credentials: 'same-origin',
+      body: JSON.stringify(payload),
     });
-    const msg = `Классификация завершена: обработано ${Number(body.processed || 0)} из ${Number(body.unknown_total || 0)}.`;
-    setOpsFeedback(msg, '#10b981');
-    showToast(msg, 'success');
+    const cand = Number(body.candidates || 0);
+    const proc = Number(body.processed || 0);
+    const skip = Number(body.skipped_no_messages || 0);
+    const fail = Number(body.failed || 0);
+    const modeTag = fromArch || body.from_archive ? '[архив] ' : '';
+    const msg = `${modeTag}Ось «${axisId}»: в очереди ${cand}, обработано ${proc}, без архива: ${skip}, ошибок: ${fail}`;
+    const okColor = proc > 0 ? '#10b981' : '#f59e0b';
+    setOpsFeedback(msg, okColor);
+    if (cand === 0) {
+      showToast(
+        fromArch ? 'Нет участников в выбранном чате (или выбраны «Все чаты» без подходящих id).' : 'Нет кандидатов: все уже с меткой по этой оси или не входят в выбранный чат.',
+        'warn'
+      );
+    } else if (proc === 0) {
+      showToast(`В очереди было ${cand}, но обработано 0 (нет сообщений в архиве или ошибки ИИ). См. строку состояния ниже.`, 'warn');
+    } else {
+      showToast(msg, 'success');
+    }
+    await loadClassificationAxes();
     await loadAndRender();
     await syncOpsState();
   } catch (e) {
     setOpsFeedback(`Ошибка классификации: ${e.message || e}`, '#ef4444');
     showToast(`Ошибка: ${e.message || e}`, 'error');
   } finally {
-    if (btn) btn.disabled = false;
+    axisButtons.forEach((b) => { b.disabled = false; });
   }
 }
 
@@ -2091,9 +2203,6 @@ document.getElementById('refreshAnalysisAiBtn').addEventListener('click', () => 
 });
 document.getElementById('restartBotBtn').addEventListener('click', () => {
   restartBotFromOps().catch(() => {});
-});
-document.getElementById('classifyUnknownBtn').addEventListener('click', () => {
-  classifyUnknownUsers().catch(() => {});
 });
 document.getElementById('opsChatModeSel').addEventListener('change', () => {
   const modeSel = document.getElementById('opsChatModeSel');

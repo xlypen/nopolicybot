@@ -21,7 +21,7 @@
 <div>
 <p><strong>ID:</strong> {{ user_id }}</p>
 <p><strong>Имя:</strong> {{ u.get('display_name', '—') }}</p>
-<p><strong>Ранг:</strong> {{ rank_labels.get(u.get('rank'), u.get('rank')) }}</p>
+<p><strong>{{ rank_axis_label }}:</strong> {{ rank_labels.get(u.get('rank'), u.get('rank')) }}</p>
 <button type="button" class="btn btn-secondary btn-sm" id="btn-telegram" onclick="loadTelegramInfo()">Загрузить из Telegram</button>
 <div id="telegram-result"></div>
 </div>

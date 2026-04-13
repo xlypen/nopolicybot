@@ -189,6 +189,38 @@ html.dark-mode ::-webkit-scrollbar-thumb:hover {
   background: #64748B;
 }
 
-html.dark-mode nav {
-  background: #151929 !important;
+html.dark-mode .admin-topbar {
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  box-shadow: none;
+}
+
+html.dark-mode .admin-brand,
+html.dark-mode .admin-nav-link {
+  color: var(--text-primary);
+}
+
+html.dark-mode .admin-nav-link:hover {
+  background: var(--bg-hover);
+  color: var(--primary-light);
+}
+
+html.dark-mode .admin-nav-link.is-active {
+  background: var(--bg-tertiary);
+  color: var(--primary-light);
+}
+
+html.dark-mode .admin-theme-btn {
+  background: var(--bg-tertiary);
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+
+html.dark-mode .settings-page-links a {
+  color: var(--primary-light);
+}
+
+html.dark-mode .settings-tabs-strip,
+html.dark-mode .settings-save-bar {
+  background: var(--bg-primary);
 }

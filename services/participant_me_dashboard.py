@@ -246,7 +246,7 @@ def build_plain_summary(
 ) -> str:
     lines = [
         f"Краткое резюме профиля: {display_name} (id {user_id})",
-        f"Ранг: {u.get('rank', 'unknown')}; настроение (к боту): {effective_tone or '—'}",
+        f"Полит. позиция: {u.get('rank', 'unknown')}; настроение (к боту): {effective_tone or '—'}",
         f"Сообщений за 7 дн.: {msgs_7d}; за 30 дн.: {msgs_30d}",
     ]
     if pol_7d is not None:

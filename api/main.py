@@ -216,11 +216,6 @@ async def monitoring_middleware(request: Request, call_next):
     return response
 
 
-@app.get("/api/v2/health")
-async def health():
-    return {"status": "ok", "version": "2.0.0"}
-
-
 @app.get("/api/v2/metrics")
 async def metrics(format: str = Query(default="json"), _auth=Depends(require_auth)):
     snap = snapshot("api_v2")

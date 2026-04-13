@@ -1,5 +1,5 @@
 """
-Админ-панель для мониторинга бота: статистика пользователей, портреты, ранги, настроения.
+Админ-панель для мониторинга бота: статистика пользователей, портреты, оси классификации, настроения к боту.
 Кнопка «Построить портрет» использует архив сообщений, которые бот прочитал в чате.
 
 Запуск: python admin_app.py
@@ -188,6 +188,8 @@ RESET_POLITICAL_COUNT_PATH = Path(__file__).resolve().parent / "reset_political_
 BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
 
 RANK_LABELS = {"loyal": "🇷🇺 Лояльный", "neutral": "⚪ Нейтральный", "opposition": "🔴 Оппозиция", "unknown": "❓ Неизвестно"}
+# Поле `rank` в данных сейчас отражает только эту ось; другие метки могут появиться отдельно.
+RANK_AXIS_LABEL = "Политическая позиция"
 
 _avatar_cache: dict[str, str] = {}
 _avatar_img_cache: dict[str, tuple[float, bytes, str]] = {}
@@ -613,7 +615,8 @@ def login_required(f):
         if app.testing or os.getenv("PYTEST_CURRENT_TEST"):
             return f(*args, **kwargs)
         if not _get_admin_password():
-            return f(*args, **kwargs)
+            logger.warning("ADMIN_PASSWORD not set — blocking access. Set ADMIN_PASSWORD in .env or data/admin_password.txt")
+            return "Admin password not configured. Set ADMIN_PASSWORD in .env.", 503
         if not session.get("admin_logged_in"):
             return redirect(url_for("login"))
         return f(*args, **kwargs)
@@ -673,11 +676,13 @@ def api_v2_graph_proxy(subpath: str):
     return proxy_response(body, status)
 
 
-@app.route("/api/v2/admin/<path:subpath>", methods=["GET", "POST"])
+@app.route("/api/v2/admin/<path:subpath>", methods=["GET", "POST", "PUT", "DELETE"])
 @login_required
 def api_v2_admin_proxy(subpath: str):
     """Прокси admin API в FastAPI v2 (сессия админа проверена)."""
-    data = request.get_data() if request.method == "POST" and request.is_json else None
+    data = None
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        data = request.get_data()
     body, status = proxy_to_fastapi(f"/api/v2/admin/{subpath}", method=request.method, data=data)
     return proxy_response(body, status)
 
@@ -929,6 +934,7 @@ def participant_me():
         user_id=str(user_id),
         u=u,
         rank_labels=RANK_LABELS,
+        rank_axis_label=RANK_AXIS_LABEL,
         effective_tone=effective_tone,
         my_connections=my_connections,
         tone_ru=TONE_RU,
@@ -1061,6 +1067,7 @@ def admin_user_profile(user_id):
         chat_id=chat_id,
         chats=chats_list,
         rank_labels=RANK_LABELS,
+        rank_axis_label=RANK_AXIS_LABEL,
         effective_tone=effective_tone_val,
         communication_style=communication_style,
         my_connections=my_connections,
@@ -1184,6 +1191,7 @@ def admin_legacy():
         total_warn=total_warn,
         users=sorted_users,
         rank_labels=RANK_LABELS,
+        rank_axis_label=RANK_AXIS_LABEL,
         chats=chats,
         current_chat=chat_id or "all",
         portrait_building_user_ids=_portrait_building_ids_from_api(),
@@ -1193,6 +1201,13 @@ def admin_legacy():
         chat_mode_presets={"default": "По умолчанию", "soft": "Мягкий", "active": "Активный", "beast": "Зверь"},
         chat_mode_descriptions=chat_mode_descriptions,
     )
+
+
+@app.route("/admin/classifications")
+@login_required
+def admin_classifications():
+    """Редактор осей классификации (JSON → data/classification_axes.json через API)."""
+    return render_template("admin/classifications.html")
 
 
 @app.route("/admin-modern")
@@ -1228,6 +1243,7 @@ def admin_modern():
         chats=get_chats(),
         chat_mode_presets={"default": "По умолчанию", "soft": "Мягкий", "active": "Активный", "beast": "Зверь"},
         chat_mode_descriptions=_chat_mode_descriptions(),
+        rank_axis_label=RANK_AXIS_LABEL,
         metrics={
             "users": total_users,
             "messages": total_messages,
@@ -1264,11 +1280,49 @@ def _parse_setting_value(key: str, val: str | None, defaults: dict):
     return val.strip()
 
 
+@app.route("/settings/change-password", methods=["POST"])
+@login_required
+def change_admin_password():
+    """Смена пароля входа в админку (только если пароль хранится в файле, не в ADMIN_PASSWORD)."""
+    if _ADMIN_PASSWORD_ENV:
+        session["settings_notice"] = (
+            "error",
+            "Пароль задан переменной окружения ADMIN_PASSWORD. Измените её в .env и перезапустите админ-сервис.",
+        )
+        return redirect(url_for("settings"))
+    current = (request.form.get("current_password") or "").strip()
+    new_pw = (request.form.get("new_password") or "").strip()
+    new_pw2 = (request.form.get("new_password_confirm") or "").strip()
+    stored = _get_admin_password()
+    if not stored:
+        session["settings_notice"] = ("error", "Пароль входа не настроен.")
+        return redirect(url_for("settings"))
+    if not _check_password(current, stored):
+        session["settings_notice"] = ("error", "Неверный текущий пароль.")
+        return redirect(url_for("settings"))
+    if len(new_pw) < 6:
+        session["settings_notice"] = ("error", "Новый пароль: минимум 6 символов.")
+        return redirect(url_for("settings"))
+    if new_pw != new_pw2:
+        session["settings_notice"] = ("error", "Новый пароль и подтверждение не совпадают.")
+        return redirect(url_for("settings"))
+    try:
+        ADMIN_PASSWORD_FILE.parent.mkdir(parents=True, exist_ok=True)
+        ADMIN_PASSWORD_FILE.write_text(_hash_password(new_pw), encoding="utf-8")
+    except Exception as e:
+        logger.warning("change_admin_password: %s", e)
+        session["settings_notice"] = ("error", "Не удалось сохранить пароль. Повторите попытку.")
+        return redirect(url_for("settings"))
+    session["settings_notice"] = ("ok", "Пароль обновлён.")
+    return redirect(url_for("settings"))
+
+
 @app.route("/settings", methods=["GET", "POST"])
 @login_required
 def settings():
     """Вкладка настроек бота."""
     from bot_settings import get_all, set_all, DEFAULTS
+    settings_notice = session.pop("settings_notice", None)
     if request.method == "POST":
         updates = {}
         bool_keys = {k for k, v in DEFAULTS.items() if isinstance(v, bool)}
@@ -1382,6 +1436,8 @@ def settings():
         settings=s,
         _fmt_emoji_list=_fmt_emoji_list,
         extra_settings=extra_settings,
+        settings_notice=settings_notice,
+        password_via_env=bool(_ADMIN_PASSWORD_ENV),
     )
 
 
@@ -1452,6 +1508,7 @@ def user_detail(user_id):
         user_id=user_id,
         u=u,
         rank_labels=RANK_LABELS,
+        rank_axis_label=RANK_AXIS_LABEL,
         effective_tone=_get_effective_tone(u),
         archive_count=archive_count,
         archive_by_chat=archive_by_chat,

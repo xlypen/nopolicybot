@@ -127,7 +127,7 @@ def step1_check_dashboard(session: requests.Session, report: WalkthroughReport) 
         }
         
         missing = []
-        for elem_id, elem_name in required.items:
+        for elem_id, elem_name in required.items():
             if elem_id not in html:
                 missing.append(elem_name)
         

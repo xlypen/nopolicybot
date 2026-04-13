@@ -38,7 +38,8 @@ class EdgeRepository:
         if edge:
             edge.weight += weight_delta
             edge.last_updated = datetime.utcnow()
-            edge.period_7d += weight_delta
+            if period == "7d":
+                edge.period_7d += weight_delta
             edge.period_30d += weight_delta
             if tone is not None:
                 edge.tone = tone

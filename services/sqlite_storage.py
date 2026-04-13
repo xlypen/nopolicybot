@@ -414,6 +414,8 @@ class SqliteStorage:
             pass
 
     def delete_dialogue_before(self, chat_id: int, cutoff_date: str) -> int:
+        if not storage_db_writes_enabled():
+            return 0
         conn = self._conn()
         try:
             cur = conn.execute(

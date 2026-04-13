@@ -136,11 +136,11 @@ def gemini_chat_complete(
         if system_text:
             payload["systemInstruction"] = {"parts": [{"text": system_text}]}
         payload["contents"] = contents
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=60) as resp:
@@ -183,11 +183,11 @@ def gemini_analyze_image(image_bytes: bytes, prompt_text: str, *, mime: str = "i
             "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {"maxOutputTokens": 640, "temperature": 0.45},
         }
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=60) as resp:

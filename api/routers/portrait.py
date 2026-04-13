@@ -213,6 +213,7 @@ async def post_portrait_classify_unknown(body: dict = Body(default_factory=dict)
             await _run_sync(set_deep_portrait, uid, portrait, rank)
             processed += 1
         except Exception:
+            logger.exception("portrait classify_unknown failed: user_id=%s chat_id=%s", uid, chat_id)
             failed += 1
         finally:
             _portrait_building.discard(uid_key)

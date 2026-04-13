@@ -1,5 +1,5 @@
 """
-Статистика и портреты пользователей: ранги по полит. взглядам, ежедневное обновление портрета.
+Статистика и портреты пользователей: полит. позиция (поле rank) как одна из осей, ежедневное обновление портрета.
 Хранит архив сообщений участников (до 1000 на человека) для построения глубокого портрета.
 
 Файл user_stats.json НЕ обнуляется при перезапуске бота — данные накапливаются.
@@ -8,7 +8,7 @@
 import json
 import logging
 import tempfile
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from ai_analyzer import update_user_portrait, assess_tone_toward_bot
@@ -168,6 +168,17 @@ def _apply_migrations(data: dict) -> bool:
     modified = _migrate_close_attention(data) or modified
     modified = _migrate_factcheck(data) or modified
     modified = _migrate_portrait_image(data) or modified
+    modified = _migrate_classifications(data) or modified
+    return modified
+
+
+def _migrate_classifications(data: dict) -> bool:
+    """Добавляет classifications для старых записей."""
+    modified = False
+    for u in data.get("users", {}).values():
+        if "classifications" not in u:
+            u["classifications"] = {}
+            modified = True
     return modified
 
 
@@ -205,6 +216,7 @@ def _default_user(user_id: int, display_name: str = "") -> dict:
         "close_attention_views": [],  # [{date, source, views, needs_evidence, evidence_found}, ...], до 200 записей
         "factcheck_enabled": False,  # факт-чек высказываний для этого пользователя
         "portrait_image_updated_date": "",  # дата последней генерации картинки портрета "YYYY-MM-DD"
+        "classifications": {},  # axis_id -> { "value": str, "updated_at": iso }
     }
 
 
@@ -273,7 +285,7 @@ def get_user(user_id: int, display_name: str = "") -> dict:
 
 def _ensure_messages_by_chat(u: dict, data: dict | None = None) -> bool:
     """Мигрирует messages_archive в messages_by_chat при первом обращении. Возвращает True если была миграция (нужно сохранить)."""
-    if u.get("messages_by_chat"):
+    if "messages_by_chat" in u and isinstance(u["messages_by_chat"], dict):
         return False
     by_chat = u.get("messages_by_chat") or {}
     old = u.get("messages_archive") or []
@@ -583,16 +595,23 @@ def clear_user_archive(user_id: int, chat_id: int | str | None = None) -> bool:
 def get_user_messages_for_today(user_id: int) -> list[dict]:
     """Сообщения пользователя за сегодня (архив + daily_buffer) для «вопроса дня»."""
     today_str = date.today().isoformat()
-    result = []
+    result: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(text: str, date_val: str, sentiment: str = "") -> None:
+        key = (text.strip(), date_val)
+        if key in seen or not key[0]:
+            return
+        seen.add(key)
+        result.append({"text": text, "date": date_val, "sentiment": sentiment})
+
     if _db_reads():
         st = _get_storage()
         if st:
             try:
                 for m in st.get_user_messages(user_id, None, 3000):
                     if str(m.get("date", "")).startswith(today_str):
-                        result.append(
-                            {"text": m.get("text", ""), "date": m.get("date", ""), "sentiment": ""}
-                        )
+                        _add(m.get("text", ""), m.get("date", ""))
             except Exception as e:
                 logger.debug("get_user_messages_for_today storage: %s", e)
     u = get_user(user_id)
@@ -601,14 +620,10 @@ def get_user_messages_for_today(user_id: int) -> list[dict]:
     for msgs in (u.get("messages_by_chat") or {}).values():
         for m in msgs:
             if m.get("date", "").startswith(today_str):
-                result.append({"text": m.get("text", ""), "date": m.get("date", ""), "sentiment": ""})
+                _add(m.get("text", ""), m.get("date", ""))
     for m in u.get("daily_buffer") or []:
         if m.get("date") == today_str:
-            result.append({
-                "text": m.get("text", ""),
-                "date": m.get("date", ""),
-                "sentiment": m.get("sentiment", ""),
-            })
+            _add(m.get("text", ""), m.get("date", ""), m.get("sentiment", ""))
     result.sort(key=lambda x: x.get("date", ""))
     return result
 
@@ -957,6 +972,31 @@ def set_deep_portrait(user_id: int, portrait: str, rank: str = "neutral") -> boo
     return True
 
 
+def set_user_axis_classification(
+    user_id: int,
+    axis_id: str,
+    value: str,
+    *,
+    sync_rank: bool = False,
+) -> bool:
+    """Сохраняет значение настраиваемой оси классификации. При sync_rank и допустимом значении обновляет rank."""
+    key = str(axis_id or "").strip().lower()
+    if not key:
+        return False
+    v = (value or "").strip()
+    if not v:
+        v = "unknown"
+    u = get_user(user_id)
+    u.setdefault("classifications", {})[key] = {
+        "value": v,
+        "updated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+    }
+    if sync_rank and v in RANKS:
+        u["rank"] = v
+    _persist_full_user(user_id, u)
+    return True
+
+
 def set_portrait_image_updated_date(user_id: int) -> bool:
     """Обновляет дату последней генерации картинки портрета."""
     st = _get_storage()
@@ -1120,7 +1160,7 @@ def get_stats_for_log() -> str:
         name = u.get("display_name") or uid
         rank = u.get("rank", "unknown")
         s = u.get("stats", {})
-        lines.append(f"id={uid} | {name} | ранг: {rank}")
+        lines.append(f"id={uid} | {name} | полит. позиция: {rank}")
         lines.append(f"  сообщений: {s.get('total_messages', 0)}, полит.: {s.get('political_messages', 0)} | "
                     f"+/−/0: {s.get('positive_sentiment', 0)}/{s.get('negative_sentiment', 0)}/{s.get('neutral_sentiment', 0)} | "
                     f"замечаний: {s.get('warnings_received', 0)}")
@@ -1153,7 +1193,7 @@ def get_ranks_for_chat() -> str:
     if not users:
         return "База участников пуста."
     rank_emoji = {"loyal": "🇷🇺", "neutral": "⚪", "opposition": "🔴", "unknown": "❓"}
-    lines = ["<b>Ранги участников</b> (по полит. взглядам):\n"]
+    lines = ["<b>Классификация: политическая позиция</b> (одна из осей; поле в базе — rank):\n"]
     for uid, u in sorted(users.items(), key=lambda x: -x[1].get("stats", {}).get("total_messages", 0)):
         name = escape(str(u.get("display_name") or uid))
         rank = u.get("rank", "unknown")

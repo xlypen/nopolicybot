@@ -277,8 +277,8 @@ def _build_portrait_sections(
     pol_parts = [f"Полит. сообщений: {total_political} ({political_pct}%)."]
     if ranks_count:
         r_str = ", ".join(f"{r_labels.get(k, k)}: {v}" for k, v in ranks_count.items())
-        pol_parts.append(f"Ранги: {r_str}.")
-    pol_parts.append(f"Настроения: +{pos_sent} / −{neg_sent} / 0{neu_sent}.")
+        pol_parts.append(f"Полит. позиции (ось классификации rank): {r_str}.")
+    pol_parts.append(f"Настроения: +{pos_sent} / −{neg_sent} / ○{neu_sent}.")
     political = " ".join(pol_parts)
 
     # Частые темы
@@ -312,7 +312,7 @@ def _generate_ai_portrait(sections: dict, participants: int, total_messages: int
 {{
   "psychological": "2-3 предложения: атмосфера, тон, конфликты, психологический климат",
   "professional": "2-3 предложения: рабочие темы, экспертиза, профессиональный контекст",
-  "political": "2-3 предложения: политический профиль, ранги, настроения",
+  "political": "2-3 предложения: политический профиль, распределение по полит. позиции, настроения",
   "topics": "частые темы для разговоров, перечисление",
   "summary": "1-2 предложения: общая характеристика чата"
 }}
@@ -489,7 +489,7 @@ def render_analysis_full(data: dict, chat_title: str = "") -> str:
             f'<div style="font-size:0.95rem;font-weight:600;">{esc(str(val))}</div></div>'
         )
     h.append('</div>')
-    # Ранги
+    # Полит. позиции (ось rank)
     rl = data.get("RANK_LABELS") or {}
     rank_chips = " ".join(
         f'<span style="padding:0.2rem 0.5rem;border-radius:999px;background:#1a3a5c;color:#c9dcf5;font-size:0.8rem;">'
@@ -497,7 +497,7 @@ def render_analysis_full(data: dict, chat_title: str = "") -> str:
         for k, v in (data["ranks_count"] or {}).items()
     )
     if rank_chips:
-        h.append(f'<p style="margin-top:0.5rem;">Ранги: {rank_chips}</p>')
+        h.append(f'<p style="margin-top:0.5rem;">Полит. позиция: {rank_chips}</p>')
     h.append('</section>')
 
     # 3. Модерация

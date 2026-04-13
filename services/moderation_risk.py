@@ -22,12 +22,22 @@ async def _texts_from_db(chat_id: int, days: int = 30) -> list[str]:
     return [str(m.text) for m in rows if getattr(m, "text", None)]
 
 
+def _run_async(coro):
+    try:
+        asyncio.get_running_loop()
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result(timeout=30)
+    except RuntimeError:
+        return asyncio.run(coro)
+
+
 def build_moderation_risk(chat_id: int | None = None) -> dict:
     mode = get_storage_mode()
     texts: list[str] = []
     if chat_id is not None and storage_db_reads_enabled(mode):
         try:
-            texts = asyncio.run(_texts_from_db(chat_id=int(chat_id), days=30))
+            texts = _run_async(_texts_from_db(chat_id=int(chat_id), days=30))
             if storage_json_fallback_enabled(mode) and not texts:
                 texts = []
         except Exception:

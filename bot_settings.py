@@ -118,6 +118,7 @@ def _load() -> dict:
 
     merged = dict(DEFAULTS)
 
+    db_loaded = False
     if storage_db_reads_enabled():
         st = get_storage()
         if st:
@@ -126,15 +127,16 @@ def _load() -> dict:
                 for k, v in data.items():
                     if k in DEFAULTS and k != "chat_settings":
                         merged[k] = v
-                return merged
+                db_loaded = True
 
-    if storage_json_fallback_enabled() and SETTINGS_PATH.exists():
+    if (not db_loaded or not merged.get("chat_settings")) and storage_json_fallback_enabled() and SETTINGS_PATH.exists():
         try:
             data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
             if isinstance(data, dict):
-                for k, v in data.items():
-                    if k in DEFAULTS:
-                        merged[k] = v
+                if not db_loaded:
+                    for k, v in data.items():
+                        if k in DEFAULTS:
+                            merged[k] = v
                 if "chat_settings" in data and isinstance(data["chat_settings"], dict):
                     merged["chat_settings"] = data["chat_settings"]
         except Exception:

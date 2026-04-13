@@ -33,7 +33,10 @@ def _parse_chat_id(raw: int | str) -> int:
     """Parse chat_id: 'all' or 0 -> 0 (все чаты), иначе int."""
     if raw == 0 or str(raw).strip().lower() == "all":
         return 0
-    return int(raw)
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return 0
 
 
 @router.get("/user/{user_id}")

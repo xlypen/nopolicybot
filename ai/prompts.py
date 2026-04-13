@@ -6,6 +6,9 @@ from pathlib import Path
 
 _PROMPTS_PATH = Path(__file__).resolve().parent.parent / "data" / "bot_prompts.json"
 
+_custom_prompts_cache: dict[str, str] | None = None
+_custom_prompts_mtime: float = 0.0
+
 
 DEFAULT_PROMPTS: dict[str, str] = {
     "SUBSTANTIVE_REPLY_PROMPT": """Ты — бот, которому задали нормальный вопрос (не технический, не про политику). Пользователь хочет поддержать диалог, задал вопрос, на который можно ответить по существу.
@@ -30,24 +33,41 @@ DEFAULT_PROMPTS: dict[str, str] = {
 
 
 def _load_custom_prompts() -> dict[str, str]:
+    global _custom_prompts_cache, _custom_prompts_mtime
     if not _PROMPTS_PATH.exists():
+        _custom_prompts_cache = {}
+        _custom_prompts_mtime = 0.0
         return {}
+    try:
+        mtime = _PROMPTS_PATH.stat().st_mtime
+    except Exception:
+        mtime = 0.0
+    if _custom_prompts_cache is not None and mtime == _custom_prompts_mtime:
+        return _custom_prompts_cache
     try:
         raw = json.loads(_PROMPTS_PATH.read_text(encoding="utf-8"))
     except Exception:
-        return {}
+        return _custom_prompts_cache if _custom_prompts_cache is not None else {}
     if not isinstance(raw, dict):
-        return {}
+        return _custom_prompts_cache if _custom_prompts_cache is not None else {}
     out: dict[str, str] = {}
     for k, v in raw.items():
         if isinstance(k, str) and isinstance(v, str) and v.strip():
             out[k] = v
+    _custom_prompts_cache = out
+    _custom_prompts_mtime = mtime
     return out
 
 
 def _save_custom_prompts(prompts: dict[str, str]) -> None:
+    global _custom_prompts_cache, _custom_prompts_mtime
     _PROMPTS_PATH.parent.mkdir(parents=True, exist_ok=True)
     _PROMPTS_PATH.write_text(json.dumps(prompts, ensure_ascii=False, indent=2), encoding="utf-8")
+    _custom_prompts_cache = dict(prompts)
+    try:
+        _custom_prompts_mtime = _PROMPTS_PATH.stat().st_mtime
+    except Exception:
+        _custom_prompts_mtime = 0.0
 
 
 def get_prompt(name: str, default: str = "") -> str:

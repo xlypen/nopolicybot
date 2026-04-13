@@ -7,6 +7,7 @@ from threading import Lock
 
 _MEMORY_STORE: dict[str, tuple[float, str]] = {}
 _MEMORY_LOCK = Lock()
+_MEMORY_MAX_ITEMS = 4096
 
 
 class CacheBackend:
@@ -66,6 +67,14 @@ class CacheBackend:
             except Exception:
                 pass
         with _MEMORY_LOCK:
+            if len(_MEMORY_STORE) >= _MEMORY_MAX_ITEMS:
+                now = time.time()
+                expired = [k for k, (exp, _) in _MEMORY_STORE.items() if exp <= now]
+                for k in expired:
+                    del _MEMORY_STORE[k]
+                if len(_MEMORY_STORE) >= _MEMORY_MAX_ITEMS:
+                    oldest = min(_MEMORY_STORE, key=lambda k: _MEMORY_STORE[k][0])
+                    del _MEMORY_STORE[oldest]
             _MEMORY_STORE[full_key] = (time.time() + safe_ttl, raw)
 
     def delete(self, key: str) -> None:

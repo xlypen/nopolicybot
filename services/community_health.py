@@ -35,11 +35,21 @@ async def _daily_activity_db(chat_id: int, days: int = 30) -> tuple[list[dict], 
     return out, texts
 
 
+def _run_async(coro):
+    try:
+        asyncio.get_running_loop()
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result(timeout=30)
+    except RuntimeError:
+        return asyncio.run(coro)
+
+
 def _daily_activity(chat_id: int | None = None, days: int = 30) -> tuple[list[dict], list[str]]:
     mode = get_storage_mode()
     if chat_id is not None and storage_db_reads_enabled(mode):
         try:
-            out, texts = asyncio.run(_daily_activity_db(chat_id=int(chat_id), days=days))
+            out, texts = _run_async(_daily_activity_db(chat_id=int(chat_id), days=days))
             has_data = any(int(x.get("count", 0) or 0) > 0 for x in out)
             if has_data or storage_db_only_mode(mode):
                 return out, texts

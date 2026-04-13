@@ -15,7 +15,11 @@ def user_hash(user_id: int | str, chat_id: int | str | None = None) -> str:
     """
     Stable pseudonymous identifier for analytics surfaces.
     """
-    salt = str(os.getenv("USER_HASH_SALT") or os.getenv("ADMIN_SECRET_KEY") or "nopolicybot").strip()
+    salt = str(os.getenv("USER_HASH_SALT") or os.getenv("ADMIN_SECRET_KEY") or "").strip()
+    if not salt:
+        import logging as _log
+        _log.getLogger(__name__).warning("USER_HASH_SALT not set — pseudonymous IDs are predictable; set USER_HASH_SALT in .env")
+        salt = "nopolicybot"
     payload = f"{salt}|{chat_id if chat_id is not None else 'all'}|{int(user_id)}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 

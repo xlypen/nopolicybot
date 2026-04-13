@@ -42,7 +42,8 @@ async def init_db():
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     except Exception:
-        pass
+        import logging as _logging
+        _logging.getLogger(__name__).exception("init_db failed — tables may be missing")
 
 
 @asynccontextmanager

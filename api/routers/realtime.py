@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
@@ -104,8 +105,25 @@ async def realtime_stats(_auth=Depends(require_auth)):
     return {"ok": True, "stats": await _broadcast_manager.stats(), "ts": _utc_now()}
 
 
+def _ws_check_token(ws: WebSocket) -> bool:
+    token = str(os.getenv("ADMIN_TOKEN", "")).strip()
+    if not token:
+        return False
+    supplied = (ws.query_params.get("token") or "").strip()
+    if not supplied:
+        for h_name, h_val in ws.headers.items():
+            if h_name.lower() == "authorization":
+                supplied = h_val.replace("Bearer ", "").strip()
+                break
+    import hmac as _hmac
+    return bool(supplied and _hmac.compare_digest(supplied, token))
+
+
 @router.websocket("/ws/{chat_id}")
 async def websocket_endpoint(ws: WebSocket, chat_id: str):
+    if not _ws_check_token(ws):
+        await ws.close(code=1008, reason="unauthorized")
+        return
     try:
         chat_id_int = int(str(chat_id).strip())
     except Exception:

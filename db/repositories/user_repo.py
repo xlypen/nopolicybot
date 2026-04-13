@@ -46,10 +46,12 @@ class UserRepository:
         user.last_seen = to_naive_utc(kwargs.get("last_seen"))
         return user
 
-    async def get_all(self, chat_id: int) -> list[User]:
-        result = await self.session.execute(select(User).where(User.chat_id == chat_id, User.is_active == True))  # noqa: E712
+    async def get_all(self, chat_id: int, *, limit: int = 5000) -> list[User]:
+        q = select(User).where(User.chat_id == chat_id, User.is_active == True).limit(limit)  # noqa: E712
+        result = await self.session.execute(q)
         return result.scalars().all()
 
-    async def get_all_active(self) -> list[User]:
-        result = await self.session.execute(select(User).where(User.is_active == True))  # noqa: E712
+    async def get_all_active(self, *, limit: int = 10000) -> list[User]:
+        q = select(User).where(User.is_active == True).limit(limit)  # noqa: E712
+        result = await self.session.execute(q)
         return result.scalars().all()

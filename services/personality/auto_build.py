@@ -111,7 +111,13 @@ def _save_profile_sync(user_id: int, chat_id: int, profile: PersonalityProfile) 
             await save_profile(session, user_id, chat_id, profile)
             await session.commit()
 
-    asyncio.run(_save())
+    try:
+        asyncio.get_running_loop()
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(asyncio.run, _save()).result(timeout=30)
+    except RuntimeError:
+        asyncio.run(_save())
 
 
 def generate_portrait(

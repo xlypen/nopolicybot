@@ -164,7 +164,8 @@ def _save(data: dict) -> None:
                 tmp_path = Path(tmp.name)
             tmp_path.replace(SETTINGS_PATH)
         except Exception:
-            pass
+            import logging as _log
+            _log.getLogger(__name__).warning("bot_settings: failed to save JSON to %s", SETTINGS_PATH, exc_info=True)
 
 
 def _get_chat_overrides_from_db(chat_id: int) -> dict:

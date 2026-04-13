@@ -1,7 +1,6 @@
 """Storage status and cutover API."""
 
 import asyncio
-from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Query
 from fastapi.responses import JSONResponse

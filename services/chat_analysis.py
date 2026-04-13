@@ -66,7 +66,7 @@ def build_chat_analysis(
     days = max(1, min(int(period_days or 7), 30))
 
     from user_stats import get_users_in_chat, get_user_display_names, get_user
-    from social_graph import get_connections, get_connections_for_digest, get_user_roles, get_conflict_forecast
+    from social_graph import get_connections_for_digest, get_user_roles, get_conflict_forecast
     from utils.labels import TONE_RU, TOPIC_RU, ROLE_RU
 
     RANK_LABELS = {

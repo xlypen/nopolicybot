@@ -17,12 +17,6 @@ _DB_PATH = Path(__file__).resolve().parent.parent / "data" / "bot.db"
 _GRAPH_META_ID = 2  # storage_settings.id=2 for graph metadata
 
 
-def _get_conn():
-    import sqlite3
-    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    return sqlite3.connect(str(_DB_PATH))
-
-
 def _ensure_tables(conn) -> None:
     """Create storage tables if missing (user_profiles, storage_chats, etc.)."""
     conn.executescript("""
@@ -167,8 +161,6 @@ class SqliteStorage:
                 (int(user_id), limit),
             ).fetchall()
             return [{"text": r[0], "date": r[1], "chat_id": r[2]} for r in rows]
-        finally:
-            pass
 
     def get_display_names(self) -> dict[str, str]:
         conn = self._conn()
@@ -189,8 +181,6 @@ class SqliteStorage:
                 (int(chat_id),),
             ).fetchall()
             return [r[0] for r in rows]
-        finally:
-            pass
 
     def increment_warnings(self, user_id: int) -> None:
         if not storage_db_writes_enabled():
@@ -202,8 +192,6 @@ class SqliteStorage:
                 (int(user_id),),
             )
             conn.commit()
-        finally:
-            pass
 
     def append_message(
         self, user_id: int, chat_id: int, text: str, date: str, *, dedupe: bool = True
@@ -226,8 +214,6 @@ class SqliteStorage:
             )
             conn.commit()
             return True
-        finally:
-            pass
 
     def get_chat(self, chat_id: int) -> dict | None:
         conn = self._conn()
@@ -239,8 +225,6 @@ class SqliteStorage:
             if not row:
                 return None
             return {"chat_id": row[0], "title": row[1] or "", "last_seen": row[2] or ""}
-        finally:
-            pass
 
     def upsert_chat(self, chat_id: int, title: str) -> None:
         if not storage_db_writes_enabled():
@@ -254,8 +238,6 @@ class SqliteStorage:
                 (int(chat_id), title or "", today),
             )
             conn.commit()
-        finally:
-            pass
 
     def list_storage_chats(self) -> list[dict]:
         conn = self._conn()
@@ -267,8 +249,6 @@ class SqliteStorage:
                 {"chat_id": int(r[0]), "title": r[1] or "", "last_seen": r[2] or ""}
                 for r in rows
             ]
-        finally:
-            pass
 
     def iter_user_profiles(self) -> list[tuple[int, dict]]:
         conn = self._conn()
@@ -285,8 +265,6 @@ class SqliteStorage:
                 except Exception:
                     continue
             return out
-        finally:
-            pass
 
     def delete_user_message_archive(self, user_id: int, chat_id: int | None = None) -> int:
         if not storage_db_writes_enabled():
@@ -305,8 +283,6 @@ class SqliteStorage:
                 )
             conn.commit()
             return int(cur.rowcount or 0)
-        finally:
-            pass
 
     def get_graph_meta(self) -> dict:
         conn = self._conn()
@@ -320,8 +296,6 @@ class SqliteStorage:
             raw = row[0]
             d = json.loads(raw) if isinstance(raw, str) else (raw or {})
             return dict(d) if isinstance(d, dict) else {}
-        finally:
-            pass
 
     def replace_graph_meta(self, data: dict) -> None:
         if not storage_db_writes_enabled():
@@ -335,8 +309,6 @@ class SqliteStorage:
                 (_GRAPH_META_ID, payload),
             )
             conn.commit()
-        finally:
-            pass
 
     def append_dialogue_message(
         self,
@@ -365,8 +337,6 @@ class SqliteStorage:
                 ),
             )
             conn.commit()
-        finally:
-            pass
 
     def get_dialogue_messages(self, chat_id: int, date: str) -> list[dict]:
         conn = self._conn()
@@ -387,8 +357,6 @@ class SqliteStorage:
                 }
                 for r in rows
             ]
-        finally:
-            pass
 
     def get_distinct_dialogue_dates(self, chat_id: int, before_date: str) -> list[str]:
         conn = self._conn()
@@ -400,8 +368,6 @@ class SqliteStorage:
                 (int(chat_id), before_date),
             ).fetchall()
             return [r[0] for r in rows]
-        finally:
-            pass
 
     def get_all_dialogue_chat_ids(self) -> list[int]:
         conn = self._conn()
@@ -410,8 +376,6 @@ class SqliteStorage:
                 "SELECT DISTINCT chat_id FROM dialogue_messages"
             ).fetchall()
             return [r[0] for r in rows]
-        finally:
-            pass
 
     def delete_dialogue_before(self, chat_id: int, cutoff_date: str) -> int:
         if not storage_db_writes_enabled():
@@ -424,14 +388,15 @@ class SqliteStorage:
             )
             conn.commit()
             return cur.rowcount
-        finally:
-            pass
 
     def _pair_to_users(self, pair_key: str) -> tuple[int, int]:
         parts = pair_key.split("|")
         if len(parts) != 2:
             return 0, 0
-        a, b = int(parts[0]), int(parts[1])
+        try:
+            a, b = int(parts[0]), int(parts[1])
+        except (ValueError, TypeError):
+            return 0, 0
         return min(a, b), max(a, b)
 
     def get_connection(self, chat_id: int, pair_key: str) -> dict | None:
@@ -456,8 +421,6 @@ class SqliteStorage:
                 "user_b": ub,
                 "message_count": int(w or 0),
             }
-        finally:
-            pass
 
     def upsert_connection(self, chat_id: int, pair_key: str, data: dict) -> None:
         if not storage_db_writes_enabled():
@@ -524,8 +487,6 @@ class SqliteStorage:
                     "message_count": w,
                 })
             return out
-        finally:
-            pass
 
     def get_last_processed_date(self) -> str | None:
         conn = self._conn()
@@ -538,8 +499,6 @@ class SqliteStorage:
                 return None
             data = json.loads(row[0]) if isinstance(row[0], str) else (row[0] or {})
             return data.get("last_processed_date") or None
-        finally:
-            pass
 
     def set_last_processed_date(self, date: str) -> None:
         if not storage_db_writes_enabled():
@@ -562,8 +521,6 @@ class SqliteStorage:
                 (_GRAPH_META_ID, payload),
             )
             conn.commit()
-        finally:
-            pass
 
     def get_processed_dates_for_chat(self, chat_id: int) -> set[str]:
         conn = self._conn()
@@ -597,8 +554,6 @@ class SqliteStorage:
                 return {}
             raw = row[0]
             return json.loads(raw) if isinstance(raw, str) else (raw or {})
-        finally:
-            pass
 
     def set_global_settings(self, data: dict) -> None:
         if not storage_db_writes_enabled():
@@ -612,8 +567,6 @@ class SqliteStorage:
                 (payload,),
             )
             conn.commit()
-        finally:
-            pass
 
 
 def _make_storage():

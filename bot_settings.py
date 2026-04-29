@@ -195,8 +195,9 @@ def _get_chat_overrides_from_db(chat_id: int) -> dict:
     if not DB_PATH.exists():
         return {}
     try:
-        import sqlite3
-        conn = sqlite3.connect(str(DB_PATH))
+        from services.sqlite_util import sqlite_connect
+
+        conn = sqlite_connect(DB_PATH)
         row = conn.execute(
             "SELECT settings FROM chat_settings WHERE chat_id = ?", (chat_id,)
         ).fetchone()
@@ -268,8 +269,9 @@ def _set_chat_overrides_in_db(chat_id: int, overrides: dict) -> None:
     if not DB_PATH.exists():
         return
     try:
-        import sqlite3
-        conn = sqlite3.connect(str(DB_PATH))
+        from services.sqlite_util import sqlite_connect
+
+        conn = sqlite_connect(DB_PATH)
         if not overrides:
             conn.execute("DELETE FROM chat_settings WHERE chat_id = ?", (chat_id,))
         else:

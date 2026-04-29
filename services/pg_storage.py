@@ -141,17 +141,31 @@ class PgStorage:
         return result
 
     def get_users_in_chat(self, chat_id: int) -> list[int]:
+        """Участники чата: union messages, user_message_archive, dialogue_messages."""
+        cid = int(chat_id)
+        seen: set[int] = set()
         with sync_session_scope() as session:
-            rows = session.execute(
-                text(
-                    """
-                    SELECT DISTINCT user_id FROM messages
-                    WHERE chat_id = :cid AND user_id IS NOT NULL
-                    """
-                ),
-                {"cid": int(chat_id)},
-            ).fetchall()
-        return [r[0] for r in rows]
+            for q in (
+                """
+                SELECT DISTINCT user_id FROM messages
+                WHERE chat_id = :cid AND user_id IS NOT NULL
+                """,
+                """
+                SELECT DISTINCT user_id FROM user_message_archive
+                WHERE chat_id = :cid AND user_id IS NOT NULL
+                """,
+                """
+                SELECT DISTINCT sender_id FROM dialogue_messages
+                WHERE chat_id = :cid AND sender_id IS NOT NULL
+                """,
+            ):
+                try:
+                    for r in session.execute(text(q), {"cid": cid}).fetchall():
+                        if r[0] is not None:
+                            seen.add(int(r[0]))
+                except Exception:
+                    pass
+        return sorted(seen)
 
     def increment_warnings(self, user_id: int) -> None:
         if not storage_db_writes_enabled():

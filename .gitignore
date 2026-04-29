@@ -4,6 +4,7 @@
 .env.from_proc
 .env.merged
 .env.new
+.env.example
 venv/
 .venv/
 __pycache__/
@@ -19,6 +20,21 @@ __pycache__/
 *.bak
 *.bak.*
 *.pyc
+
+# Test/coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+pytest_run.log
+
+# Runtime data outputs (генерируемые отчёты, экспорт, портреты)
+data/export/
+data/finetune/
+data/reports/
+data/portraits/-*/
+data/portraits/0/*/*.png
+notebooks/
+bot_explainability.json
 
 user_stats.json
 social_graph.json
@@ -45,3 +61,11 @@ data/parity_diff.log
 bot_last_start.json
 .sqlite_migrated_from_json
 graf_ex/
+
+# Cleanup trash dirs (rollback storage)
+.trash-cleanup-*/
+# DB migration backups
+data/bot.db.pre-*
+data/bot.db.bak.*
+# IDE artifacts
+Untitled-*

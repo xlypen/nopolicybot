@@ -1,0 +1,186 @@
+{% extends "admin/base.html" %}
+{% block title %}Спарринг — Nopolicybot{% endblock %}
+{% block head_extra %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/sparring.css') }}?v=44">
+{% endblock %}
+{% block body %}
+<div class="hero hero--compact">
+  <div class="header"><h1>Спарринг</h1></div>
+  <p class="hero-lead">
+    Статы пересчитываются из таблиц <strong>messages</strong>, <strong>marketing_signal_events</strong> и <strong>personality_profiles</strong>
+    за выбранную календарную неделю (пн–вс). Персонажи — аватар + мультяшный силуэт; исход боя считает сервер.
+  </p>
+</div>
+
+<div class="sparring-controls">
+  <label>Чат
+    <select id="sparringChat">
+      <option value="">— выберите чат —</option>
+      {% for c in chats %}
+      <option value="{{ c.chat_id }}">{{ c.title or c.chat_id }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Неделя (понедельник)
+    <input type="date" id="sparringWeek" value="{{ default_week }}" />
+  </label>
+  <button type="button" class="btn btn-secondary" id="sparringRecompute">Пересчитать из БД</button>
+  <button type="button" class="btn" id="sparringLoad">Загрузить ростер</button>
+  <span class="sparring-status" id="sparringStatus"></span>
+</div>
+
+<div class="sparring-tabs" role="tablist" aria-label="Режим спарринга">
+  <button type="button" class="sparring-tab is-active" data-sparring-tab="duel" role="tab" aria-selected="true" id="sparringTabDuel">Дуэль</button>
+  <button type="button" class="sparring-tab" data-sparring-tab="tournaments" role="tab" aria-selected="false" id="sparringTabTournaments">Турниры</button>
+</div>
+
+<div id="sparringPanelDuel" class="sparring-tab-panel is-active" role="tabpanel" aria-labelledby="sparringTabDuel">
+<div class="sparring-picks">
+  <label>Боец A
+    <select id="fighterA"><option value="">—</option></select>
+  </label>
+  <label>Боец B
+    <select id="fighterB"><option value="">—</option></select>
+  </label>
+  <button type="button" class="btn" id="sparringFight" disabled>В бой</button>
+</div>
+
+<div class="sparring-main-layout">
+<div class="sparring-main-col">
+<div class="sparring-arena" id="sparringArena" aria-live="polite">
+  <div class="sparring-ring" id="sparringRing">
+    <div class="sparring-finale" id="sparringFinale" aria-hidden="true">
+      <div class="sparring-finale-inner">
+        <div class="sparring-finale-tag" id="sparringFinaleTag">WIN!</div>
+        <div class="sparring-finale-name" id="sparringFinaleName"></div>
+      </div>
+    </div>
+    <div class="fighter fighter--a" id="fighterMountA" data-side="a">
+      <div class="fighter-hud">
+        <div class="fighter-hp-track" aria-hidden="true"><div class="fighter-hp-fill"></div></div>
+        <span class="fighter-hp-label">—</span>
+        <div class="fighter-stam-row" aria-hidden="true">
+          <span class="fighter-stam-caption">Стамина</span>
+          <div class="fighter-stam-track"><div class="fighter-stam-fill"></div></div>
+        </div>
+        <div class="fighter-rage-row" aria-hidden="true">
+          <span class="fighter-rage-caption">Ярость</span>
+          <div class="fighter-rage-track"><div class="fighter-rage-fill"></div></div>
+        </div>
+      </div>
+      <div class="fighter-sprite-wrap">
+        <div class="fighter-sprite">
+          <div class="fighter-limbs fighter-limbs--0" aria-hidden="true">
+            <span class="fighter-leg fighter-leg--l"></span>
+            <span class="fighter-leg fighter-leg--r"></span>
+            <div class="fighter-body fighter-body--0" data-part="body"></div>
+            <span class="fighter-arm fighter-arm--back"></span>
+            <span class="fighter-arm fighter-arm--front"></span>
+          </div>
+          <div class="fighter-head-wrap">
+            <img class="fighter-avatar" alt="" width="72" height="72" />
+          </div>
+        </div>
+      </div>
+      <div class="fighter-meta">
+        <span class="fighter-name">—</span>
+        <ul class="fighter-stats"></ul>
+      </div>
+    </div>
+    <div class="fighter fighter--b" id="fighterMountB" data-side="b">
+      <div class="fighter-hud">
+        <div class="fighter-hp-track" aria-hidden="true"><div class="fighter-hp-fill"></div></div>
+        <span class="fighter-hp-label">—</span>
+        <div class="fighter-stam-row" aria-hidden="true">
+          <span class="fighter-stam-caption">Стамина</span>
+          <div class="fighter-stam-track"><div class="fighter-stam-fill"></div></div>
+        </div>
+        <div class="fighter-rage-row" aria-hidden="true">
+          <span class="fighter-rage-caption">Ярость</span>
+          <div class="fighter-rage-track"><div class="fighter-rage-fill"></div></div>
+        </div>
+      </div>
+      <div class="fighter-sprite-wrap">
+        <div class="fighter-sprite">
+          <div class="fighter-limbs fighter-limbs--0" aria-hidden="true">
+            <span class="fighter-leg fighter-leg--l"></span>
+            <span class="fighter-leg fighter-leg--r"></span>
+            <div class="fighter-body fighter-body--0" data-part="body"></div>
+            <span class="fighter-arm fighter-arm--back"></span>
+            <span class="fighter-arm fighter-arm--front"></span>
+          </div>
+          <div class="fighter-head-wrap">
+            <img class="fighter-avatar" alt="" width="72" height="72" />
+          </div>
+        </div>
+      </div>
+      <div class="fighter-meta">
+        <span class="fighter-name">—</span>
+        <ul class="fighter-stats"></ul>
+      </div>
+    </div>
+  </div>
+  <div class="sparring-arena-log">
+    <p class="sparring-round-live" id="sparringRoundLive" aria-live="polite"></p>
+    <p class="sparring-log" id="sparringLog">Выберите чат, загрузите ростер и запустите бой.</p>
+  </div>
+</div>
+
+<details class="sparring-guide sparring-guide-below" id="sparringGuide">
+  <summary>Как считаются статы и «прокачка»</summary>
+  <div class="sparring-guide-body">
+    <p class="sparring-guide-lead">Все боевые числа пересчитываются кнопкой «Пересчитать из БД» за выбранную <strong>календарную неделю</strong> (пн 00:00 — вс) по данным этого чата. Участвуют только те, у кого за неделю есть сообщения в <code>messages</code>.</p>
+    <ul class="sparring-guide-list">
+      <li><strong>Сила</strong> — перцентиль по сырому значению: число сообщений за неделю + <strong>2×</strong> политические попадания из <code>marketing_signal_events</code> (флаг политики). Чем выше активность и политика, тем выше сила относительно других в чате.</li>
+      <li><strong>Скорость</strong> — перцентиль по <em>темпу</em>: сообщения ÷ число активных дней в неделе.</li>
+      <li><strong>Точность</strong> — из последнего <code>personality_profiles</code> для пары (user, chat): поле уверенности модели; если его нет — грубая оценка от объёма сообщений (до потолка).</li>
+      <li><strong>Харизма</strong> — из OCEAN профиля: среднее экстраверсии и доброжелательности (0–1), затем перцентиль по чату.</li>
+      <li><strong>Защита</strong> — при наличии OCEAN: среднее из доброжелательности и «стабильности» <code>(1 − нейротизм)</code>; без профиля — от средней модуля тональности сообщений за неделю (спокойный тон → выше защита).</li>
+      <li><strong>Удача</strong> — число <strong>10–99</strong>, фиксируется детерминированно от недели, чата и user id (не растёт от активности; в бою даёт разброс урона и шанс крита через точность).</li>
+      <li><strong>Ярость</strong> — в бою шкала <strong>0–100</strong>: растёт, когда боец бьёт и когда получает урон; при полной шкале его <strong>следующий</strong> удар — удар ярости (значительно сильнее обычного), после чего шкала сбрасывается. У бойца с <strong>меньшей суммой шести статов</strong> ярость копится быстрее (до ~×1.9 к базовому темпу), пропорционально разнице с соперником.</li>
+    </ul>
+    <p class="sparring-guide-lead" style="margin-top:14px"><strong>Боевые механики раунда (новое):</strong></p>
+    <ul class="sparring-guide-list">
+      <li><strong>Стамина (синяя шкала)</strong> — 0..100, тратится на атаках (light 9, sweep 14, combo 17, heavy 22) и при получении удара. При &lt;25% эффективная атака −30%, защита −15%. Регенерация ~6 в раунд.</li>
+      <li><strong>Типы атак</strong>:
+        <em>лёгкий</em> (база) ·
+        <em>свинг</em> (тяжёлый, ×1.4 урон, −25% точности) ·
+        <em>комбо</em> (двойной выпад, 40%+60% урон) ·
+        <em>подсечка</em> (0 урона, но −30 стамины защитнику).
+        Биас выбора: power+charisma → больше свингов, speed → больше комбо, defense+accuracy → больше подсечек.</li>
+      <li><strong>Уклонение</strong> — защитник с высокой удачей и невысокой точностью атакующего может полностью уклониться (урон 0). Не работает против ярости.</li>
+      <li><strong>Парирование + контрудар</strong> — на лёгком ударе/подсечке защитник с высокой точностью+защитой может парировать и сразу нанести встречный удар (~6–14 урона).</li>
+      <li><strong>Крит</strong> — базовый шанс accuracy/200, плюс <em>до +15%</em> по мере падения стамины защитника. Усталый соперник реально получает критами.</li>
+      <li><strong>Второе дыхание</strong> — раз за бой при HP &lt; 20 спасает от смертельного удара до 1 HP, восстанавливает стамину до 60 и даёт +30 ярости. Активируется только если до конца боя ещё ≥3 раунда.</li>
+      <li><strong>Шанс «удачи»</strong> — при luck ≥ 70 раз за бой с шансом 55% также спасает от смертельного удара до 1 HP (если второе дыхание уже было использовано).</li>
+      <li><strong>Турниры (харизма)</strong> — высокая харизма снижает прирост усталости между матчами до −40%; обаятельные ребята лучше держат темп серии боёв.</li>
+    </ul>
+    <p class="sparring-guide-note">Перцентили приводят шесть основных статов к шкале примерно <strong>10–99</strong> внутри недели и чата: «прокачка» — это <em>изменить активность и профиль относительно других</em> на следующей пересчитанной неделе.</p>
+  </div>
+</details>
+</div>
+</div>
+</div>
+
+<div id="sparringPanelTournaments" class="sparring-tab-panel" role="tabpanel" aria-labelledby="sparringTabTournaments" hidden>
+  <section class="sparring-elim-section">
+    <h2 class="sparring-elim-heading">Турнир на выбывание</h2>
+    <p class="sparring-elim-lead">Выберите участников из <strong>загруженного ростера</strong> (чат и неделя — как сверху). Сетка олимпийская: при нечётном числе один получает пропуск раунда. После <strong>каждого боя</strong> оба накапливают усталость — она снижает эффективную атаку и защиту в следующих матчах (шаг на сервере фиксирован, накопление до 1).</p>
+    <p class="sparring-elim-note">Жребий порядка старта детерминирован от списка участников, чата и недели. Дуэль «В бой» по-прежнему <strong>без</strong> усталости.</p>
+
+    <div class="sparring-elim-toolbar">
+      <button type="button" class="btn btn-secondary" id="sparringElimSelectAll">Выбрать всех</button>
+      <button type="button" class="btn btn-secondary" id="sparringElimSelectNone">Снять все</button>
+      <button type="button" class="btn" id="sparringElimRun" disabled>Симулировать турнир</button>
+    </div>
+    <p class="sparring-elim-roster-hint" id="sparringElimRosterHint">Сначала загрузите ростер.</p>
+
+    <div class="sparring-elim-picker" id="sparringTourneyPicker"></div>
+
+    <p class="sparring-elim-status" id="sparringElimStatus" aria-live="polite"></p>
+    <div class="sparring-elim-result" id="sparringEliminationResult"></div>
+  </section>
+</div>
+
+<script src="{{ url_for('static', filename='js/sparring.js') }}?v=36"></script>
+{% endblock %}

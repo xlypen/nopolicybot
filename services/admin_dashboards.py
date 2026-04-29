@@ -341,6 +341,11 @@ def build_users_list(
         user_ids = list(display_names.keys())
     else:
         user_ids = user_stats.get_users_in_chat(int(chat_id))
+        if not user_ids:
+            try:
+                user_ids = marketing_metrics.user_ids_for_chat_from_metrics(int(chat_id), days=180)
+            except Exception:
+                user_ids = []
     result = []
     for uid in user_ids:
         try:

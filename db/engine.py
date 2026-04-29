@@ -25,7 +25,11 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/bot.db")
 
 _engine_kwargs: dict = {"echo": False}
 if "sqlite" in DATABASE_URL:
-    _engine_kwargs["connect_args"] = {"check_same_thread": False}
+    _sqlite_timeout = float(os.getenv("SQLITE_BUSY_TIMEOUT_SEC", "30"))
+    _engine_kwargs["connect_args"] = {
+        "check_same_thread": False,
+        "timeout": _sqlite_timeout,
+    }
 else:
     _engine_kwargs["pool_pre_ping"] = True
     _engine_kwargs["pool_size"] = int(os.getenv("DB_POOL_SIZE", "5"))

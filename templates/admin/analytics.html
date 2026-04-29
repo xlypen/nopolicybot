@@ -1,0 +1,348 @@
+{% extends "admin/base.html" %}
+{% block title %}Аналитика — Nopolicybot{% endblock %}
+{% block head_extra %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+.analytics-grid { display: grid; grid-template-columns: 1fr; gap: 20px; margin-bottom: 24px; }
+@media(min-width:900px){ .analytics-grid--2 { grid-template-columns: 1fr 1fr; } }
+.analytics-card {
+  background: var(--bg-secondary, #fff);
+  border: 1px solid var(--border-card, #e2e8f0);
+  border-radius: 12px;
+  padding: 20px;
+}
+.analytics-card h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary, #1e293b);
+}
+.analytics-card canvas { max-height: 350px; }
+.analytics-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.summary-card {
+  background: var(--bg-secondary, #fff);
+  border: 1px solid var(--border-card, #e2e8f0);
+  border-radius: 10px;
+  padding: 14px;
+  text-align: center;
+}
+.summary-card .val {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--accent, #6366f1);
+  display: block;
+}
+.summary-card .label {
+  font-size: 12px;
+  color: var(--text-secondary, #64748b);
+  margin-top: 4px;
+}
+.heatmap-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.heatmap-table td { text-align: center; padding: 4px 2px; border-radius: 3px; min-width: 24px; }
+.heatmap-table th { font-weight: 500; padding: 4px 2px; color: var(--text-secondary); font-size: 10px; }
+.graph-container { position: relative; min-height: 400px; }
+.graph-container canvas { width: 100% !important; }
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="hero hero--compact">
+  <div class="header"><h1>Аналитика сообщений</h1></div>
+  <p class="hero-lead">Data science по {{ summary.total_msgs|default(0) }} сообщениям от {{ summary.total_users|default(0) }} пользователей. Тональность размечена для {{ summary.total_scored|default(0) }} сообщений.</p>
+</div>
+
+<div class="analytics-summary">
+  <div class="summary-card"><span class="val">{{ "{:,}".format(summary.total_msgs) }}</span><span class="label">Сообщений</span></div>
+  <div class="summary-card"><span class="val">{{ summary.total_users }}</span><span class="label">Пользователей</span></div>
+  <div class="summary-card"><span class="val">{{ "{:,}".format(summary.total_scored) }}</span><span class="label">С тональностью</span></div>
+  <div class="summary-card"><span class="val">{{ summary.avg_tone }}</span><span class="label">Средний тон</span></div>
+  <div class="summary-card"><span class="val">{{ summary.total_edges }}</span><span class="label">Связей в графе</span></div>
+  <div class="summary-card"><span class="val">{{ summary.reply_rate }}%</span><span class="label">Ответов</span></div>
+</div>
+
+<div class="analytics-grid">
+  <div class="analytics-card">
+    <h3>Активность по дням</h3>
+    <canvas id="chartDaily"></canvas>
+  </div>
+</div>
+
+<div class="analytics-grid analytics-grid--2">
+  <div class="analytics-card">
+    <h3>Активность по часам и дням недели</h3>
+    <div style="overflow-x:auto;">
+      <table class="heatmap-table" id="heatmapTable"></table>
+    </div>
+  </div>
+  <div class="analytics-card">
+    <h3>Топ пользователей</h3>
+    <canvas id="chartTopUsers"></canvas>
+  </div>
+</div>
+
+<div class="analytics-grid analytics-grid--2">
+  <div class="analytics-card">
+    <h3>Распределение тональности</h3>
+    <canvas id="chartToneHist"></canvas>
+  </div>
+  <div class="analytics-card">
+    <h3>Средняя тональность по пользователям</h3>
+    <canvas id="chartUserTones"></canvas>
+  </div>
+</div>
+
+<div class="analytics-grid">
+  <div class="analytics-card">
+    <h3>Динамика тональности по дням</h3>
+    <canvas id="chartDailyTone"></canvas>
+  </div>
+</div>
+
+<div class="analytics-grid analytics-grid--2">
+  <div class="analytics-card">
+    <h3>OCEAN-профили</h3>
+    <canvas id="chartOcean"></canvas>
+  </div>
+  <div class="analytics-card">
+    <h3>Топ пар по ответам</h3>
+    <canvas id="chartReplyPairs"></canvas>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function(){
+  const isDark = document.documentElement.classList.contains('dark-mode');
+  const gridColor = isDark ? 'rgba(148,163,184,0.15)' : 'rgba(0,0,0,0.06)';
+  const textColor = isDark ? '#94a3b8' : '#64748b';
+
+  Chart.defaults.color = textColor;
+  Chart.defaults.borderColor = gridColor;
+  Chart.defaults.font.family = "'Sora', sans-serif";
+  Chart.defaults.font.size = 11;
+  Chart.defaults.plugins.legend.labels.boxWidth = 12;
+
+  const dailyLabels = {{ daily_labels | tojson }};
+  const dailyValues = {{ daily_values | tojson }};
+  new Chart(document.getElementById('chartDaily'), {
+    type: 'bar',
+    data: {
+      labels: dailyLabels,
+      datasets: [{
+        label: 'Сообщений',
+        data: dailyValues,
+        backgroundColor: isDark ? 'rgba(99,102,241,0.6)' : 'rgba(99,102,241,0.7)',
+        borderRadius: 3,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { maxRotation: 45, autoSkip: true, maxTicksLimit: 20 } },
+        y: { beginAtZero: true }
+      }
+    }
+  });
+
+  // Heatmap
+  const heatmap = {{ heatmap | tojson }};
+  const dayNames = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+  let maxVal = 0;
+  for (const row of heatmap) for (const v of row) if (v > maxVal) maxVal = v;
+  const tbl = document.getElementById('heatmapTable');
+  let html = '<thead><tr><th></th>';
+  for (let h = 0; h < 24; h++) html += `<th>${h}</th>`;
+  html += '</tr></thead><tbody>';
+  for (let d = 1; d <= 7; d++) {
+    const di = d % 7;
+    html += `<tr><th>${dayNames[di]}</th>`;
+    for (let h = 0; h < 24; h++) {
+      const v = heatmap[di][h];
+      const intensity = maxVal > 0 ? v / maxVal : 0;
+      const bg = intensity > 0
+        ? `rgba(239, 68, 68, ${0.1 + intensity * 0.8})`
+        : 'transparent';
+      const color = intensity > 0.5 ? '#fff' : textColor;
+      html += `<td style="background:${bg};color:${color};" title="${dayNames[di]} ${h}:00 — ${v}">${v || ''}</td>`;
+    }
+    html += '</tr>';
+  }
+  html += '</tbody>';
+  tbl.innerHTML = html;
+
+  // Top users
+  const topUsers = {{ top_users | tojson }};
+  new Chart(document.getElementById('chartTopUsers'), {
+    type: 'bar',
+    data: {
+      labels: topUsers.map(u => u.name),
+      datasets: [{
+        label: 'Сообщений',
+        data: topUsers.map(u => u.count),
+        backgroundColor: 'rgba(99,102,241,0.7)',
+        borderRadius: 3,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: { x: { beginAtZero: true } }
+    }
+  });
+
+  // Tone histogram
+  const toneValues = {{ tone_values | tojson }};
+  if (toneValues.length > 0) {
+    const bins = 40;
+    const binWidth = 2.0 / bins;
+    const counts = new Array(bins).fill(0);
+    const binLabels = [];
+    for (let i = 0; i < bins; i++) {
+      const lo = -1 + i * binWidth;
+      binLabels.push(lo.toFixed(2));
+      for (const v of toneValues) {
+        if (v >= lo && v < lo + binWidth) counts[i]++;
+      }
+    }
+    const binColors = binLabels.map(l => {
+      const v = parseFloat(l);
+      if (v < -0.3) return 'rgba(239,68,68,0.7)';
+      if (v > 0.3) return 'rgba(34,197,94,0.7)';
+      return 'rgba(148,163,184,0.5)';
+    });
+    new Chart(document.getElementById('chartToneHist'), {
+      type: 'bar',
+      data: {
+        labels: binLabels,
+        datasets: [{ data: counts, backgroundColor: binColors, borderRadius: 2 }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { title: { display: true, text: 'Tone Score' }, ticks: { autoSkip: true, maxTicksLimit: 15 } },
+          y: { beginAtZero: true }
+        }
+      }
+    });
+  } else {
+    document.getElementById('chartToneHist').parentElement.innerHTML += '<p style="color:var(--text-secondary);text-align:center;">Нет данных. Запустите fill_tone_scores.py</p>';
+  }
+
+  // User tones
+  const userTones = {{ user_tones | tojson }};
+  if (userTones.length > 0) {
+    new Chart(document.getElementById('chartUserTones'), {
+      type: 'bar',
+      data: {
+        labels: userTones.map(u => u.name),
+        datasets: [{
+          label: 'Средний тон',
+          data: userTones.map(u => u.tone),
+          backgroundColor: userTones.map(u =>
+            u.tone < -0.2 ? 'rgba(239,68,68,0.7)' :
+            u.tone > 0.2 ? 'rgba(34,197,94,0.7)' : 'rgba(148,163,184,0.6)'
+          ),
+          borderRadius: 3,
+        }]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: { x: { min: -0.5, max: 0.5 } }
+      }
+    });
+  }
+
+  // Daily tone
+  const dailyToneLabels = {{ daily_tone_labels | tojson }};
+  const dailyToneValues = {{ daily_tone_values | tojson }};
+  if (dailyToneValues.length > 0) {
+    new Chart(document.getElementById('chartDailyTone'), {
+      type: 'line',
+      data: {
+        labels: dailyToneLabels,
+        datasets: [{
+          label: 'Средний тон',
+          data: dailyToneValues,
+          borderColor: 'rgba(99,102,241,0.8)',
+          backgroundColor: 'rgba(99,102,241,0.1)',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 3,
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: { suggestedMin: -0.3, suggestedMax: 0.3 },
+          x: { ticks: { maxRotation: 45 } }
+        }
+      }
+    });
+  }
+
+  // OCEAN profiles
+  const oceanProfiles = {{ ocean_profiles | tojson }};
+  if (oceanProfiles.length > 0) {
+    const dims = ['O', 'C', 'E', 'A', 'N'];
+    const colors = ['#6366f1', '#22c55e', '#f59e0b', '#ec4899', '#8b5cf6'];
+    const datasets = dims.map((d, i) => ({
+      label: d,
+      data: oceanProfiles.map(p => p[d]),
+      backgroundColor: colors[i] + 'bb',
+      borderRadius: 2,
+    }));
+    new Chart(document.getElementById('chartOcean'), {
+      type: 'bar',
+      data: {
+        labels: oceanProfiles.map(p => p.name + (p.role ? '\n(' + p.role + ')' : '')),
+        datasets: datasets,
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: { beginAtZero: true, max: 1 },
+          x: { ticks: { font: { size: 9 }, maxRotation: 45 } }
+        },
+        plugins: { legend: { position: 'top' } }
+      }
+    });
+  }
+
+  // Reply pairs
+  const replyPairs = {{ top_reply_pairs | tojson }};
+  if (replyPairs.length > 0) {
+    new Chart(document.getElementById('chartReplyPairs'), {
+      type: 'bar',
+      data: {
+        labels: replyPairs.map(p => p.from + ' → ' + p.to),
+        datasets: [{
+          label: 'Ответов',
+          data: replyPairs.map(p => p.count),
+          backgroundColor: 'rgba(99,102,241,0.7)',
+          borderRadius: 3,
+        }]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: { x: { beginAtZero: true } }
+      }
+    });
+  }
+})();
+</script>
+{% endblock %}

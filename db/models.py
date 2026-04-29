@@ -2,7 +2,7 @@
 # File: models.cpython-312.pyc (Python 3.12)
 
 from datetime import datetime
-from sqlalchemy import BigInteger, Boolean, Column, Float, Index, Integer, JSON, String, Text, TIMESTAMP
+from sqlalchemy import BigInteger, Boolean, Column, Date, Float, Index, Integer, JSON, String, Text, TIMESTAMP
 from sqlalchemy.orm import DeclarativeBase
 
 class Base(DeclarativeBase):
@@ -175,6 +175,29 @@ class StorageSettings(Base):
     __tablename__ = "storage_settings"
     id = Column(Integer, primary_key=True)
     data_json = Column(JSON, nullable=False, default=dict)
+
+
+class SparringWeeklyFighter(Base):
+    """Еженедельные боевые статы участника чата для геймификации (админка). Источник: messages, marketing_signal_events, personality_profiles."""
+
+    __tablename__ = "sparring_weekly_fighters"
+    week_start = Column(Date, primary_key=True, nullable=False)
+    user_id = Column(BigInteger, primary_key=True, nullable=False)
+    chat_id = Column(BigInteger, primary_key=True, nullable=False)
+    stat_power = Column(Integer, nullable=False, default=50)
+    stat_defense = Column(Integer, nullable=False, default=50)
+    stat_speed = Column(Integer, nullable=False, default=50)
+    stat_accuracy = Column(Integer, nullable=False, default=50)
+    stat_charisma = Column(Integer, nullable=False, default=50)
+    stat_luck = Column(Integer, nullable=False, default=50)
+    body_variant = Column(Integer, nullable=False, default=0)
+    tint_hue = Column(Integer, nullable=False, default=0)
+    message_count = Column(Integer, nullable=False, default=0)
+    political_hits = Column(Integer, nullable=False, default=0)
+    active_days = Column(Integer, nullable=False, default=1)
+    personality_confidence = Column(Float, nullable=True)
+    computed_at = Column(TIMESTAMP, default=datetime.utcnow, nullable=False)
+    __table_args__ = (Index("idx_sparring_chat_week", "chat_id", "week_start"),)
 
 
 class PersonalityPortraitRow(Base):

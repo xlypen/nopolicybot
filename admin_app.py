@@ -18,7 +18,7 @@ import subprocess
 import time
 import urllib.request
 import urllib.parse
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from functools import wraps
 from pathlib import Path
 
@@ -518,8 +518,9 @@ def _get_dashboard_counts_from_db() -> dict | None:
     if not BOT_DB_PATH.exists():
         return None
     try:
-        import sqlite3
-        conn = sqlite3.connect(str(BOT_DB_PATH))
+        from services.sqlite_util import sqlite_connect
+
+        conn = sqlite_connect(BOT_DB_PATH)
         users_row = conn.execute(
             "SELECT COUNT(DISTINCT user_id) FROM messages WHERE user_id IS NOT NULL"
         ).fetchone()
@@ -542,6 +543,427 @@ def _get_dashboard_counts_from_db() -> dict | None:
         }
     except Exception:
         return None
+
+
+def _build_analytics_context() -> dict:
+    """Данные для templates/admin/analytics.html (Chart.js, heatmap, OCEAN, пары ответов)."""
+    empty = {
+        "summary": {
+            "total_msgs": 0,
+            "total_users": 0,
+            "total_scored": 0,
+            "avg_tone": "0",
+            "total_edges": 0,
+            "reply_rate": 0,
+        },
+        "daily_labels": [],
+        "daily_values": [],
+        "heatmap": [[0] * 24 for _ in range(7)],
+        "top_users": [],
+        "tone_values": [],
+        "user_tones": [],
+        "daily_tone_labels": [],
+        "daily_tone_values": [],
+        "ocean_profiles": [],
+        "top_reply_pairs": [],
+    }
+    try:
+        from sqlalchemy import text
+
+        from db.sync_engine import sync_session_scope
+
+        with sync_session_scope() as session:
+            dialect = session.bind.dialect.name
+            is_pg = dialect == "postgresql"
+
+            total_msgs = int(
+                session.execute(text("SELECT COUNT(*) FROM messages")).scalar() or 0
+            )
+            total_users = int(
+                session.execute(
+                    text("SELECT COUNT(DISTINCT user_id) FROM messages WHERE user_id IS NOT NULL")
+                ).scalar()
+                or 0
+            )
+            row_tone = session.execute(
+                text(
+                    "SELECT COUNT(*), AVG(tone_score) FROM messages WHERE tone_score IS NOT NULL"
+                )
+            ).fetchone()
+            total_scored = int(row_tone[0] or 0)
+            avg_tone_val = row_tone[1]
+            avg_tone = f"{float(avg_tone_val):.3f}" if avg_tone_val is not None else "0"
+
+            try:
+                total_edges = int(session.execute(text("SELECT COUNT(*) FROM edges")).scalar() or 0)
+            except Exception:
+                total_edges = 0
+
+            if total_msgs > 0:
+                with_replies = int(
+                    session.execute(
+                        text("SELECT COUNT(*) FROM messages WHERE replied_to IS NOT NULL")
+                    ).scalar()
+                    or 0
+                )
+                reply_rate = int(round(100.0 * with_replies / total_msgs))
+            else:
+                reply_rate = 0
+
+            # Последние 30 дней — метки и счётчики
+            day_keys = [(date.today() - timedelta(days=29 - i)).isoformat() for i in range(30)]
+            daily_map: dict[str, int] = {k: 0 for k in day_keys}
+            if is_pg:
+                daily_rows = session.execute(
+                    text(
+                        """
+                        SELECT (sent_at AT TIME ZONE 'UTC')::date::text AS d, COUNT(*)::int AS c
+                        FROM messages
+                        WHERE sent_at IS NOT NULL
+                          AND sent_at >= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') - INTERVAL '30 days'
+                        GROUP BY 1
+                        """
+                    )
+                ).fetchall()
+            else:
+                daily_rows = session.execute(
+                    text(
+                        """
+                        SELECT date(sent_at) AS d, COUNT(*) AS c
+                        FROM messages
+                        WHERE sent_at IS NOT NULL
+                          AND date(sent_at) >= date('now', '-30 days')
+                        GROUP BY date(sent_at)
+                        """
+                    )
+                ).fetchall()
+            for dr in daily_rows:
+                dkey = str(dr[0])[:10] if dr[0] else ""
+                if dkey in daily_map:
+                    daily_map[dkey] = int(dr[1] or 0)
+            daily_labels = day_keys
+            daily_values = [daily_map[k] for k in day_keys]
+
+            # Heatmap 7×24: индекс 0 = воскресенье (как strftime %w / PG DOW)
+            heatmap = [[0] * 24 for _ in range(7)]
+            if is_pg:
+                hm_rows = session.execute(
+                    text(
+                        """
+                        SELECT
+                          EXTRACT(DOW FROM sent_at AT TIME ZONE 'UTC')::int AS dow,
+                          EXTRACT(HOUR FROM sent_at AT TIME ZONE 'UTC')::int AS hr,
+                          COUNT(*)::int AS c
+                        FROM messages
+                        WHERE sent_at IS NOT NULL
+                        GROUP BY 1, 2
+                        """
+                    )
+                ).fetchall()
+            else:
+                hm_rows = session.execute(
+                    text(
+                        """
+                        SELECT CAST(strftime('%w', sent_at) AS INTEGER) AS dow,
+                               CAST(strftime('%H', sent_at) AS INTEGER) AS hr,
+                               COUNT(*) AS c
+                        FROM messages
+                        WHERE sent_at IS NOT NULL
+                        GROUP BY 1, 2
+                        """
+                    )
+                ).fetchall()
+            for dow, hr, c in hm_rows:
+                di = int(dow) % 7
+                hi = int(hr) % 24
+                heatmap[di][hi] = int(c or 0)
+
+            # Топ пользователей по числу сообщений
+            if is_pg:
+                tu_rows = session.execute(
+                    text(
+                        """
+                        SELECT COALESCE(
+                            NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''),
+                            u.username,
+                            'User ' || u.id::text
+                          ) AS display_name,
+                          COUNT(*)::int AS cnt
+                        FROM messages m
+                        LEFT JOIN users u ON m.user_id = u.id
+                        GROUP BY m.user_id, u.first_name, u.last_name, u.username, u.id
+                        ORDER BY cnt DESC
+                        LIMIT 15
+                        """
+                    )
+                ).fetchall()
+            else:
+                tu_rows = session.execute(
+                    text(
+                        """
+                        SELECT COALESCE(
+                            NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''),
+                            u.username,
+                            'User ' || CAST(u.id AS TEXT)
+                          ) AS display_name,
+                          COUNT(*) AS cnt
+                        FROM messages m
+                        LEFT JOIN users u ON m.user_id = u.id
+                        GROUP BY m.user_id
+                        ORDER BY cnt DESC
+                        LIMIT 15
+                        """
+                    )
+                ).fetchall()
+            top_users = [{"name": str(r[0] or "?"), "count": int(r[1] or 0)} for r in tu_rows]
+
+            # Тональности для гистограммы (ограничение объёма JSON)
+            if is_pg:
+                tone_rows = session.execute(
+                    text(
+                        "SELECT tone_score::double precision FROM messages WHERE tone_score IS NOT NULL LIMIT 8000"
+                    )
+                ).fetchall()
+            else:
+                tone_rows = session.execute(
+                    text(
+                        "SELECT tone_score FROM messages WHERE tone_score IS NOT NULL LIMIT 8000"
+                    )
+                ).fetchall()
+            tone_values = [float(t[0]) for t in tone_rows if t[0] is not None]
+
+            # Средняя тональность по пользователям (топ по активности среди размеченных)
+            if is_pg:
+                ut_rows = session.execute(
+                    text(
+                        """
+                        SELECT COALESCE(
+                            NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''),
+                            u.username,
+                            'User ' || u.id::text
+                          ) AS display_name,
+                          AVG(m.tone_score)::double precision AS avg_t
+                        FROM messages m
+                        LEFT JOIN users u ON m.user_id = u.id
+                        WHERE m.tone_score IS NOT NULL
+                        GROUP BY m.user_id, u.first_name, u.last_name, u.username, u.id
+                        HAVING COUNT(*) >= 2
+                        ORDER BY COUNT(*) DESC
+                        LIMIT 15
+                        """
+                    )
+                ).fetchall()
+            else:
+                ut_rows = session.execute(
+                    text(
+                        """
+                        SELECT COALESCE(
+                            NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''),
+                            u.username,
+                            'User ' || CAST(u.id AS TEXT)
+                          ) AS display_name,
+                          AVG(m.tone_score) AS avg_t
+                        FROM messages m
+                        LEFT JOIN users u ON m.user_id = u.id
+                        WHERE m.tone_score IS NOT NULL
+                        GROUP BY m.user_id
+                        HAVING COUNT(*) >= 2
+                        ORDER BY COUNT(*) DESC
+                        LIMIT 15
+                        """
+                    )
+                ).fetchall()
+            user_tones = [
+                {"name": str(r[0] or "?"), "tone": round(float(r[1]), 4)}
+                for r in ut_rows
+                if r[1] is not None
+            ]
+
+            # Динамика среднего тона по дням
+            daily_tone_map: dict[str, float | None] = {k: None for k in day_keys}
+            if is_pg:
+                dtn_rows = session.execute(
+                    text(
+                        """
+                        SELECT (sent_at AT TIME ZONE 'UTC')::date::text AS d,
+                               AVG(tone_score)::double precision AS avg_t,
+                               COUNT(*)::int AS n
+                        FROM messages
+                        WHERE tone_score IS NOT NULL AND sent_at IS NOT NULL
+                          AND sent_at >= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') - INTERVAL '30 days'
+                        GROUP BY 1
+                        """
+                    )
+                ).fetchall()
+            else:
+                dtn_rows = session.execute(
+                    text(
+                        """
+                        SELECT date(sent_at) AS d,
+                               AVG(tone_score) AS avg_t,
+                               COUNT(*) AS n
+                        FROM messages
+                        WHERE tone_score IS NOT NULL AND sent_at IS NOT NULL
+                          AND date(sent_at) >= date('now', '-30 days')
+                        GROUP BY date(sent_at)
+                        """
+                    )
+                ).fetchall()
+            for dr in dtn_rows:
+                dkey = str(dr[0])[:10] if dr[0] else ""
+                if dkey in daily_tone_map and int(dr[2] or 0) > 0 and dr[1] is not None:
+                    daily_tone_map[dkey] = float(dr[1])
+            daily_tone_labels = day_keys
+            daily_tone_values = []
+            for k in day_keys:
+                v = daily_tone_map[k]
+                daily_tone_values.append(round(v, 4) if v is not None else None)
+
+            # OCEAN из personality_profiles (последняя запись на пользователя)
+            ocean_profiles: list[dict] = []
+            try:
+                if is_pg:
+                    pp_rows = session.execute(
+                        text(
+                            """
+                            SELECT DISTINCT ON (user_id)
+                              user_id,
+                              profile_json,
+                              messages_analyzed
+                            FROM personality_profiles
+                            WHERE messages_analyzed > 0
+                            ORDER BY user_id, generated_at DESC
+                            LIMIT 24
+                            """
+                        )
+                    ).fetchall()
+                else:
+                    pp_rows = session.execute(
+                        text(
+                            """
+                            SELECT user_id, profile_json, messages_analyzed
+                            FROM personality_profiles
+                            WHERE messages_analyzed > 0
+                            ORDER BY messages_analyzed DESC
+                            LIMIT 24
+                            """
+                        )
+                    ).fetchall()
+                uid_seen: set[int] = set()
+                for uid, pj_raw, _ma in pp_rows:
+                    uid_i = int(uid or 0)
+                    if uid_i in uid_seen:
+                        continue
+                    uid_seen.add(uid_i)
+                    urow = session.execute(
+                        text("SELECT first_name, username FROM users WHERE id = :uid"),
+                        {"uid": uid_i},
+                    ).fetchone()
+                    display_name = "?"
+                    if urow:
+                        fn, un = urow[0], urow[1]
+                        display_name = (
+                            str(fn).strip()
+                            if fn and str(fn).strip()
+                            else (str(un) if un else f"User {uid_i}")
+                        )
+                    pj = pj_raw
+                    if isinstance(pj_raw, str):
+                        try:
+                            pj = json.loads(pj_raw)
+                        except Exception:
+                            pj = {}
+                    elif pj_raw is None:
+                        pj = {}
+                    ocean = (pj or {}).get("ocean") or {}
+                    role = str((pj or {}).get("role_in_community") or "").strip() or ""
+                    ocean_profiles.append(
+                        {
+                            "name": display_name,
+                            "role": role,
+                            "O": float(ocean.get("openness", 0.5) or 0.5),
+                            "C": float(ocean.get("conscientiousness", 0.5) or 0.5),
+                            "E": float(ocean.get("extraversion", 0.5) or 0.5),
+                            "A": float(ocean.get("agreeableness", 0.5) or 0.5),
+                            "N": float(ocean.get("neuroticism", 0.5) or 0.5),
+                        }
+                    )
+                    if len(ocean_profiles) >= 12:
+                        break
+            except Exception:
+                pass
+
+            # Топ пар «ответов» по сообщениям
+            if is_pg:
+                rp_rows = session.execute(
+                    text(
+                        """
+                        SELECT
+                          COALESCE(uf.first_name, 'User ' || e.from_user::text),
+                          COALESCE(ut.first_name, 'User ' || e.to_user::text),
+                          e.cnt::int
+                        FROM (
+                          SELECT user_id AS from_user, replied_to AS to_user, COUNT(*)::int AS cnt
+                          FROM messages
+                          WHERE replied_to IS NOT NULL
+                          GROUP BY user_id, replied_to
+                        ) e
+                        LEFT JOIN users uf ON uf.id = e.from_user
+                        LEFT JOIN users ut ON ut.id = e.to_user
+                        ORDER BY e.cnt DESC
+                        LIMIT 15
+                        """
+                    )
+                ).fetchall()
+            else:
+                rp_rows = session.execute(
+                    text(
+                        """
+                        SELECT
+                          COALESCE(uf.first_name, 'User ' || CAST(e.from_user AS TEXT)),
+                          COALESCE(ut.first_name, 'User ' || CAST(e.to_user AS TEXT)),
+                          e.cnt
+                        FROM (
+                          SELECT user_id AS from_user, replied_to AS to_user, COUNT(*) AS cnt
+                          FROM messages
+                          WHERE replied_to IS NOT NULL
+                          GROUP BY user_id, replied_to
+                        ) e
+                        LEFT JOIN users uf ON uf.id = e.from_user
+                        LEFT JOIN users ut ON ut.id = e.to_user
+                        ORDER BY e.cnt DESC
+                        LIMIT 15
+                        """
+                    )
+                ).fetchall()
+            top_reply_pairs = [
+                {"from": str(r[0] or "?"), "to": str(r[1] or "?"), "count": int(r[2] or 0)}
+                for r in rp_rows
+            ]
+
+            return {
+                "summary": {
+                    "total_msgs": total_msgs,
+                    "total_users": total_users,
+                    "total_scored": total_scored,
+                    "avg_tone": avg_tone,
+                    "total_edges": total_edges,
+                    "reply_rate": reply_rate,
+                },
+                "daily_labels": daily_labels,
+                "daily_values": daily_values,
+                "heatmap": heatmap,
+                "top_users": top_users,
+                "tone_values": tone_values,
+                "user_tones": user_tones,
+                "daily_tone_labels": daily_tone_labels,
+                "daily_tone_values": daily_tone_values,
+                "ocean_profiles": ocean_profiles,
+                "top_reply_pairs": top_reply_pairs,
+            }
+    except Exception as ex:
+        logger.warning("analytics context failed: %s", ex)
+        return empty
 
 
 def _save_tone_override(user_id: str, value: str | None, add_to_history: bool = False, save_current_to_history: bool = False) -> bool:
@@ -1108,6 +1530,217 @@ def admin_personality_compare():
         users=users_list,
         chats=get_chats(),
     )
+
+
+@app.route("/admin/analytics")
+@login_required
+def admin_analytics():
+    """Аналитика сообщений, тональности, графа и OCEAN (Chart.js)."""
+    ctx = _build_analytics_context()
+    return render_template("admin/analytics.html", **ctx)
+
+
+@app.route("/admin/sparring")
+@login_required
+def admin_sparring():
+    """Геймификация: спарринг персонажей со статами из БД за неделю."""
+    from services.sparring import default_week_start
+    from user_stats import get_chats
+
+    return render_template(
+        "admin/sparring.html",
+        chats=get_chats(),
+        default_week=default_week_start().isoformat(),
+    )
+
+
+@app.route("/api/sparring/roster", methods=["GET"])
+@login_required
+def api_sparring_roster():
+    from datetime import datetime as dt
+
+    from db.sync_engine import sync_session_scope
+    from services.sparring import (
+        default_week_start,
+        ensure_sparring_tables,
+        fighter_to_api_dict,
+        load_roster,
+        monday_of_week,
+    )
+
+    raw_chat = (request.args.get("chat_id") or "").strip()
+    if not raw_chat.lstrip("-").isdigit():
+        return jsonify({"ok": False, "error": "Нужен chat_id"}), 400
+    chat_id = int(raw_chat)
+    week_raw = (request.args.get("week") or "").strip()
+    try:
+        ws = (
+            monday_of_week(dt.strptime(week_raw, "%Y-%m-%d").date())
+            if week_raw
+            else default_week_start()
+        )
+    except ValueError:
+        return jsonify({"ok": False, "error": "Неверный week (YYYY-MM-DD)"}), 400
+    try:
+        ensure_sparring_tables()
+        with sync_session_scope() as session:
+            fighters = load_roster(session, chat_id, ws)
+            payload = [fighter_to_api_dict(session, f) for f in fighters]
+        return jsonify(
+            {"ok": True, "week_start": ws.isoformat(), "chat_id": chat_id, "fighters": payload}
+        )
+    except Exception as e:
+        logger.exception("sparring roster failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/sparring/recompute", methods=["POST"])
+@login_required
+def api_sparring_recompute():
+    from datetime import datetime as dt
+
+    from db.sync_engine import sync_session_scope
+    from services.sparring import ensure_sparring_tables, monday_of_week, recompute_week
+
+    body = request.get_json(silent=True) or {}
+    raw_chat = str(body.get("chat_id") or "").strip()
+    if not raw_chat.lstrip("-").isdigit():
+        return jsonify({"ok": False, "error": "Нужен chat_id"}), 400
+    chat_id = int(raw_chat)
+    week_raw = str(body.get("week") or "").strip()
+    try:
+        base = dt.strptime(week_raw, "%Y-%m-%d").date() if week_raw else date.today()
+        ws = monday_of_week(base)
+    except ValueError:
+        return jsonify({"ok": False, "error": "Неверный week (YYYY-MM-DD)"}), 400
+    try:
+        ensure_sparring_tables()
+        with sync_session_scope() as session:
+            n = recompute_week(session, chat_id, ws)
+        return jsonify({"ok": True, "inserted": n, "week_start": ws.isoformat()})
+    except Exception as e:
+        logger.exception("sparring recompute failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/sparring/fight", methods=["POST"])
+@login_required
+def api_sparring_fight():
+    from datetime import datetime as dt
+
+    from db.models import SparringWeeklyFighter
+    from db.sync_engine import sync_session_scope
+    from services.sparring import (
+        default_week_start,
+        ensure_sparring_tables,
+        monday_of_week,
+        simulate_fight,
+    )
+
+    body = request.get_json(silent=True) or {}
+    raw_chat = str(body.get("chat_id") or "").strip()
+    if not raw_chat.lstrip("-").isdigit():
+        return jsonify({"ok": False, "error": "Нужен chat_id"}), 400
+    chat_id = int(raw_chat)
+    try:
+        ua = int(body.get("user_a"))
+        ub = int(body.get("user_b"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "user_a и user_b должны быть целыми id"}), 400
+    week_raw = str(body.get("week") or "").strip()
+    try:
+        ws = (
+            monday_of_week(dt.strptime(week_raw, "%Y-%m-%d").date())
+            if week_raw
+            else default_week_start()
+        )
+    except ValueError:
+        return jsonify({"ok": False, "error": "Неверный week (YYYY-MM-DD)"}), 400
+    if ua == ub:
+        return jsonify({"ok": False, "error": "Выберите двух разных бойцов"}), 400
+    try:
+        ensure_sparring_tables()
+        with sync_session_scope() as session:
+            fa = session.get(SparringWeeklyFighter, (ws, ua, chat_id))
+            fb = session.get(SparringWeeklyFighter, (ws, ub, chat_id))
+            if not fa or not fb:
+                return jsonify(
+                    {
+                        "ok": False,
+                        "error": "Нет статов за эту неделю. Нажмите «Пересчитать из БД».",
+                    }
+                ), 404
+            result = simulate_fight(fa, fb)
+        return jsonify(
+            {
+                "ok": True,
+                "winner_user_id": result.winner_user_id,
+                "loser_user_id": result.loser_user_id,
+                "hp_max": result.hp_max,
+                "rage_max": result.rage_max,
+                "stamina_max": result.stamina_max,
+                "weaker_user_id": result.weaker_user_id,
+                "underdog_fortune": result.underdog_fortune,
+                "rounds": result.rounds,
+            }
+        )
+    except Exception as e:
+        logger.exception("sparring fight failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/sparring/tournament_elimination", methods=["POST"])
+@login_required
+def api_sparring_tournament_elimination():
+    """Плей-офф на выбывание с усталостью между матчами (симуляция)."""
+    from datetime import datetime as dt
+
+    from db.sync_engine import sync_session_scope
+    from services.sparring import (
+        default_week_start,
+        ensure_sparring_tables,
+        monday_of_week,
+        run_elimination_tournament,
+    )
+
+    body = request.get_json(silent=True) or {}
+    raw_chat = str(body.get("chat_id") or "").strip()
+    if not raw_chat.lstrip("-").isdigit():
+        return jsonify({"ok": False, "error": "Нужен chat_id"}), 400
+    chat_id = int(raw_chat)
+    week_raw = str(body.get("week") or "").strip()
+    try:
+        ws = (
+            monday_of_week(dt.strptime(week_raw, "%Y-%m-%d").date())
+            if week_raw
+            else default_week_start()
+        )
+    except ValueError:
+        return jsonify({"ok": False, "error": "Неверный week (YYYY-MM-DD)"}), 400
+    raw_ids = body.get("user_ids")
+    if not isinstance(raw_ids, list):
+        return jsonify({"ok": False, "error": "Нужен массив user_ids"}), 400
+    try:
+        user_ids = [int(x) for x in raw_ids]
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "user_ids должны быть целыми числами"}), 400
+    try:
+        ensure_sparring_tables()
+        with sync_session_scope() as session:
+            out = run_elimination_tournament(session, chat_id, ws, user_ids)
+        if out.get("error"):
+            return jsonify({"ok": False, "error": out["error"]}), 400
+        return jsonify(
+            {
+                "ok": True,
+                "week_start": ws.isoformat(),
+                "chat_id": chat_id,
+                "elimination": out,
+            }
+        )
+    except Exception as e:
+        logger.exception("sparring tournament elimination failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/admin")

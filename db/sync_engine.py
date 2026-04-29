@@ -36,7 +36,8 @@ def get_sync_engine():
         sync_url = sync_database_url()
         kwargs: dict = {"echo": False}
         if sync_url.startswith("sqlite"):
-            kwargs["connect_args"] = {"check_same_thread": False}
+            _t = float(os.getenv("SQLITE_BUSY_TIMEOUT_SEC", "30"))
+            kwargs["connect_args"] = {"check_same_thread": False, "timeout": _t}
         else:
             kwargs["pool_pre_ping"] = True
         try:

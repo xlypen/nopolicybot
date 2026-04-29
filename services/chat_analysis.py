@@ -40,9 +40,9 @@ def _get_chat_participants_from_db(chat_id: int) -> list[tuple[str, int]]:
     if not db_path.exists():
         return []
     try:
-        import sqlite3
+        from services.sqlite_util import sqlite_connect
 
-        conn = sqlite3.connect(str(db_path))
+        conn = sqlite_connect(db_path)
         rows = conn.execute(
             "SELECT user_id, COUNT(*) FROM messages WHERE chat_id = ? AND user_id IS NOT NULL GROUP BY user_id",
             (cid,),

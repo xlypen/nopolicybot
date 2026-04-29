@@ -718,28 +718,13 @@ def get_chat_health(chat_id: int, *, days: int = _DEFAULT_WINDOW_DAYS) -> dict:
     }
 
 
-def get_leaderboard(
-    *,
-    metric: str = "engagement",
-    chat_id: int | None = None,
-    days: int = _DEFAULT_WINDOW_DAYS,
-    limit: int = 10,
-) -> list[dict]:
-    metric_key = (metric or "engagement").strip().lower()
-    score_by_metric = {
-        "engagement": "engagement_score",
-        "influence": "influence_score",
-        "retention": "retention_score",
-        "viral": "viral_coefficient",
-        "churn": "churn_risk",
-        "churn_risk": "churn_risk",
-    }
-    score_key = score_by_metric.get(metric_key, "engagement_score")
-
+def _leaderboard_user_ids_for_chat(chat_id: int | None, *, days: int) -> set[str]:
+    """Множество user_id для рейтинга: окно метрик в БД + при пустоте — user_meta из marketing_metrics.json."""
     user_ids: set[str] = set()
+    safe_days = max(1, int(days or _DEFAULT_WINDOW_DAYS))
     if _reads_metrics_from_db():
         try:
-            start_dt, end_dt = mm_db.metrics_window_boundaries(max(1, int(days or _DEFAULT_WINDOW_DAYS)), 0)
+            start_dt, end_dt = mm_db.metrics_window_boundaries(safe_days, 0)
             with sync_session_scope() as s:
                 if chat_id is None:
                     raw_u = mm_db.distinct_user_ids_all_chats(s, start_dt, end_dt)
@@ -763,6 +748,41 @@ def get_leaderboard(
         for chat_key in chat_keys:
             chat = (data.get("chats") or {}).get(chat_key) or {}
             user_ids |= set((chat.get("user_meta") or {}).keys())
+    return user_ids
+
+
+def user_ids_for_chat_from_metrics(chat_id: int, *, days: int = 180) -> list[str]:
+    """Список user_id по чату из метрик (тот же источник, что у рейтинга), без обрезки limit."""
+    uids = _leaderboard_user_ids_for_chat(chat_id, days=days)
+
+    def _sort_key(x: str) -> tuple:
+        try:
+            return (0, int(x))
+        except ValueError:
+            return (1, x)
+
+    return sorted(uids, key=_sort_key)
+
+
+def get_leaderboard(
+    *,
+    metric: str = "engagement",
+    chat_id: int | None = None,
+    days: int = _DEFAULT_WINDOW_DAYS,
+    limit: int = 10,
+) -> list[dict]:
+    metric_key = (metric or "engagement").strip().lower()
+    score_by_metric = {
+        "engagement": "engagement_score",
+        "influence": "influence_score",
+        "retention": "retention_score",
+        "viral": "viral_coefficient",
+        "churn": "churn_risk",
+        "churn_risk": "churn_risk",
+    }
+    score_key = score_by_metric.get(metric_key, "engagement_score")
+
+    user_ids = _leaderboard_user_ids_for_chat(chat_id, days=days)
 
     rows = []
     for uid in user_ids:

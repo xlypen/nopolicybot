@@ -31,6 +31,8 @@
         <a class="admin-nav-link {% if ep in ('admin', 'admin_modern') %}is-active{% endif %}" href="{{ url_for('admin_modern') }}">Панель</a>
         <a class="admin-nav-link {% if ep == 'admin_personality_clusters' %}is-active{% endif %}" href="{{ url_for('admin_personality_clusters') }}">Кластеры</a>
         <a class="admin-nav-link {% if ep == 'admin_personality_compare' %}is-active{% endif %}" href="{{ url_for('admin_personality_compare') }}">Сравнение</a>
+        <a class="admin-nav-link {% if ep == 'admin_analytics' %}is-active{% endif %}" href="{{ url_for('admin_analytics') }}">Аналитика</a>
+        <a class="admin-nav-link {% if ep == 'admin_sparring' %}is-active{% endif %}" href="{{ url_for('admin_sparring') }}">Спарринг</a>
         <a class="admin-nav-link {% if ep == 'admin_legacy' %}is-active{% endif %}" href="{{ url_for('admin_legacy') }}">Классика</a>
         <a class="admin-nav-link {% if ep == 'settings' %}is-active{% endif %}" href="{{ url_for('settings') }}">Настройки</a>
         <a class="admin-nav-link {% if ep == 'admin_classifications' %}is-active{% endif %}" href="{{ url_for('admin_classifications') }}">Оси</a>

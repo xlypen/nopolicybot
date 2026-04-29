@@ -9,6 +9,7 @@ import logging
 import threading
 from pathlib import Path
 
+from services.sqlite_util import sqlite_connect, with_lock_retry
 from services.storage_cutover import storage_db_writes_enabled
 
 logger = logging.getLogger(__name__)
@@ -71,10 +72,9 @@ class SqliteStorage:
         self._local = threading.local()
 
     def _conn(self):
-        import sqlite3
         if not hasattr(self._local, "conn") or self._local.conn is None:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(str(self._path), check_same_thread=False)
+            conn = sqlite_connect(self._path)
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA foreign_keys=ON")
@@ -173,12 +173,41 @@ class SqliteStorage:
         return result
 
     def get_users_in_chat(self, chat_id: int) -> list[int]:
+        """Участники чата: union messages, user_message_archive, dialogue_messages (источники могут расходиться)."""
         conn = self._conn()
-        rows = conn.execute(
-            "SELECT DISTINCT user_id FROM messages WHERE chat_id = ? AND user_id IS NOT NULL",
-            (int(chat_id),),
-        ).fetchall()
-        return [r[0] for r in rows]
+        cid = int(chat_id)
+        seen: set[int] = set()
+
+        def _add_rows(rows):
+            for r in rows:
+                if r and r[0] is not None:
+                    seen.add(int(r[0]))
+
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT user_id FROM messages WHERE chat_id = ? AND user_id IS NOT NULL",
+                (cid,),
+            ).fetchall()
+            _add_rows(rows)
+        except Exception:
+            pass
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT user_id FROM user_message_archive WHERE chat_id = ? AND user_id IS NOT NULL",
+                (cid,),
+            ).fetchall()
+            _add_rows(rows)
+        except Exception:
+            pass
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT sender_id FROM dialogue_messages WHERE chat_id = ? AND sender_id IS NOT NULL",
+                (cid,),
+            ).fetchall()
+            _add_rows(rows)
+        except Exception:
+            pass
+        return sorted(seen)
 
     def increment_warnings(self, user_id: int) -> None:
         if not storage_db_writes_enabled():
@@ -196,20 +225,46 @@ class SqliteStorage:
         if not storage_db_writes_enabled():
             return False
         conn = self._conn()
-        if dedupe:
-            exists = conn.execute(
-                "SELECT 1 FROM user_message_archive "
-                "WHERE user_id = ? AND chat_id = ? AND text = ? AND date = ?",
-                (int(user_id), int(chat_id), text[:500], date),
-            ).fetchone()
-            if exists:
-                return False
-        conn.execute(
-            "INSERT INTO user_message_archive (user_id, chat_id, text, date) VALUES (?, ?, ?, ?)",
-            (int(user_id), int(chat_id), text[:500], date),
-        )
-        conn.commit()
-        return True
+        uid = int(user_id)
+        cid = int(chat_id)
+        body = text[:500]
+
+        def _do() -> bool:
+            # BEGIN IMMEDIATE — сразу берём write-lock и не страдаем от
+            # deferred-tx upgrade, который игнорирует busy_timeout.
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+            except Exception:
+                pass
+            try:
+                if dedupe:
+                    exists = conn.execute(
+                        "SELECT 1 FROM user_message_archive "
+                        "WHERE user_id = ? AND chat_id = ? AND text = ? AND date = ?",
+                        (uid, cid, body, date),
+                    ).fetchone()
+                    if exists:
+                        conn.commit()
+                        return False
+                conn.execute(
+                    "INSERT INTO user_message_archive (user_id, chat_id, text, date) "
+                    "VALUES (?, ?, ?, ?)",
+                    (uid, cid, body, date),
+                )
+                conn.commit()
+                return True
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                raise
+
+        try:
+            return with_lock_retry(_do, op_name="append_message")
+        except Exception:
+            logger.exception("append_message failed")
+            return False
 
     def get_chat(self, chat_id: int) -> dict | None:
         conn = self._conn()

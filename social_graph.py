@@ -560,12 +560,13 @@ def _get_processed_dates_from_db() -> dict[str, list[str]]:
     """Прочитанные из БД обработанные даты: {chat_id_str: [date, ...]}."""
     if db_primary_is_postgres():
         return _pg_get_processed_dates()
-    import sqlite3
     db_path = DATA_DIR / "data" / "bot.db"
     if not db_path.exists():
         return {}
     try:
-        conn = sqlite3.connect(str(db_path))
+        from services.sqlite_util import sqlite_connect
+
+        conn = sqlite_connect(db_path)
         rows = conn.execute(
             "SELECT chat_id, processed_date FROM processed_dates"
         ).fetchall()
@@ -585,12 +586,13 @@ def _mark_date_processed_in_db(chat_id: int, day: str) -> None:
     if db_primary_is_postgres():
         _pg_mark_date_processed(chat_id, day)
         return
-    import sqlite3
     db_path = DATA_DIR / "data" / "bot.db"
     if not db_path.exists():
         return
     try:
-        conn = sqlite3.connect(str(db_path))
+        from services.sqlite_util import sqlite_connect
+
+        conn = sqlite_connect(db_path)
         conn.execute(
             "INSERT OR IGNORE INTO processed_dates (chat_id, processed_date) VALUES (?, ?)",
             (chat_id, day),
@@ -605,13 +607,14 @@ def _get_unprocessed_dates_from_db(processed_dates: dict[str, list[str]]) -> lis
     """Необработанные даты из таблицы messages (БД)."""
     if db_primary_is_postgres():
         return _pg_get_unprocessed_days(processed_dates)
-    import sqlite3
     today = date.today().isoformat()
     db_path = DATA_DIR / "data" / "bot.db"
     if not db_path.exists():
         return []
     try:
-        conn = sqlite3.connect(str(db_path))
+        from services.sqlite_util import sqlite_connect
+
+        conn = sqlite_connect(db_path)
         rows = conn.execute(
             "SELECT DISTINCT CAST(chat_id AS TEXT), date(sent_at) AS d "
             "FROM messages WHERE sent_at IS NOT NULL AND date(sent_at) < ? "
@@ -633,12 +636,13 @@ def _get_db_chat_ids_with_today_messages(today: str) -> set[str]:
     """Chat IDs that have messages on a given date in the DB."""
     if db_primary_is_postgres():
         return _pg_get_db_chat_ids_with_today_messages(today)
-    import sqlite3
     db_path = DATA_DIR / "data" / "bot.db"
     if not db_path.exists():
         return set()
     try:
-        conn = sqlite3.connect(str(db_path))
+        from services.sqlite_util import sqlite_connect
+
+        conn = sqlite_connect(db_path)
         rows = conn.execute(
             "SELECT DISTINCT CAST(chat_id AS TEXT) FROM messages WHERE date(sent_at) = ?",
             (today,),

@@ -1,13 +1,15 @@
 """
-Ответы на вопросы по аналитике чата из агрегатов БД (без LLM).
+Ответы на вопросы по аналитике чата.
 
-Сопоставляет формулировку с наборами правил (RU/EN), выполняет параметризованные
-запросы к messages / users / edges / marketing_signal_events и собирает текст
-на шаблонах.
+Без ИИ: ключевые слова → параметризованный SQL → шаблонный текст.
+
+С ИИ (use_llm=True): один вызов LLM с компактным JSON агрегатов (без текста
+сообщений), чтобы не перегружать запрос.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -258,8 +260,17 @@ def _run_reply_rate(
     return {"messages": total, "with_reply": repl, "reply_rate_pct": pct}
 
 
-def _run_top_posters(session, is_pg: bool, since: datetime, chat_scope: str, scope_params: dict[str, Any]):
-    params = {"qa_since": since, **scope_params}
+def _run_top_posters(
+    session,
+    is_pg: bool,
+    since: datetime,
+    chat_scope: str,
+    scope_params: dict[str, Any],
+    *,
+    limit: int = 8,
+):
+    lim = max(2, min(20, int(limit)))
+    params = {"qa_since": since, "qa_lim": lim, **scope_params}
     if is_pg:
         sql = f"""
             SELECT COALESCE(
@@ -273,7 +284,7 @@ def _run_top_posters(session, is_pg: bool, since: datetime, chat_scope: str, sco
             WHERE m.sent_at IS NOT NULL AND m.sent_at >= :qa_since{chat_scope}
             GROUP BY m.user_id, u.first_name, u.last_name, u.username, u.id
             ORDER BY cnt DESC
-            LIMIT 8
+            LIMIT :qa_lim
             """
     else:
         sql = f"""
@@ -288,7 +299,7 @@ def _run_top_posters(session, is_pg: bool, since: datetime, chat_scope: str, sco
             WHERE m.sent_at IS NOT NULL AND m.sent_at >= :qa_since{chat_scope}
             GROUP BY m.user_id
             ORDER BY cnt DESC
-            LIMIT 8
+            LIMIT :qa_lim
             """
     rows = session.execute(text(sql), params).fetchall()
     return [{"name": str(r[0] or "?"), "count": int(r[1] or 0)} for r in rows]
@@ -324,8 +335,17 @@ def _run_peak_time(session, is_pg: bool, since: datetime, chat_scope: str, scope
     return {"dow": int(row[0]) % 7, "hour": int(row[1]) % 24, "count": int(row[2] or 0)}
 
 
-def _run_reply_pairs(session, is_pg: bool, since: datetime, chat_scope: str, scope_params: dict[str, Any]):
-    params = {"qa_since": since, **scope_params}
+def _run_reply_pairs(
+    session,
+    is_pg: bool,
+    since: datetime,
+    chat_scope: str,
+    scope_params: dict[str, Any],
+    *,
+    limit: int = 8,
+):
+    lim = max(2, min(20, int(limit)))
+    params = {"qa_since": since, "qa_lim": lim, **scope_params}
     if is_pg:
         sql = f"""
             SELECT
@@ -341,7 +361,7 @@ def _run_reply_pairs(session, is_pg: bool, since: datetime, chat_scope: str, sco
             LEFT JOIN users uf ON uf.id = e.from_user
             LEFT JOIN users ut ON ut.id = e.to_user
             ORDER BY e.cnt DESC
-            LIMIT 8
+            LIMIT :qa_lim
             """
     else:
         sql = f"""
@@ -358,7 +378,7 @@ def _run_reply_pairs(session, is_pg: bool, since: datetime, chat_scope: str, sco
             LEFT JOIN users uf ON uf.id = e.from_user
             LEFT JOIN users ut ON ut.id = e.to_user
             ORDER BY e.cnt DESC
-            LIMIT 8
+            LIMIT :qa_lim
             """
     rows = session.execute(text(sql), params).fetchall()
     return [{"from": str(r[0] or "?"), "to": str(r[1] or "?"), "count": int(r[2] or 0)} for r in rows]
@@ -390,6 +410,155 @@ def _run_political_count(session, is_pg: bool, since: datetime, chat_id: int | N
             """
     n = int(session.execute(text(sql), params).scalar() or 0)
     return {"political_events": n}
+
+
+_LLM_SYSTEM_PROMPT = """Ты помощник по аналитике Telegram-чата.
+Даны только агрегированные метрики в JSON (счётчики, средние, топы имён и связей).
+Текста сообщений пользователей нет — не выдумывай цитаты и конкретные фразы из чата.
+Ответь на вопрос по-русски кратко (обычно 3–7 предложений).
+Опирайся только на числа из JSON; если данных недостаточно — так и скажи.
+День недели с индексом 0 = воскресенье; часы в UTC."""
+
+
+def _truncate_label(val: str, max_chars: int = 56) -> str:
+    s = str(val or "").strip().replace("\n", " ")
+    if len(s) <= max_chars:
+        return s
+    return s[: max_chars - 1].rstrip() + "…"
+
+
+def _collect_full_snapshot(
+    session,
+    is_pg: bool,
+    since: datetime,
+    chat_sql: str,
+    chat_params: dict[str, Any],
+    edge_sql: str,
+    edge_params: dict[str, Any],
+    chat_id: int | None,
+    period_days: int,
+) -> tuple[dict[str, Any], bool]:
+    blocks: dict[str, Any] = {}
+    partial = False
+    sections = [
+        ("overview", lambda: _run_overview(session, is_pg, since, chat_sql, chat_params)),
+        (
+            "tone_distribution",
+            lambda: _run_tone_distribution(session, is_pg, since, chat_sql, chat_params),
+        ),
+        (
+            "top_posters",
+            lambda: _run_top_posters(session, is_pg, since, chat_sql, chat_params, limit=10),
+        ),
+        ("peak_time", lambda: _run_peak_time(session, is_pg, since, chat_sql, chat_params)),
+        (
+            "reply_pairs",
+            lambda: _run_reply_pairs(session, is_pg, since, chat_sql, chat_params, limit=8),
+        ),
+        ("edges", lambda: _run_edges_count(session, edge_sql, edge_params)),
+        ("political", lambda: _run_political_count(session, is_pg, since, chat_id)),
+    ]
+    for key, fn in sections:
+        try:
+            blocks[key] = fn()
+        except Exception:
+            logger.warning("analytics snapshot section=%s failed", key, exc_info=True)
+            partial = True
+    if isinstance(blocks.get("overview"), dict):
+        blocks["overview"]["period_days_used"] = period_days
+    return blocks, partial
+
+
+def _snapshot_for_llm_payload(
+    blocks: dict[str, Any], *, period_days: int, chat_id: int | None
+) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "period_days": period_days,
+        "chat_id": chat_id,
+        "time_basis": "UTC",
+    }
+    ov = blocks.get("overview")
+    if isinstance(ov, dict):
+        out["messages"] = ov.get("messages")
+        out["distinct_authors"] = ov.get("active_users")
+        out["tone_scored_messages"] = ov.get("scored")
+        out["avg_tone"] = ov.get("avg_tone")
+        out["reply_rate_percent"] = ov.get("reply_rate_pct")
+
+    td = blocks.get("tone_distribution")
+    if isinstance(td, dict) and td.get("tone_total"):
+        out["tone_buckets"] = td.get("tone_buckets")
+
+    tp = blocks.get("top_posters")
+    if isinstance(tp, list):
+        out["top_posters"] = [
+            {"name": _truncate_label(x.get("name", "?")), "count": x.get("count")} for x in tp[:10]
+        ]
+
+    pk = blocks.get("peak_time")
+    if pk:
+        dow = int(pk["dow"]) % 7
+        out["peak_activity"] = {
+            "weekday_index_0_sun": dow,
+            "weekday_ru": _WEEKDAYS_RU[dow],
+            "hour_utc": pk["hour"],
+            "messages_at_cell": pk["count"],
+        }
+
+    rp = blocks.get("reply_pairs")
+    if isinstance(rp, list):
+        out["reply_pairs_top"] = [
+            {
+                "from": _truncate_label(x.get("from", "?")),
+                "to": _truncate_label(x.get("to", "?")),
+                "count": x.get("count"),
+            }
+            for x in rp[:8]
+        ]
+
+    eg = blocks.get("edges")
+    if isinstance(eg, dict):
+        out["edges_rows"] = eg.get("edges")
+
+    pol = blocks.get("political")
+    if isinstance(pol, dict):
+        out["political_signals"] = pol.get("political_events")
+
+    return out
+
+
+def _answer_with_llm(question: str, snapshot: dict[str, Any]) -> tuple[str, str]:
+    from ai.client import chat_complete_with_fallback, load_project_env, prefer_free_mode
+
+    load_project_env()
+    max_tokens = max(128, min(2048, int(os.getenv("ANALYTICS_QA_LLM_MAX_TOKENS", "512"))))
+    model = (os.getenv("ANALYTICS_QA_LLM_MODEL") or "").strip() or None
+    payload = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+    if len(payload) > 12000:
+        payload = payload[:11900] + "…[truncated]"
+
+    messages = [
+        {"role": "system", "content": _LLM_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": f"Вопрос: {question.strip()}\n\nДанные (JSON):\n{payload}",
+        },
+    ]
+    raw, used = chat_complete_with_fallback(
+        messages,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=0.25,
+        prefer_free=prefer_free_mode(),
+    )
+    text = (raw or "").strip()
+    if not text:
+        return (
+            "ИИ не вернул ответ (проверьте ключи API в .env). Ниже агрегаты:\n"
+            + json.dumps(snapshot, ensure_ascii=False, indent=2)[:4000],
+            used or "none",
+        )
+    return text, used
 
 
 def _chat_label(chat_id: int | None) -> str:
@@ -482,11 +651,15 @@ def answer_chat_analytics_question(
     *,
     chat_id: int | None = None,
     default_period_days: int = 30,
+    use_llm: bool = False,
 ) -> dict[str, Any]:
     """
-    Возвращает ответ по данным БД. LLM не вызывается.
+    Без LLM: intents → SQL по разделам.
 
-    Keys: answer, facts (nested by intent), intents, used_llm (False), partial, hint
+    С use_llm=True: полный компактный снимок метрик → один вызов LLM (без текста сообщений).
+
+    Keys: answer, facts, intents, used_llm, llm_model (если был LLM), snapshot_for_llm (если был LLM),
+          partial, period_days, chat_id, hint
     """
     q_raw = (question or "").strip()
     if not q_raw:
@@ -500,6 +673,42 @@ def answer_chat_analytics_question(
         }
 
     period_days = infer_period_days(q_raw, default=default_period_days)
+    since = _since_param(period_days)
+    chat_sql, chat_params = _scope_sql(chat_id)
+    edge_sql, edge_params = _scope_edges(chat_id)
+
+    if use_llm:
+        blocks: dict[str, Any] = {}
+        partial_snap = False
+        with sync_session_scope() as session:
+            dialect = session.bind.dialect.name
+            is_pg = dialect == "postgresql"
+            blocks, partial_snap = _collect_full_snapshot(
+                session,
+                is_pg,
+                since,
+                chat_sql,
+                chat_params,
+                edge_sql,
+                edge_params,
+                chat_id,
+                period_days,
+            )
+        slim = _snapshot_for_llm_payload(blocks, period_days=period_days, chat_id=chat_id)
+        answer, model_used = _answer_with_llm(q_raw, slim)
+        return {
+            "answer": answer,
+            "facts": blocks,
+            "snapshot_for_llm": slim,
+            "intents": ["llm_compact_snapshot"],
+            "used_llm": True,
+            "llm_model": model_used,
+            "partial": partial_snap,
+            "period_days": period_days,
+            "chat_id": chat_id,
+            "hint": _examples_hint(),
+        }
+
     intents = detect_intents(q_raw)
     if intents:
         intents = _strip_overview_duplicates(intents)
@@ -507,7 +716,8 @@ def answer_chat_analytics_question(
         intents = ["overview"]
     else:
         return {
-            "answer": "Не удалось понять запрос по ключевым словам. " + _examples_hint(),
+            "answer": "Не удалось понять запрос по ключевым словам. Включите «Ответ через ИИ» для произвольных вопросов или переформулируйте. "
+            + _examples_hint(),
             "facts": {},
             "intents": [],
             "used_llm": False,
@@ -515,11 +725,7 @@ def answer_chat_analytics_question(
             "hint": _examples_hint(),
         }
 
-    since = _since_param(period_days)
-    chat_sql, chat_params = _scope_sql(chat_id)
-    edge_sql, edge_params = _scope_edges(chat_id)
-
-    blocks: dict[str, Any] = {}
+    blocks_rb: dict[str, Any] = {}
     partial = False
 
     with sync_session_scope() as session:
@@ -529,47 +735,47 @@ def answer_chat_analytics_question(
         for intent in intents:
             try:
                 if intent == "overview":
-                    blocks["overview"] = _run_overview(session, is_pg, since, chat_sql, chat_params)
-                    blocks["overview"]["period_days_used"] = period_days
+                    blocks_rb["overview"] = _run_overview(session, is_pg, since, chat_sql, chat_params)
+                    blocks_rb["overview"]["period_days_used"] = period_days
                 elif intent == "tone_distribution":
-                    blocks["tone_distribution"] = _run_tone_distribution(
+                    blocks_rb["tone_distribution"] = _run_tone_distribution(
                         session, is_pg, since, chat_sql, chat_params
                     )
                 elif intent == "message_count":
-                    blocks["message_count"] = _run_message_count(session, since, chat_sql, chat_params)
+                    blocks_rb["message_count"] = _run_message_count(session, since, chat_sql, chat_params)
                 elif intent == "active_users":
-                    blocks["active_users"] = _run_active_users(session, since, chat_sql, chat_params)
+                    blocks_rb["active_users"] = _run_active_users(session, since, chat_sql, chat_params)
                 elif intent == "tone_avg":
-                    blocks["tone_avg"] = _run_tone_avg(session, since, chat_sql, chat_params)
+                    blocks_rb["tone_avg"] = _run_tone_avg(session, since, chat_sql, chat_params)
                 elif intent == "reply_rate":
-                    blocks["reply_rate"] = _run_reply_rate(session, since, chat_sql, chat_params)
+                    blocks_rb["reply_rate"] = _run_reply_rate(session, since, chat_sql, chat_params)
                 elif intent == "top_posters":
-                    blocks["top_posters"] = _run_top_posters(
+                    blocks_rb["top_posters"] = _run_top_posters(
                         session, is_pg, since, chat_sql, chat_params
                     )
                 elif intent == "peak_time":
                     pk = _run_peak_time(session, is_pg, since, chat_sql, chat_params)
-                    blocks["peak_time"] = pk
+                    blocks_rb["peak_time"] = pk
                 elif intent == "reply_pairs":
-                    blocks["reply_pairs"] = _run_reply_pairs(
+                    blocks_rb["reply_pairs"] = _run_reply_pairs(
                         session, is_pg, since, chat_sql, chat_params
                     )
                 elif intent == "edges":
-                    blocks["edges"] = _run_edges_count(session, edge_sql, edge_params)
+                    blocks_rb["edges"] = _run_edges_count(session, edge_sql, edge_params)
                 elif intent == "political":
-                    blocks["political"] = _run_political_count(session, is_pg, since, chat_id)
+                    blocks_rb["political"] = _run_political_count(session, is_pg, since, chat_id)
             except Exception:
                 logger.warning("analytics_chat_qa intent=%s failed", intent, exc_info=True)
                 partial = True
                 continue
 
-    answer = _render_sections(intents, blocks, period_days=period_days, chat_id=chat_id)
+    answer = _render_sections(intents, blocks_rb, period_days=period_days, chat_id=chat_id)
     if partial:
         answer += "\n\n(Часть метрик не удалось посчитать — см. лог сервера.)"
 
     return {
         "answer": answer,
-        "facts": blocks,
+        "facts": blocks_rb,
         "intents": intents,
         "used_llm": False,
         "partial": partial,
@@ -583,5 +789,6 @@ def _examples_hint() -> str:
     return (
         "Примеры: «Краткая сводка за месяц», «Сколько сообщений за неделю», «Распределение тональности», "
         "«Кто больше всех пишет», «В какое время чат активнее», «Топ пар ответов», «Сколько политических сигналов», "
-        "«Сколько рёбер в графе». Укажите chat_id в форме, чтобы ограничить один чат."
+        "«Сколько рёбер в графе». Укажите chat_id в форме, чтобы ограничить один чат. "
+        "Произвольный вопрос — включите «Ответ через ИИ» (в модель только агрегаты, не тексты сообщений)."
     )

@@ -59,7 +59,10 @@
 <div class="analytics-card" style="margin-bottom:24px;">
   <h3>Вопрос по сохранённым метрикам</h3>
   <p style="font-size:13px;color:var(--text-secondary);margin:0 0 12px;line-height:1.45;">
-    Ответ собирается из агрегатов в БД (SQL). ИИ не вызывается — подходят только формулировки вокруг уже посчитанных полей (сообщения, тон, ответы, топы, политические сигналы и т.д.).
+    Без галочки: только шаблоны по ключевым словам (без ИИ). С галочкой: любой вопрос —
+    в модель уходит один компактный JSON со счётчиками и топами (без текста сообщений), затем короткий ответ ИИ.
+    Переменные окружения: <code>ANALYTICS_QA_LLM_MAX_TOKENS</code> (по умолчанию 512),
+    опционально <code>ANALYTICS_QA_LLM_MODEL</code>.
   </p>
   <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:10px;">
     <label style="font-size:13px;">chat_id (необяз.)<br/>
@@ -71,7 +74,10 @@
         style="width:100px;padding:8px;border-radius:8px;border:1px solid var(--border-card);" />
     </label>
   </div>
-  <textarea id="qaQuestion" rows="3"
+  <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin:10px 0;cursor:pointer;">
+    <input type="checkbox" id="qaUseLlm" />
+    Ответ через ИИ (компактные агрегаты, один запрос)
+  </label>
     style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border-card);font-size:14px;box-sizing:border-box;"
     placeholder="Например: краткая сводка за неделю"></textarea>
   <button type="button" id="qaSubmit"
@@ -370,7 +376,7 @@
     });
   }
 
-  // NL QA по метрикам (без LLM)
+  // Вопросы по метрикам (шаблоны и/или ИИ по компактному JSON)
   const qaBtn = document.getElementById('qaSubmit');
   const qaOut = document.getElementById('qaAnswer');
   if (qaBtn && qaOut) {
@@ -383,7 +389,7 @@
       qaOut.style.display = 'block';
       qaOut.textContent = 'Запрос…';
       try {
-        const payload = { question: question.trim(), period_days };
+        const payload = { question: question.trim(), period_days, use_llm: !!(document.getElementById('qaUseLlm') || {}).checked };
         const cr = chatRaw.trim();
         if (cr) payload.chat_id = cr;
         const res = await fetch('/api/analytics/chat-qa', {
@@ -399,7 +405,9 @@
         }
         qaOut.textContent = data.answer || '';
         if (data.partial) qaOut.textContent += '\n\n(частичный ответ)';
-        if (data.intents && data.intents.length) {
+        if (data.used_llm && data.llm_model) {
+          qaOut.textContent += '\n\n[model: ' + data.llm_model + ']';
+        } else if (data.intents && data.intents.length) {
           qaOut.textContent += '\n\n[intents: ' + data.intents.join(', ') + ']';
         }
       } catch (e) {

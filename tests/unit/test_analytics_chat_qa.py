@@ -2,6 +2,7 @@
 
 from services.analytics_chat_qa import (
     _strip_overview_duplicates,
+    _truncate_label,
     detect_intents,
     infer_period_days,
 )
@@ -31,3 +32,10 @@ def test_strip_overview_drops_redundant():
     assert "tone_distribution" in out
     assert "message_count" not in out
     assert "tone_avg" not in out
+
+
+def test_truncate_label_long():
+    s = "a" * 80
+    t = _truncate_label(s, max_chars=10)
+    assert len(t) <= 10
+    assert t.endswith("…")

@@ -1543,12 +1543,13 @@ def admin_analytics():
 @app.route("/api/analytics/chat-qa", methods=["POST"])
 @login_required
 def api_analytics_chat_qa():
-    """Вопрос по метрикам чата: ответ из SQL-агрегатов, без LLM."""
+    """Вопрос по метрикам чата: SQL-агрегаты; опционально компактный JSON → один вызов LLM."""
     from services.analytics_chat_qa import answer_chat_analytics_question
 
     body = request.get_json(silent=True) or {}
     q = str(body.get("question") or "").strip()
     raw_chat = body.get("chat_id")
+    use_llm = bool(body.get("use_llm"))
     chat_id = None
     if raw_chat not in (None, "", "all"):
         try:
@@ -1565,7 +1566,9 @@ def api_analytics_chat_qa():
         default_pd = 30
     if not q:
         return jsonify({"ok": False, "error": "Передайте поле question"}), 400
-    out = answer_chat_analytics_question(q, chat_id=chat_id, default_period_days=default_pd)
+    out = answer_chat_analytics_question(
+        q, chat_id=chat_id, default_period_days=default_pd, use_llm=use_llm
+    )
     return jsonify({"ok": True, **out})
 
 

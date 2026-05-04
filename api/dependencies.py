@@ -22,7 +22,12 @@ def _admin_token() -> str:
 
 async def get_db_session() -> AsyncIterator[AsyncSession]:
     async with AsyncSessionLocal() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
 
 def get_edge_repo(session: AsyncSession = Depends(get_db_session)) -> EdgeRepository:

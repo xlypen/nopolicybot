@@ -40,6 +40,11 @@ def get_sync_engine():
             kwargs["connect_args"] = {"check_same_thread": False, "timeout": _t}
         else:
             kwargs["pool_pre_ping"] = True
+            kwargs["pool_size"] = int(os.getenv("DB_POOL_SIZE", "5"))
+            kwargs["max_overflow"] = int(os.getenv("DB_MAX_OVERFLOW", "10"))
+            _recycle = int(os.getenv("DB_POOL_RECYCLE_SEC", "3600"))
+            if _recycle > 0:
+                kwargs["pool_recycle"] = _recycle
         try:
             _engine = create_engine(sync_url, **kwargs)
         except Exception as e:

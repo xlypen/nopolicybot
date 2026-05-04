@@ -49,6 +49,14 @@ _INTENT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
             re.I,
         ),
     ),
+    (
+        "author_tone",
+        re.compile(
+            r"весел|весёлы|юмор|шутк|смешн|funniest|кто\s+самый\s+позитив|позитивн.*автор|оптимист|"
+            r"добрейш|настроен.*участник",
+            re.I,
+        ),
+    ),
     ("tone_avg", re.compile(r"средн.*тон|настроен|средн.*тональн|avg\s+tone|sentiment", re.I)),
     (
         "peak_time",
@@ -413,9 +421,96 @@ def _run_political_count(session, is_pg: bool, since: datetime, chat_id: int | N
     return {"political_events": n}
 
 
+def _author_tone_min_msgs() -> int:
+    return max(2, min(50, int(os.getenv("ANALYTICS_QA_AUTHOR_TONE_MIN_MSGS", "3"))))
+
+
+def _run_author_tone_breakdown(
+    session,
+    is_pg: bool,
+    since: datetime,
+    chat_scope: str,
+    scope_params: dict[str, Any],
+    *,
+    pool_limit: int = 48,
+) -> list[dict[str, Any]]:
+    """По авторам за период: сколько сообщений с tone_score, средний тон, позитив/негатив по порогам."""
+    min_msgs = _author_tone_min_msgs()
+    lim = max(12, min(80, int(pool_limit)))
+    params = {
+        "qa_since": since,
+        "qa_min_msgs": min_msgs,
+        "qa_pool": lim,
+        **scope_params,
+    }
+    if is_pg:
+        sql = f"""
+            SELECT COALESCE(
+                NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''),
+                u.username,
+                'User ' || u.id::text
+              ) AS display_name,
+              COUNT(*)::int AS n_scored,
+              AVG(m.tone_score)::double precision AS avg_t,
+              SUM(CASE WHEN m.tone_score > 0.3 THEN 1 ELSE 0 END)::int AS pos_n,
+              SUM(CASE WHEN m.tone_score < -0.3 THEN 1 ELSE 0 END)::int AS neg_n
+            FROM messages m
+            LEFT JOIN users u ON m.user_id = u.id
+            WHERE m.sent_at IS NOT NULL AND m.sent_at >= :qa_since
+              AND m.tone_score IS NOT NULL
+              AND m.user_id IS NOT NULL
+              {chat_scope}
+            GROUP BY m.user_id, u.first_name, u.last_name, u.username, u.id
+            HAVING COUNT(*) >= :qa_min_msgs
+            ORDER BY COUNT(*) DESC
+            LIMIT :qa_pool
+            """
+    else:
+        sql = f"""
+            SELECT COALESCE(
+                NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), ''),
+                u.username,
+                'User ' || CAST(u.id AS TEXT)
+              ) AS display_name,
+              COUNT(*) AS n_scored,
+              AVG(m.tone_score) AS avg_t,
+              SUM(CASE WHEN m.tone_score > 0.3 THEN 1 ELSE 0 END) AS pos_n,
+              SUM(CASE WHEN m.tone_score < -0.3 THEN 1 ELSE 0 END) AS neg_n
+            FROM messages m
+            LEFT JOIN users u ON m.user_id = u.id
+            WHERE m.sent_at IS NOT NULL AND m.sent_at >= :qa_since
+              AND m.tone_score IS NOT NULL
+              AND m.user_id IS NOT NULL
+              {chat_scope}
+            GROUP BY m.user_id
+            ORDER BY COUNT(*) DESC
+            LIMIT :qa_pool
+            """
+    rows = session.execute(text(sql), params).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        avg_raw = r[2]
+        avg_tone = float(avg_raw) if avg_raw is not None else None
+        out.append(
+            {
+                "name": str(r[0] or "?"),
+                "scored_msgs": int(r[1] or 0),
+                "avg_tone": avg_tone,
+                "positive_msgs": int(r[3] or 0),
+                "negative_msgs": int(r[4] or 0),
+            }
+        )
+    return out
+
+
 _LLM_SYSTEM_PROMPT = """Ты помощник по аналитике Telegram-чата.
 Даны только агрегированные метрики в JSON (счётчики, средние, топы имён и связей).
 Текста сообщений пользователей нет — не выдумывай цитаты и конкретные фразы из чата.
+
+Поля authors_highest_avg_tone и authors_most_positive_msgs — это статистика по уже размеченному
+tone_score сообщений (−1…1): средний тон и число «позитивных» (score > 0.3) на автора.
+Это прокси доброжелательности/позитива в тексте, не юмор и не реакции Telegram.
+
 Ответь на вопрос по-русски кратко (обычно 3–7 предложений).
 Опирайся только на числа из JSON; если данных недостаточно — так и скажи.
 День недели с индексом 0 = воскресенье; часы в UTC."""
@@ -450,6 +545,10 @@ def _collect_full_snapshot(
         (
             "top_posters",
             lambda: _run_top_posters(session, is_pg, since, chat_sql, chat_params, limit=10),
+        ),
+        (
+            "author_tone_breakdown",
+            lambda: _run_author_tone_breakdown(session, is_pg, since, chat_sql, chat_params),
         ),
         ("peak_time", lambda: _run_peak_time(session, is_pg, since, chat_sql, chat_params)),
         (
@@ -495,6 +594,32 @@ def _snapshot_for_llm_payload(
         out["top_posters"] = [
             {"name": _truncate_label(x.get("name", "?")), "count": x.get("count")} for x in tp[:10]
         ]
+
+    rows = blocks.get("author_tone_breakdown")
+    if isinstance(rows, list) and rows:
+        pool = []
+        for x in rows:
+            at = x.get("avg_tone")
+            pool.append(
+                {
+                    "name": _truncate_label(x.get("name", "?")),
+                    "scored_msgs": x.get("scored_msgs"),
+                    "avg_tone": round(float(at), 4) if at is not None else None,
+                    "positive_msgs": x.get("positive_msgs"),
+                    "negative_msgs": x.get("negative_msgs"),
+                }
+            )
+        by_avg = sorted(pool, key=lambda z: (-(z["avg_tone"] or 0.0), -int(z["scored_msgs"] or 0)))[:8]
+        by_pos = sorted(
+            pool,
+            key=lambda z: (-int(z["positive_msgs"] or 0), -(z["avg_tone"] or 0.0)),
+        )[:8]
+        out["authors_highest_avg_tone"] = by_avg
+        out["authors_most_positive_msgs"] = by_pos
+        out["tone_semantics_note"] = (
+            "tone_score per message −1…1; «positive_msgs» = число сообщений с tone_score>0.3. "
+            "Не реакции и не детектор юмора."
+        )
 
     pk = blocks.get("peak_time")
     if pk:
@@ -638,6 +763,39 @@ def _render_sections(
         lines = [f"  — {x['from']} → {x['to']}: {x['count']:,}" for x in blocks["reply_pairs"][:6]]
         parts.append("• Чаще всего отвечают (по счётчику пар):\n" + "\n".join(lines))
 
+    if "author_tone_breakdown" in blocks:
+        rows = blocks["author_tone_breakdown"]
+        if not rows:
+            parts.append(
+                "• Тон по авторам: нет пользователей с достаточным числом размеченных сообщений "
+                f"(минимум {_author_tone_min_msgs()} за период). Запустите fill_tone_scores.py для бэкфилла."
+            )
+        else:
+            by_avg = sorted(
+                rows,
+                key=lambda x: (-(x.get("avg_tone") or 0.0), -int(x.get("scored_msgs") or 0)),
+            )[:6]
+            by_pos = sorted(
+                rows,
+                key=lambda x: (-int(x.get("positive_msgs") or 0), -(x.get("avg_tone") or 0.0)),
+            )[:6]
+            lines_a = [
+                f"  — {x['name']}: средн.тон {x.get('avg_tone') if x.get('avg_tone') is not None else '—'}, "
+                f"размечено {x['scored_msgs']}, позитив>{x['positive_msgs']}, негатив<{x['negative_msgs']}"
+                for x in by_avg
+            ]
+            lines_p = [
+                f"  — {x['name']}: позитивных>{x['positive_msgs']}, средн.тон "
+                f"{x.get('avg_tone') if x.get('avg_tone') is not None else '—'} ({x['scored_msgs']} размеч.)"
+                for x in by_pos
+            ]
+            parts.append(
+                "• По размеченным сообщениям (tone_score): выше средний тон:\n"
+                + "\n".join(lines_a)
+                + "\n• Больше всего «позитивных» сообщений (score>0.3):\n"
+                + "\n".join(lines_p)
+            )
+
     if "edges" in blocks:
         parts.append(f"• Рёбер в таблице связей (edges): {blocks['edges']['edges']:,}.")
 
@@ -742,6 +900,10 @@ def answer_chat_analytics_question(
                     blocks_rb["tone_distribution"] = _run_tone_distribution(
                         session, is_pg, since, chat_sql, chat_params
                     )
+                elif intent == "author_tone":
+                    blocks_rb["author_tone_breakdown"] = _run_author_tone_breakdown(
+                        session, is_pg, since, chat_sql, chat_params
+                    )
                 elif intent == "message_count":
                     blocks_rb["message_count"] = _run_message_count(session, since, chat_sql, chat_params)
                 elif intent == "active_users":
@@ -790,6 +952,8 @@ def _examples_hint() -> str:
     return (
         "Примеры: «Краткая сводка за месяц», «Сколько сообщений за неделю», «Распределение тональности», "
         "«Кто больше всех пишет», «В какое время чат активнее», «Топ пар ответов», «Сколько политических сигналов», "
-        "«Сколько рёбер в графе». Укажите chat_id в форме, чтобы ограничить один чат. "
-        "Произвольный вопрос — включите «Ответ через ИИ» (в модель только агрегаты, не тексты сообщений)."
+        "«Сколько рёбер в графе», «Кто самый позитивный / весёлый» (по размеченному тону сообщений). "
+        "Укажите chat_id в форме, чтобы ограничить один чат. Произвольный вопрос — режим ИИ. "
+        "Для статистики по людям нужны заполненные tone_score (fill_tone_scores.py). "
+        "Порог минимума сообщений на автора: ANALYTICS_QA_AUTHOR_TONE_MIN_MSGS (по умолчанию 3)."
     )

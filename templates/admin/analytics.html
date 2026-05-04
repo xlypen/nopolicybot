@@ -61,8 +61,9 @@
   <p style="font-size:13px;color:var(--text-secondary);margin:0 0 12px;line-height:1.45;">
     Без галочки: только шаблоны по ключевым словам (без ИИ). С галочкой: любой вопрос —
     в модель уходит один компактный JSON со счётчиками и топами (без текста сообщений), затем короткий ответ ИИ.
+    Тон по авторам берётся из поля <code>tone_score</code> в таблице <code>messages</code> (при пустых значениях прогоните <code>fill_tone_scores.py</code>).
     Переменные окружения: <code>ANALYTICS_QA_LLM_MAX_TOKENS</code> (по умолчанию 512),
-    опционально <code>ANALYTICS_QA_LLM_MODEL</code>.
+    опционально <code>ANALYTICS_QA_LLM_MODEL</code>; порог сообщений на автора для «тон по людям»: <code>ANALYTICS_QA_AUTHOR_TONE_MIN_MSGS</code> (по умолчанию 3).
   </p>
   <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:10px;">
     <label style="font-size:13px;">Чат<br/>

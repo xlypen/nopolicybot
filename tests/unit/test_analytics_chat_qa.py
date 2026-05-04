@@ -39,3 +39,8 @@ def test_truncate_label_long():
     t = _truncate_label(s, max_chars=10)
     assert len(t) <= 10
     assert t.endswith("…")
+
+
+def test_detect_author_tone_intent():
+    assert "author_tone" in detect_intents("Кто самый весёлый в чате?")
+    assert "author_tone" in detect_intents("Who is the funniest person here")

@@ -65,9 +65,14 @@
     опционально <code>ANALYTICS_QA_LLM_MODEL</code>.
   </p>
   <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:10px;">
-    <label style="font-size:13px;">chat_id (необяз.)<br/>
-      <input type="text" id="qaChatId" placeholder="все чаты" autocomplete="off"
-        style="width:140px;padding:8px;border-radius:8px;border:1px solid var(--border-card);" />
+    <label style="font-size:13px;">Чат<br/>
+      <select id="qaChatId"
+        style="min-width:220px;max-width:min(420px,100%);padding:8px;border-radius:8px;border:1px solid var(--border-card);background:var(--bg-secondary,#fff);color:var(--text-primary,#1e293b);">
+        <option value="">Все чаты</option>
+        {% for c in chats|default([]) %}
+        <option value="{{ c.chat_id }}">{{ c.title }} ({{ c.chat_id }})</option>
+        {% endfor %}
+      </select>
     </label>
     <label style="font-size:13px;">Период по умолчанию (дней)<br/>
       <input type="number" id="qaPeriod" value="30" min="1" max="366"
@@ -78,6 +83,7 @@
     <input type="checkbox" id="qaUseLlm" />
     Ответ через ИИ (компактные агрегаты, один запрос)
   </label>
+  <textarea id="qaQuestion" rows="3"
     style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border-card);font-size:14px;box-sizing:border-box;"
     placeholder="Например: краткая сводка за неделю"></textarea>
   <button type="button" id="qaSubmit"

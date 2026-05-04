@@ -1536,7 +1536,10 @@ def admin_personality_compare():
 @login_required
 def admin_analytics():
     """Аналитика сообщений, тональности, графа и OCEAN (Chart.js)."""
+    from user_stats import get_chats
+
     ctx = _build_analytics_context()
+    ctx["chats"] = get_chats() or []
     return render_template("admin/analytics.html", **ctx)
 
 

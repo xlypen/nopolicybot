@@ -5,6 +5,8 @@ Fill missing tone_score values in the messages table using LLM batch analysis.
 Processes messages in batches, sending groups to the LLM for tone/sentiment
 scoring on a -1.0 (very negative) to +1.0 (very positive) scale.
 
+Uses DATABASE_URL from .env — SQLite или PostgreSQL (через sync_session_scope).
+
 Usage:
   python scripts/fill_tone_scores.py [--batch-size 20] [--limit 0] [--dry-run]
 """
@@ -13,16 +15,16 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
-import sqlite3
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from sqlalchemy import text
+
 from ai.client import chat_complete_with_fallback, load_project_env, prefer_free_mode
-from services.sqlite_util import sqlite_connect
+from db.sync_engine import sync_database_url, sync_session_scope
 
 load_project_env()
 
@@ -31,8 +33,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger(__name__)
-
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "bot.db"
 
 TONE_BATCH_PROMPT = """\
 Ты — аналитик тональности русскоязычных чат-сообщений.
@@ -54,22 +54,22 @@ TONE_BATCH_PROMPT = """\
 Без пояснений, только JSON."""
 
 
-def get_conn() -> sqlite3.Connection:
-    conn = sqlite_connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
-
-
-def fetch_unscored(conn: sqlite3.Connection, limit: int = 0) -> list[tuple]:
-    sql = """
+def fetch_unscored(limit: int = 0) -> list[tuple]:
+    base = """
         SELECT id, text FROM messages
         WHERE tone_score IS NULL
-          AND text IS NOT NULL AND text != ''
+          AND text IS NOT NULL AND trim(text) != ''
         ORDER BY sent_at
     """
     if limit > 0:
-        sql += f" LIMIT {limit}"
-    return conn.execute(sql).fetchall()
+        stmt = text(base + " LIMIT :lim")
+        params = {"lim": int(limit)}
+    else:
+        stmt = text(base)
+        params = {}
+    with sync_session_scope() as session:
+        rows = session.execute(stmt, params).fetchall()
+    return [(int(r[0]), r[1]) for r in rows]
 
 
 def score_batch(batch: list[tuple]) -> dict[int, float]:
@@ -127,17 +127,18 @@ def score_batch(batch: list[tuple]) -> dict[int, float]:
     return results
 
 
-def update_scores(conn: sqlite3.Connection, scores: dict[int, float]) -> int:
+def update_scores(scores: dict[int, float]) -> int:
     if not scores:
         return 0
-    cursor = conn.cursor()
-    for msg_id, tone in scores.items():
-        cursor.execute(
-            "UPDATE messages SET tone_score = ? WHERE id = ? AND tone_score IS NULL",
-            (tone, msg_id),
-        )
-    conn.commit()
-    return cursor.rowcount or len(scores)
+    upd = text(
+        "UPDATE messages SET tone_score = :tone WHERE id = :id AND tone_score IS NULL"
+    )
+    n = 0
+    with sync_session_scope() as session:
+        for msg_id, tone in scores.items():
+            res = session.execute(upd, {"tone": float(tone), "id": int(msg_id)})
+            n += res.rowcount or 0
+    return n
 
 
 def main():
@@ -148,8 +149,8 @@ def main():
     parser.add_argument("--delay", type=float, default=1.0, help="Seconds between batches")
     args = parser.parse_args()
 
-    conn = get_conn()
-    rows = fetch_unscored(conn, args.limit)
+    log.info("DB (sync): %s", sync_database_url().split("@")[-1])
+    rows = fetch_unscored(args.limit)
     total = len(rows)
     log.info("Found %d unscored messages", total)
 
@@ -175,13 +176,13 @@ def main():
 
         if scores:
             if not args.dry_run:
-                update_scores(conn, scores)
+                update_scores(scores)
             scored += len(scores)
             log.info("  Scored %d/%d (total: %d/%d)", len(scores), len(batch), scored, total)
             if args.dry_run and batch_num <= 2:
                 for msg_id, tone in list(scores.items())[:3]:
-                    text = next((t for mid, t in batch if mid == msg_id), "?")
-                    log.info("    [%d] %.2f  %s", msg_id, tone, text[:80])
+                    preview = next((t for mid, t in batch if mid == msg_id), "?")
+                    log.info("    [%d] %.2f  %s", msg_id, tone, preview[:80])
         else:
             failed += len(batch)
             log.warning("  Batch %d: no scores returned", batch_num)
@@ -189,7 +190,6 @@ def main():
         if i + args.batch_size < total:
             time.sleep(args.delay)
 
-    conn.close()
     mode = "DRY RUN" if args.dry_run else "COMMITTED"
     log.info("Done (%s). Scored: %d, Failed: %d, Total: %d", mode, scored, failed, total)
 

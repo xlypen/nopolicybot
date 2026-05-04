@@ -1540,6 +1540,35 @@ def admin_analytics():
     return render_template("admin/analytics.html", **ctx)
 
 
+@app.route("/api/analytics/chat-qa", methods=["POST"])
+@login_required
+def api_analytics_chat_qa():
+    """Вопрос по метрикам чата: ответ из SQL-агрегатов, без LLM."""
+    from services.analytics_chat_qa import answer_chat_analytics_question
+
+    body = request.get_json(silent=True) or {}
+    q = str(body.get("question") or "").strip()
+    raw_chat = body.get("chat_id")
+    chat_id = None
+    if raw_chat not in (None, "", "all"):
+        try:
+            s = str(raw_chat).strip()
+            if s.lstrip("-").isdigit():
+                chat_id = int(s)
+        except (TypeError, ValueError):
+            chat_id = None
+    default_pd = 30
+    try:
+        if body.get("period_days") is not None:
+            default_pd = max(1, min(366, int(body.get("period_days"))))
+    except (TypeError, ValueError):
+        default_pd = 30
+    if not q:
+        return jsonify({"ok": False, "error": "Передайте поле question"}), 400
+    out = answer_chat_analytics_question(q, chat_id=chat_id, default_period_days=default_pd)
+    return jsonify({"ok": True, **out})
+
+
 @app.route("/admin/sparring")
 @login_required
 def admin_sparring():

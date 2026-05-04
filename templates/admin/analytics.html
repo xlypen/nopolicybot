@@ -56,6 +56,32 @@
   <p class="hero-lead">Data science по {{ summary.total_msgs|default(0) }} сообщениям от {{ summary.total_users|default(0) }} пользователей. Тональность размечена для {{ summary.total_scored|default(0) }} сообщений.</p>
 </div>
 
+<div class="analytics-card" style="margin-bottom:24px;">
+  <h3>Вопрос по сохранённым метрикам</h3>
+  <p style="font-size:13px;color:var(--text-secondary);margin:0 0 12px;line-height:1.45;">
+    Ответ собирается из агрегатов в БД (SQL). ИИ не вызывается — подходят только формулировки вокруг уже посчитанных полей (сообщения, тон, ответы, топы, политические сигналы и т.д.).
+  </p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:10px;">
+    <label style="font-size:13px;">chat_id (необяз.)<br/>
+      <input type="text" id="qaChatId" placeholder="все чаты" autocomplete="off"
+        style="width:140px;padding:8px;border-radius:8px;border:1px solid var(--border-card);" />
+    </label>
+    <label style="font-size:13px;">Период по умолчанию (дней)<br/>
+      <input type="number" id="qaPeriod" value="30" min="1" max="366"
+        style="width:100px;padding:8px;border-radius:8px;border:1px solid var(--border-card);" />
+    </label>
+  </div>
+  <textarea id="qaQuestion" rows="3"
+    style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border-card);font-size:14px;box-sizing:border-box;"
+    placeholder="Например: краткая сводка за неделю"></textarea>
+  <button type="button" id="qaSubmit"
+    style="margin-top:10px;padding:10px 18px;border-radius:8px;background:var(--accent,#6366f1);color:#fff;border:none;cursor:pointer;font-weight:600;">
+    Спросить
+  </button>
+  <pre id="qaAnswer"
+    style="margin-top:14px;padding:12px;background:var(--bg-secondary,#f8fafc);border-radius:8px;white-space:pre-wrap;font-size:13px;display:none;border:1px solid var(--border-card);"></pre>
+</div>
+
 <div class="analytics-summary">
   <div class="summary-card"><span class="val">{{ "{:,}".format(summary.total_msgs) }}</span><span class="label">Сообщений</span></div>
   <div class="summary-card"><span class="val">{{ summary.total_users }}</span><span class="label">Пользователей</span></div>
@@ -340,6 +366,46 @@
         responsive: true,
         plugins: { legend: { display: false } },
         scales: { x: { beginAtZero: true } }
+      }
+    });
+  }
+
+  // NL QA по метрикам (без LLM)
+  const qaBtn = document.getElementById('qaSubmit');
+  const qaOut = document.getElementById('qaAnswer');
+  if (qaBtn && qaOut) {
+    qaBtn.addEventListener('click', async () => {
+      const question = (document.getElementById('qaQuestion') || {}).value || '';
+      const chatRaw = (document.getElementById('qaChatId') || {}).value || '';
+      let period_days = parseInt((document.getElementById('qaPeriod') || {}).value || '30', 10);
+      if (Number.isNaN(period_days)) period_days = 30;
+      qaBtn.disabled = true;
+      qaOut.style.display = 'block';
+      qaOut.textContent = 'Запрос…';
+      try {
+        const payload = { question: question.trim(), period_days };
+        const cr = chatRaw.trim();
+        if (cr) payload.chat_id = cr;
+        const res = await fetch('/api/analytics/chat-qa', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          qaOut.textContent = data.error || ('Ошибка ' + res.status);
+          return;
+        }
+        qaOut.textContent = data.answer || '';
+        if (data.partial) qaOut.textContent += '\n\n(частичный ответ)';
+        if (data.intents && data.intents.length) {
+          qaOut.textContent += '\n\n[intents: ' + data.intents.join(', ') + ']';
+        }
+      } catch (e) {
+        qaOut.textContent = String(e);
+      } finally {
+        qaBtn.disabled = false;
       }
     });
   }
